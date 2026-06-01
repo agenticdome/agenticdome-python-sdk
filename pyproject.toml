@@ -55,11 +55,12 @@ dev = [
     "twine>=5.0.0"
 ]
 
+
 [project.urls]
 Homepage = "https://au.agenticdome.io"
-Repository = "https://github.com/YOUR_ORG/agentguard-python-sdk"
-Documentation = "https://github.com/YOUR_ORG/agentguard-python-sdk#readme"
-Issues = "https://github.com/YOUR_ORG/agentguard-python-sdk/issues"
+Repository = "https://github.com/agenticdome/agenticdome-python-sdk"
+Documentation = "https://github.com/agenticdome/agenticdome-python-sdk#readme"
+Issues = "https://github.com/agenticdome/agenticdome-python-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
