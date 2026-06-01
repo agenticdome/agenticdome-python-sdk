@@ -1,0 +1,42 @@
+Metadata-Version: 2.4
+Name: agenticdome-python-sdk
+Version: 1.0.0
+Summary: Official Python SDK for AgentGuard Intelligence Engine and Action Firewall.
+Author: AgenticDome
+License: Proprietary
+Project-URL: Homepage, https://au.agenticdome.io
+Project-URL: Repository, https://github.com/YOUR_ORG/agentguard-python-sdk
+Project-URL: Documentation, https://github.com/YOUR_ORG/agentguard-python-sdk#readme
+Project-URL: Issues, https://github.com/YOUR_ORG/agentguard-python-sdk/issues
+Keywords: agentguard,agenticdome,ai-security,agent-security,guardrails,a2a,mcp,zero-trust,runtime-security
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Information Technology
+Classifier: Topic :: Security
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: Internet :: WWW/HTTP
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31.0
+Requires-Dist: urllib3>=2.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Requires-Dist: mypy>=1.8.0; extra == "dev"
+Requires-Dist: build>=1.0.0; extra == "dev"
+Requires-Dist: twine>=5.0.0; extra == "dev"
+
+# AgentGuard Python SDK
+
+Official Python SDK for AgentGuard Intelligence Engine and Action Firewall.
+
+## Installation
+
+```bash
+pip install agentguard-python-sdk

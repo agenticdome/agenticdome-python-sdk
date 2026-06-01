@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agenticdome-python-sdk"
+version = "1.0.0"
+description = "Official Python SDK for AgentGuard Intelligence Engine and Action Firewall."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+
+authors = [
+    { name = "AgenticDome" }
+]
+
+keywords = [
+    "agentguard",
+    "agenticdome",
+    "ai-security",
+    "agent-security",
+    "guardrails",
+    "a2a",
+    "mcp",
+    "zero-trust",
+    "runtime-security"
+]
+
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
+]
+
+dependencies = [
+    "requests>=2.31.0",
+    "urllib3>=2.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.5.0",
+    "mypy>=1.8.0",
+    "build>=1.0.0",
+    "twine>=5.0.0"
+]
+
+[project.urls]
+Homepage = "https://au.agenticdome.io"
+Repository = "https://github.com/YOUR_ORG/agentguard-python-sdk"
+Documentation = "https://github.com/YOUR_ORG/agentguard-python-sdk#readme"
+Issues = "https://github.com/YOUR_ORG/agentguard-python-sdk/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentguard_sdk*"]
+exclude = ["tests*", "examples*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+strict = false

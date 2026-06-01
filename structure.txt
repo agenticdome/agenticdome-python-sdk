@@ -1,0 +1,18 @@
+agentguard_sdk/
+├── __init__.py
+├── client.py
+├── scenarios.py
+├── exceptions.py         # optional later
+├── types.py              # optional later
+README.md
+setup.py
+tests/
+└── test_client.py
+examples/
+├── salesforce_hidden_bcc.py
+├── servicenow_delete_logs.py
+├── microsoft_metadata_exfil.py
+├── crewai_lateral_refund.py
+├── mcp_remote_patch.py
+├── mesh_output_redaction.py
+└── ai_foundry_callback_export.py
