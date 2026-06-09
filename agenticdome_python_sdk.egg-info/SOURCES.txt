@@ -10,6 +10,7 @@ agenticdome_python_sdk.egg-info/top_level.txt
 agenticdome_sdk/__init__.py
 agenticdome_sdk/client.py
 agenticdome_sdk/crewai.py
+agenticdome_sdk/pydantic.py
 agenticdome_sdk/scenarios.py
 examples/agno_lateral_refund.py
 examples/ai_foundry_callback_export.py
@@ -21,3 +22,4 @@ examples/microsoft_metadata_exfil.py
 examples/salesforce_hidden_bcc.py
 examples/servicenow_delete_logs.py
 tests/test_client.py
+tests/test_pydanticai_integration.py

@@ -33,9 +33,19 @@ setup(
         "redis": [
             "redis>=4.5.0",
         ],
+         "pydanticai": [
+        "pydantic-ai",
+        "anyio>=4.0.0",
+        ],
+        "pydantic": [
+        "pydantic-ai",
+        "anyio>=4.0.0",
+        ],
         "all": [
             "crewai",
             "redis>=4.5.0",
+            "pydantic-ai",
+            "anyio>=4.0.0",
         ],
         "dev": [
             "build",
