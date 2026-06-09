@@ -8,7 +8,7 @@ README = ROOT / "README.md"
 
 setup(
     name="agenticdome-python-sdk",
-    version="1.0.1",
+    version="1.0.5",
     description="Python SDK for AgenticDome AI security, guardrails, A2A, MCP, CrewAI, and enterprise agent governance APIs.",
     long_description=README.read_text(encoding="utf-8") if README.exists() else "",
     long_description_content_type="text/markdown",

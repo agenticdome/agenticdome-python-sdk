@@ -1,23 +1,30 @@
+```md
 # AgenticDome Python SDK
 
 [![PyPI version](https://img.shields.io/pypi/v/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Production-grade security guardrails, DLP, and multi-agent delegation enforcement for autonomous AI runtimes.**
+> **Production-grade security guardrails, DLP, tool authorization, and multi-agent delegation enforcement for Python autonomous AI runtimes.**
 
 `agenticdome-python-sdk` is the official Python SDK and middleware package for AgenticDome. It provides deterministic security controls for agentic systems, including prompt guardrails, data loss prevention, tool authorization, incident reporting, and cryptographically validated multi-agent delegation workflows.
 
-This package includes:
+The package includes:
 
-- The core Python SDK client
+- Core Python SDK client
 - CrewAI middleware hooks
+- PydanticAI firewall integration
 - Manager-to-specialist delegation token handling
 - Output DLP and sanitization workflows
 - Optional Redis-backed distributed token storage
 - Enterprise-ready fail-open / fail-closed runtime behavior
 
-AgenticDome is designed for autonomous multi-agent frameworks such as **CrewAI Open Source**, **CrewAI Enterprise**, and custom Python orchestration systems.
+Supported runtime integrations include:
+
+- **CrewAI Open Source / Enterprise**
+- **PydanticAI**
+- **Custom Python agent runtimes**
+- **Multi-agent routers and tool gateways**
 
 ---
 
@@ -25,36 +32,36 @@ AgenticDome is designed for autonomous multi-agent frameworks such as **CrewAI O
 
 AgenticDome operates on a **hybrid split-plane architecture**.
 
-Your local runtime executes agents, tools, and workflows. The AgenticDome central governance plane provides policy decisions, security analytics, tenant isolation, API-key authentication, and incident tracking.
+Your local Python runtime executes agents, tools, workflows, and framework-specific lifecycle hooks. The AgenticDome central governance plane provides policy decisions, API-key authentication, tenant isolation, incident tracking, delegation-token validation, and threat analytics.
 
 ```text
 [ LOCAL ENTERPRISE RUNTIME PERIMETER ]                     [ AGENTICDOME CENTRAL PLANE ]
 
 +-------------------------------------------------+          +-----------------------------+
-| CrewAI Core Orchestrator                        |          | https://au.agenticdome.io   |
-| Open Source / Enterprise Runtime                |          | Centralized Policy Engine   |
+| Python Agent Runtime                            |          | https://au.agenticdome.io   |
+| CrewAI / PydanticAI / Custom Apps               |          | Centralized Policy Engine   |
 +-------------------------------------------------+          +-----------------------------+
      |                         |              ^                            ^
-     | 1. before_llm_call      | 2. Before    | 4. Verdict / Token         |
-     v                         |    Tool Call |    Enforcement             |
+     | 1. Prompt Ingress       | 2. Tool      | 4. Verdict / Token         |
+     v                         |    Call      |    Enforcement             |
 +-------------------------+    |              v                            | Validate
 | Ingress Guardrail Scan  |    |   +-----------------------------------+    | Token via
-+-------------------------+    |   | AgenticDome Shield Python Module  |----+ RPC
++-------------------------+    |   | AgenticDome Python Shield         |----+ RPC
                                |   +-----------------------------------+    |
-                               |       | If Manager Delegation Detected     |
+                               |       | If Delegation Detected             |
                                v       v                                    v
                          +---------------------------------------------+    |
                          | Distributed Shared Token Store              |----+
                          | InMemory Lock / Redis Multi-Worker Cache    |
                          +---------------------------------------------+
                                |
-                               | 3. Execute Tool Task
+                               | 3. Execute Tool / Skill
                                v
                     +------------------------+
                     | Specialized Workforce  |
                     +------------------------+
                                |
-                               | 5. after_tool_call
+                               | 5. Output Review
                                v
                     +------------------------+
                     | Egress DLP Firewall    |
@@ -66,18 +73,40 @@ Your local runtime executes agents, tools, and workflows. The AgenticDome centra
 
 | Persona / Component | Responsibilities | Financial Model |
 | :--- | :--- | :--- |
-| **Enterprise / Organization** | Hosts the local CrewAI or Python runtime. Uses the AgenticDome console to create policies, obtain a Tenant ID, generate API keys, and monitor security events. | **Paid Subscriber**, SaaS license or API volume |
-| **Agent / Tool Developer** | Builds tools, skills, agents, and workflow components. Can use the SDK and middleware to support secure tool calls and delegation metadata. | **Free Ecosystem Partner**, no subscription required |
-| **This Python SDK** | Runs inside the local Python process. It intercepts CrewAI lifecycle hooks, calls the AgenticDome central plane, manages tokens, and enforces policy results. | **Runtime Security Utility** |
-| **AgenticDome Cloud Plane** | Provides centralized policy evaluation, threat analytics, incident tracking, tenant isolation, and governance workflows. | **Cloud Governance Plane** |
+| **Enterprise / Organization** | Hosts the local CrewAI, PydanticAI, or Python runtime. Uses the AgenticDome console to create policies, obtain a Tenant ID, generate API keys, and monitor security events. | **Paid Subscriber**, SaaS license or API volume |
+| **Agent / Tool Developer** | Builds tools, skills, agents, and workflow components. Uses the SDK to support secure tool calls, delegation metadata, and DLP-aware outputs. | **Free Ecosystem Partner**, no subscription required |
+| **This Python SDK** | Runs inside the local Python process. It intercepts framework lifecycle hooks, calls the AgenticDome central plane, manages tokens, and enforces policy results. | **Runtime Security Utility** |
+| **AgenticDome Cloud Plane** | Provides centralized policy evaluation, threat analytics, incident tracking, tenant isolation, governance workflows, and delegation verification. | **Cloud Governance Plane** |
 
 ---
 
 ## Key Capabilities
 
+### Prompt Ingress Guardrails
+
+Screens inbound prompts before agent execution to detect:
+
+- Prompt injection
+- Jailbreak attempts
+- System prompt extraction
+- Malicious instruction override
+- Policy bypass attempts
+
+### Tool and Skill Authorization
+
+Authorizes tool calls before execution using:
+
+- Agent identity
+- Tool name
+- Tool arguments
+- Session context
+- Source agent metadata
+- Policy context
+- Delegation chain
+
 ### Manager-to-Specialist Cryptographic Handoffs
 
-AgenticDome transparently intercepts multi-agent delegation workflows and issues decision tokens that bind:
+AgenticDome can transparently authorize multi-agent delegation workflows and issue decision tokens that bind:
 
 - Source manager agent
 - Target specialist agent
@@ -87,7 +116,7 @@ AgenticDome transparently intercepts multi-agent delegation workflows and issues
 - Tenant context
 - Policy decision
 
-This prevents unauthorized lateral privilege escalation between agents.
+This helps prevent unauthorized lateral privilege escalation between agents.
 
 ### Inline Output Data Loss Prevention, DLP
 
@@ -115,7 +144,7 @@ Production deployments should normally use fail-closed mode.
 
 ### Local or Distributed Token Storage
 
-Token storage can run in:
+Delegation token storage can run in:
 
 - Local in-memory mode for single-process runtimes
 - Redis-backed mode for distributed multi-worker deployments
@@ -148,6 +177,12 @@ Install with CrewAI support:
 pip install "agenticdome-python-sdk[crewai]"
 ```
 
+Install with PydanticAI support:
+
+```bash
+pip install "agenticdome-python-sdk[pydanticai]"
+```
+
 Install with Redis support for distributed token storage:
 
 ```bash
@@ -178,6 +213,7 @@ export AGENTICDOME_TENANT_ID="your_tenant_id_xyz789..."
 
 ```bash
 # Runtime platform label used in policy context.
+# Recommended values: crewai, pydanticai, python
 export AGENTICDOME_PLATFORM="crewai"
 
 # If true, execution is blocked when AgenticDome checks fail.
@@ -195,6 +231,9 @@ export AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT="false"
 # Require delegated specialist executions to include a valid decision token.
 export AGENTICDOME_REQUIRE_TOKEN="true"
 
+# Require explicit session IDs instead of fallback local IDs.
+export AGENTICDOME_REQUIRE_SESSION_ID="false"
+
 # Default tool platform when a framework does not provide one.
 export AGENTICDOME_DEFAULT_TOOL_PLATFORM="unknown"
 
@@ -205,7 +244,7 @@ export AGENTICDOME_HANDOFF_TOKEN_TTL_S="900"
 export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
 
 # Optional Redis key prefix.
-export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:crewai:handoff"
+export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:runtime:handoff"
 
 # Report blocked actions and middleware failures as incidents.
 export AGENTICDOME_REPORT_INCIDENTS="true"
@@ -223,27 +262,44 @@ export AGENTICDOME_BLOCKED_INCIDENT_SEVERITY="medium"
 | `AGENTICDOME_API_BASE` | string | `https://au.agenticdome.io` | AgenticDome regional API and console endpoint. |
 | `AGENTICDOME_API_KEY` | string | required | API key generated in the AgenticDome console. |
 | `AGENTICDOME_TENANT_ID` | string | required | Tenant or organization isolation namespace. |
-| `AGENTICDOME_PLATFORM` | string | `crewai` | Runtime platform label included in policy context. |
+| `AGENTICDOME_PLATFORM` | string | framework-specific | Runtime platform label included in policy context. |
 | `AGENTICDOME_TIMEOUT_S` | integer | `20` | HTTP timeout in seconds for SDK calls. |
 | `AGENTICDOME_FAIL_CLOSED` | boolean | `true` | Blocks execution if security checks fail. |
 | `AGENTICDOME_REDACT_PII` | boolean | `true` | Enables PII redaction for output review. |
 | `AGENTICDOME_REDACT_SECRETS` | boolean | `true` | Enables secret and credential redaction. |
 | `AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT` | boolean | `false` | Blocks entire output when sensitive content is detected. |
 | `AGENTICDOME_REQUIRE_TOKEN` | boolean | `true` | Requires delegated specialist executions to include a token. |
-| `AGENTICDOME_DEFAULT_TOOL_PLATFORM` | string | `unknown` | Fallback platform for tools. |
+| `AGENTICDOME_REQUIRE_SESSION_ID` | boolean | framework-specific | Requires explicit session ID for strict audit mapping. |
+| `AGENTICDOME_DEFAULT_TOOL_PLATFORM` | string | `unknown` / `python` | Fallback platform for tools. |
 | `AGENTICDOME_HANDOFF_TOKEN_TTL_S` | integer | `900` | Delegation token TTL in seconds. |
 | `AGENTICDOME_REDIS_URL` | string | empty | Optional Redis connection URL for distributed token storage. |
-| `AGENTICDOME_REDIS_KEY_PREFIX` | string | `AgenticDome:crewai:handoff` | Redis key prefix. |
+| `AGENTICDOME_REDIS_KEY_PREFIX` | string | framework-specific | Redis key prefix. |
 | `AGENTICDOME_REPORT_INCIDENTS` | boolean | `true` | Reports blocked actions and middleware failures. |
 | `AGENTICDOME_BLOCKED_INCIDENT_SEVERITY` | string | `medium` | Default severity for incident reports. |
 
 ---
 
-## Quickstart: CrewAI Integration
+## CrewAI Integration
+
+AgenticDome provides native CrewAI lifecycle hook integration.
+
+Importing the CrewAI module once registers global hooks for:
+
+```text
+before_llm_call
+before_tool_call
+after_tool_call
+```
+
+### Install CrewAI Support
+
+```bash
+pip install "agenticdome-python-sdk[crewai]"
+```
+
+### CrewAI Quickstart
 
 To activate global security policies across CrewAI agents, import the CrewAI integration once at the application entry point, such as `main.py`, `app.py`, or your worker bootstrap file.
-
-Importing the module automatically registers CrewAI lifecycle hooks.
 
 ```python
 import os
@@ -282,58 +338,190 @@ result = crew.kickoff()
 print(result)
 ```
 
-The AgenticDome middleware automatically hooks into:
+### CrewAI Security Flow
 
-```text
-before_llm_call
-before_tool_call
-after_tool_call
+#### 1. Prompt Ingress Screening
+
+Before the LLM is called, AgenticDome screens prompts for hostile or policy-violating input.
+
+#### 2. Tool Authorization
+
+Before a tool is executed, AgenticDome validates tool name, tool arguments, session context, agent identity, and policy metadata.
+
+#### 3. Manager Delegation Authorization
+
+When a manager agent delegates work to a specialist, AgenticDome authorizes the handoff and can return a cryptographic decision token.
+
+#### 4. Specialist Token Verification
+
+When the specialist executes the delegated tool, the token is verified against the AgenticDome central plane.
+
+#### 5. Output DLP
+
+After tool execution, AgenticDome reviews output content for sensitive data and can redact or block it before it leaves the runtime boundary.
+
+### CrewAI Import Reference
+
+```python
+import agenticdome_sdk.crewai
+```
+
+Optional exported CrewAI objects:
+
+```python
+from agenticdome_sdk.crewai import (
+    CONFIG,
+    CLIENT,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+    AgenticDome_before_tool_call,
+    AgenticDome_after_tool_call,
+    AgenticDome_before_llm_call,
+)
 ```
 
 ---
 
-## CrewAI Security Flow
+## PydanticAI Integration
 
-### 1. Prompt Ingress Screening
+AgenticDome also provides a native PydanticAI firewall integration.
 
-Before the LLM is called, AgenticDome screens prompts for:
+The PydanticAI integration supports:
 
-- Jailbreak attempts
-- Prompt injection
-- System prompt extraction
-- Malicious instruction override
-- Policy bypass attempts
+- Prompt ingress checks where lifecycle hooks are available
+- Tool perimeter authorization through `@firewall.secure_tool`
+- Delegation-token generation for handoff tools
+- Specialist decision-token verification
+- Egress output DLP
+- Redis-backed multi-worker handoff-token storage
 
-### 2. Tool Authorization
+### Install PydanticAI Support
 
-Before a tool is executed, AgenticDome checks:
+```bash
+pip install "agenticdome-python-sdk[pydanticai]"
+```
 
-- Agent identity
-- Tool name
-- Tool arguments
-- Session context
-- Policy context
-- Delegation chain
+### PydanticAI Component Topology
 
-### 3. Manager Delegation Authorization
+```text
+[ PYDANTICAI AGENT RUNTIME PERIMETER ]            [ AGENTICDOME CONTROL PLANE ]
 
-When a manager agent delegates work to a specialist, AgenticDome authorizes the handoff and returns a cryptographic decision token.
++-------------------------------------------------+          +-----------------------------+
+| Agent.run() Execution Loop                      |          | https://au.agenticdome.io   |
++-------------------------------------------------+          +-----------------------------+
+     |                         |              ^                            ^
+     | 1. before_runner_init   | 4. after     | Verdict / DLP                |
+     v                         |    run end   | Enforcement                  |
++-------------------------+    |              v                            |
+| Ingress Prompt Shield   |    |   +-----------------------+               |
++-------------------------+    |   | Egress DLP Firewall   |               |
+                               |   +-----------------------+               |
+                               |              ^                            |
+                               | 2. Secure    | 3. Tool Output             |
+                               |    Tool      |                            |
+                               v              |                            |
+                    +------------------------------------+                 |
+                    | @secure_tool Interceptor           |-----------------+
+                    | Token Verification / Tool Policy   |
+                    +------------------------------------+
+```
 
-The middleware attaches this token to the downstream execution parameters.
+### PydanticAI Quickstart
 
-### 4. Specialist Token Verification
+```python
+import os
+from typing import Any
 
-When the specialist executes the delegated tool, the token is verified against the AgenticDome central plane.
+from pydantic_ai import Agent, RunContext
 
-This prevents unauthorized lateral movement between agents.
+from agenticdome_sdk.pydantic import CyberSecFirewall, FirewallConfig
 
-### 5. Output DLP
 
-After tool execution, AgenticDome reviews output content for sensitive data and can redact or block it before it leaves the runtime boundary.
+# 1. Instantiate the enterprise firewall capability.
+firewall = CyberSecFirewall(
+    config=FirewallConfig(
+        api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io"),
+        api_key=os.getenv("AGENTICDOME_API_KEY", ""),
+        tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
+        fail_closed=True,
+        block_on_sensitive_output=True,
+    )
+)
+
+
+# 2. Define your PydanticAI Agent.
+customer_support_agent = Agent(
+    "gemini-2.5-flash",
+    name="customer_support_agent",
+    result_type=str,
+    system_prompt="You are a helpful customer platform support assistant.",
+)
+
+
+# 3. Attach ingress/egress lifecycle protections where supported by the runtime.
+firewall.attach_to_agent(customer_support_agent)
+
+
+# 4. Protect capability tools using the perimeter decorator.
+@customer_support_agent.tool
+@firewall.secure_tool
+async def fetch_user_profile(ctx: RunContext[Any], user_id: str) -> dict:
+    """Retrieves account management metadata profiles for a corporate ID."""
+    return {
+        "user_id": user_id,
+        "status": "active",
+        "passport_number": "A-1234567",
+    }
+```
+
+### PydanticAI Manual Firewall Usage
+
+You can also use the firewall object directly in custom routers, test harnesses, or execution gateways.
+
+```python
+import os
+
+from agenticdome_sdk.pydantic import CyberSecFirewall, FirewallConfig
+
+
+firewall = CyberSecFirewall(
+    FirewallConfig(
+        api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io"),
+        api_key=os.getenv("AGENTICDOME_API_KEY", ""),
+        tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
+        fail_closed=True,
+    )
+)
+```
+
+### PydanticAI Import Reference
+
+```python
+from agenticdome_sdk.pydantic import (
+    CyberSecFirewall,
+    FirewallConfig,
+    PydanticAIFirewallError,
+    PydanticAIFirewallDenied,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+)
+```
+
+### PydanticAI Notes
+
+PydanticAI lifecycle hook APIs may vary between framework versions. The firewall handles this safely:
+
+- If compatible lifecycle decorators are available, `attach_to_agent()` attaches prompt ingress and egress DLP hooks.
+- If lifecycle decorators are not available, `@firewall.secure_tool` still protects tool execution.
+- Tool authorization and DLP remain available through the secure tool decorator.
 
 ---
 
-## Python SDK Core Client Usage
+## Core Python SDK Client Usage
 
 If you need to call AgenticDome APIs manually, use the core SDK client.
 
@@ -352,7 +540,7 @@ client.report_incident(
     incident_type="unauthorized_escalation_attempt",
     severity="high",
     details="Agent attempted parameter mutation inside a prohibited database connector.",
-    platform="crewai",
+    platform="python",
 )
 ```
 
@@ -375,7 +563,7 @@ result = client.guardrail_validate(
     agent_id="support-agent-01",
     direction="input",
     session_id="sess_prod_01J4X",
-    platform="crewai",
+    platform="python",
     policy_context={
         "request_purpose": "customer_support",
     },
@@ -399,12 +587,12 @@ client = AgentGuardClient(
 )
 
 result = client.guardrail_validate(
-    text="CrewAI agent wants to update a customer refund record.",
+    text="Agent wants to update a customer refund record.",
     agent_id="refund-agent-01",
     direction="outbound",
     session_id="sess_prod_01J4X",
-    platform="crewai",
-    source_platform="crewai",
+    platform="python",
+    source_platform="python",
     tool_platform="payments",
     tool_name="payments.refund.create",
     tool_args={
@@ -438,8 +626,8 @@ authorization = client.a2a_authorize_tool(
     text="Manager delegates payment refund to specialist agent.",
     agent_id="payments-specialist-01",
     source_agent_id="operations-manager-01",
-    platform="crewai",
-    source_platform="crewai",
+    platform="python",
+    source_platform="python",
     tool_platform="payments",
     tool_name="payments.refund.create",
     tool_args={
@@ -481,7 +669,7 @@ verification = client.a2a_verify_decision_token_rpc(
     },
     agent_id="payments-specialist-01",
     source_agent_id="operations-manager-01",
-    platform="crewai",
+    platform="python",
     require_allowed=True,
 )
 
@@ -506,13 +694,13 @@ result = client.mesh_validate(
     agent_id="support-agent-01",
     session_id="sess_prod_01J4X",
     direction="output",
-    platform="crewai",
+    platform="python",
     text="Customer email is alice@example.com and API key is sk_live_example...",
     redact_pii=True,
     redact_secrets=True,
     block_on_sensitive_output=False,
     policy_context={
-        "request_purpose": "crewai_output_review",
+        "request_purpose": "output_review",
     },
 )
 
@@ -523,7 +711,7 @@ print(result)
 
 ## Redis Token Store for Production Clusters
 
-For horizontally scaled CrewAI deployments, use Redis so manager handoff tokens are shared across workers.
+For horizontally scaled deployments, use Redis so manager handoff tokens are shared across workers.
 
 Install Redis support:
 
@@ -535,7 +723,7 @@ Configure:
 
 ```bash
 export AGENTICDOME_REDIS_URL="redis://redis.example.internal:6379/0"
-export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:crewai:handoff"
+export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:runtime:handoff"
 ```
 
 In-memory token storage is suitable for local development and single-process workers. Redis is recommended for multi-worker or containerized production deployments.
@@ -546,6 +734,9 @@ In-memory token storage is suitable for local development and single-process wor
 
 ```bash
 export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+export AGENTICDOME_API_KEY="your_api_key"
+export AGENTICDOME_TENANT_ID="your_tenant_id"
+
 export AGENTICDOME_FAIL_CLOSED="true"
 export AGENTICDOME_REDACT_PII="true"
 export AGENTICDOME_REDACT_SECRETS="true"
@@ -584,20 +775,10 @@ CrewAI middleware registration:
 import agenticdome_sdk.crewai
 ```
 
-Optional exported CrewAI objects:
+PydanticAI firewall:
 
 ```python
-from agenticdome_sdk.crewai import (
-    CONFIG,
-    CLIENT,
-    DecisionTokenRecord,
-    DecisionTokenStore,
-    InMemoryDecisionTokenStore,
-    RedisDecisionTokenStore,
-    AgenticDome_before_tool_call,
-    AgenticDome_after_tool_call,
-    AgenticDome_before_llm_call,
-)
+from agenticdome_sdk.pydantic import CyberSecFirewall, FirewallConfig
 ```
 
 ---
@@ -612,10 +793,11 @@ source .venv/bin/activate
 
 python -m pip install --upgrade pip setuptools wheel build twine pytest
 python -m pip install -e ".[dev]"
+python -m pip install -e ".[crewai,pydanticai,redis]"
 
 pytest -q
 
-rm -rf build dist *.egg-info agenticdome_sdk.egg-info
+rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
 python -m build
 python -m twine check dist/*
 ```
@@ -630,4 +812,5 @@ For enterprise deployments, advanced governance workflows, dedicated regional co
 
 ```text
 https://au.agenticdome.io
+```
 ```
