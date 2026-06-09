@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.0.1"
+version = "1.0.2"
 description = "Official Python SDK for AgentGuard Intelligence Engine and Action Firewall."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -64,7 +64,7 @@ Issues = "https://github.com/agenticdome/agenticdome-python-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agentguard_sdk*"]
+include = ["agenticdome_sdk*"]
 exclude = ["tests*", "examples*"]
 
 [tool.ruff]

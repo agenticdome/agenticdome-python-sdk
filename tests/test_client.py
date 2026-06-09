@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agentguard_sdk.client import (
+from agenticdome_sdk.client import (
     AgentGuardClient,
     AgentGuardHTTPError,
 )
@@ -44,7 +44,7 @@ def client():
     )
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_guardrail_validate_success(mock_request, client):
     mock_request.return_value = make_response(
         200,
@@ -77,7 +77,7 @@ def test_guardrail_validate_success(mock_request, client):
     assert payload["platform"] == "microsoft"
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_guardrail_validate_blocks_invalid_tool_pairing(mock_request, client):
     with pytest.raises(ValueError, match="'tool_args' is required"):
         client.guardrail_validate(
@@ -93,7 +93,7 @@ def test_guardrail_validate_blocks_invalid_tool_pairing(mock_request, client):
     mock_request.assert_not_called()
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_a2a_authorize_tool(mock_request, client):
     mock_request.return_value = make_response(
         200,
@@ -142,7 +142,7 @@ def test_a2a_authorize_tool(mock_request, client):
     assert arguments["tool_name"] == "salesforce.billing.refund.issue"
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_a2a_verify_decision_token_rpc(mock_request, client):
     mock_request.return_value = make_response(
         200,
@@ -176,7 +176,7 @@ def test_a2a_verify_decision_token_rpc(mock_request, client):
     assert payload["params"]["arguments"]["token"] == "decision-token-123"
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_mcp_guardrail_validate(mock_request, client):
     mock_request.return_value = make_response(
         200,
@@ -221,7 +221,7 @@ def test_mcp_guardrail_validate(mock_request, client):
     assert arguments["tool_name"] == "mcp.execute_remote_patch"
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_mesh_validate(mock_request, client):
     mock_request.return_value = make_response(
         200,
@@ -258,7 +258,7 @@ def test_mesh_validate(mock_request, client):
     assert payload["policy_context"]["platform"] == "openclaw"
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_http_error_raises_agentguard_http_error(mock_request, client):
     mock_request.return_value = make_response(
         403,
@@ -280,7 +280,7 @@ def test_http_error_raises_agentguard_http_error(mock_request, client):
     assert "Forbidden by policy" in str(exc_info.value)
 
 
-@patch("agentguard_sdk.client.requests.Session.request")
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_empty_json_response_returns_empty_dict(mock_request, client):
     mock_request.return_value = make_response(
         204,

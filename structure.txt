@@ -1,4 +1,4 @@
-agentguard_sdk/
+agenticdome_sdk/
 ├── __init__.py
 ├── client.py
 ├── scenarios.py

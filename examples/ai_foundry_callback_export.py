@@ -1,5 +1,5 @@
-from agentguard_sdk import AgentGuardClient
-from agentguard_sdk.scenarios import ScenarioLibrary
+from agenticdome_sdk import AgentGuardClient
+from agenticdome_sdk.scenarios import ScenarioLibrary
 
 
 client = AgentGuardClient(

@@ -49,7 +49,7 @@ class AgentGuardClient:
         tenant_id: Optional[Union[str, int]] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 20,
-        user_agent: str = "agentguard-sdk/0.4.0",
+        user_agent: str = "agenticdome-python-sdk/0.4.0",
         max_retries: int = 3,
     ):
         self.api_base = api_base.rstrip("/")
