@@ -8,7 +8,7 @@ README = ROOT / "README.md"
 
 setup(
     name="agenticdome-python-sdk",
-    version="1.0.5",
+    version="1.0.6",
     description="Python SDK for AgenticDome AI security, guardrails, A2A, MCP, CrewAI, and enterprise agent governance APIs.",
     long_description=README.read_text(encoding="utf-8") if README.exists() else "",
     long_description_content_type="text/markdown",
@@ -33,19 +33,66 @@ setup(
         "redis": [
             "redis>=4.5.0",
         ],
-         "pydanticai": [
-        "pydantic-ai",
-        "anyio>=4.0.0",
+        "pydanticai": [
+            "pydantic-ai",
+            "anyio>=4.0.0",
         ],
         "pydantic": [
-        "pydantic-ai",
-        "anyio>=4.0.0",
+            "pydantic-ai",
+            "anyio>=4.0.0",
+        ],
+        "langgraph": [
+            "langgraph",
+            "langchain-core",
+            "anyio>=4.0.0",
+        ],
+        "microsoft": [],
+        "foundry": [
+            "azure-ai-projects",
+            "azure-identity",
+        ],
+        "agno": [
+            "agno",
+        ],
+        "openai-agents": [
+            "openai-agents",
+        ],
+        "mcp": [
+            "mcp",
+        ],
+        "bedrock": [
+            "boto3",
+        ],
+        "aws-bedrock": [
+            "boto3",
+        ],
+        "llamaindex": [
+            "llama-index",
+        ],
+        "llama-index": [
+            "llama-index",
+        ],
+        "google-adk": [
+            "google-adk",
+        ],
+        "adk": [
+            "google-adk",
         ],
         "all": [
             "crewai",
             "redis>=4.5.0",
             "pydantic-ai",
             "anyio>=4.0.0",
+            "langgraph",
+            "langchain-core",
+            "agno",
+            "azure-ai-projects",
+            "azure-identity",
+            "openai-agents",
+            "mcp",
+            "boto3",
+            "llama-index",
+            "google-adk",
         ],
         "dev": [
             "build",

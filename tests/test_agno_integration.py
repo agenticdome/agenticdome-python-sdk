@@ -1,0 +1,208 @@
+import pytest
+
+from agenticdome_sdk.agno import (
+    AgenticDomeAgnoDenied,
+    AgenticDomeAgnoFirewall,
+    DecisionTokenRecord,
+    FirewallConfig,
+    InMemoryDecisionTokenStore,
+)
+
+
+class FakePolicyClient:
+    def __init__(self):
+        self.guardrail_verdict = "ALLOWED"
+        self.mesh_response = None
+        self.verify_valid = True
+        self.calls = []
+
+    def guardrail_validate(self, **kwargs):
+        self.calls.append(("guardrail_validate", kwargs))
+        return {"verdict": self.guardrail_verdict, "reason": "test policy"}
+
+    def mesh_validate(self, **kwargs):
+        self.calls.append(("mesh_validate", kwargs))
+        if self.mesh_response is not None:
+            return self.mesh_response
+        return {"verdict": "ALLOWED", "sanitized_text": kwargs["text"]}
+
+    def a2a_authorize_tool(self, **kwargs):
+        self.calls.append(("a2a_authorize_tool", kwargs))
+        return {"result": {"verdict": "ALLOWED", "decision_token": "token-ok", "reason": "ok"}}
+
+    def a2a_verify_decision_token_rpc(self, token, **kwargs):
+        self.calls.append(("a2a_verify_decision_token_rpc", {"token": token, **kwargs}))
+        return {"result": {"valid": self.verify_valid and token == "token-ok", "reason": "verified"}}
+
+    def report_incident(self, **kwargs):
+        self.calls.append(("report_incident", kwargs))
+        return {"ok": True}
+
+    def close(self):
+        return None
+
+
+class Agent:
+    def __init__(self):
+        self.id = "agent-a"
+        self.session_id = "session-a"
+
+
+class Output:
+    def __init__(self, content):
+        self.content = content
+
+
+def make_firewall(fail_closed=True):
+    client = FakePolicyClient()
+    fw = AgenticDomeAgnoFirewall(
+        config=FirewallConfig(
+            api_base="https://au.agenticdome.io",
+            api_key="test-key",
+            tenant_id="test-tenant",
+            fail_closed=fail_closed,
+            report_incidents=False,
+        ),
+        client=client,
+        token_store=InMemoryDecisionTokenStore("test-tenant"),
+    )
+    return fw, client
+
+
+def test_pre_hook_screens_prompt_input():
+    fw, client = make_firewall()
+
+    assert fw.pre_hook(Agent(), input="hello", session_id="s1") is True
+
+    assert client.calls[0][0] == "guardrail_validate"
+    assert client.calls[0][1]["direction"] == "input"
+    assert client.calls[0][1]["platform"] == "agno"
+
+
+def test_pre_hook_blocks_prompt_when_policy_blocks():
+    fw, client = make_firewall()
+    client.guardrail_verdict = "BLOCKED"
+
+    with pytest.raises(AgenticDomeAgnoDenied):
+        fw.pre_hook(Agent(), input="bad", session_id="s1")
+
+
+def test_pre_hook_authorizes_tool_call():
+    fw, client = make_firewall()
+
+    assert fw.pre_hook(
+        Agent(),
+        input="read crm",
+        session_id="s1",
+        tool_name="crm.customer.read",
+        tool_args={"customer_id": "cust_123"},
+        tool_platform="crm",
+    ) is True
+
+    assert client.calls[0][0] == "guardrail_validate"
+    assert client.calls[0][1]["direction"] == "outbound"
+    assert client.calls[0][1]["tool_name"] == "crm.customer.read"
+
+
+def test_manager_delegation_authorizes_and_stores_token():
+    fw, client = make_firewall()
+    agent = Agent()
+    agent.team = ["specialist"]
+
+    assert fw.pre_hook(
+        agent,
+        input="delegate refund",
+        session_id="s1",
+        tool_name="delegate_refund",
+        tool_args={
+            "target_agent_id": "payments_specialist",
+            "target_tool_name": "payments.refund.create",
+            "target_tool_args": {"amount": 250},
+        },
+        tool_platform="payments",
+    ) is True
+
+    assert client.calls[0][0] == "a2a_authorize_tool"
+    pending = fw.token_store.get(
+        session_id="s1",
+        target_agent_id="payments_specialist",
+        tool_name="payments.refund.create",
+        tool_args={"amount": 250},
+    )
+    assert pending is not None
+    assert pending.decision_token == "token-ok"
+
+
+def test_specialist_execution_verifies_stored_token():
+    fw, client = make_firewall()
+    fw.token_store.put(
+        session_id="s1",
+        target_agent_id="agent-a",
+        tool_name="payments.refund.create",
+        tool_args={"amount": 250},
+        record=DecisionTokenRecord("token-ok", "manager", 1.0),
+        ttl_s=900,
+    )
+
+    assert fw.pre_hook(
+        Agent(),
+        session_id="s1",
+        tool_name="payments.refund.create",
+        tool_args={"amount": 250},
+    ) is True
+
+    assert client.calls[0][0] == "a2a_verify_decision_token_rpc"
+    assert client.calls[1][0] == "guardrail_validate"
+
+
+def test_post_hook_sanitizes_output_object():
+    fw, client = make_firewall()
+    client.mesh_response = {"verdict": "REDACTED", "sanitized_text": "email [REDACTED]"}
+    output = Output("email alice@example.com")
+
+    result = fw.post_hook(output, Agent(), session_id="s1")
+
+    assert result is output
+    assert output.content == "email [REDACTED]"
+
+
+def test_post_hook_preserves_structured_output_when_unchanged():
+    fw, _ = make_firewall()
+    payload = {"ok": True}
+
+    result = fw.post_hook(payload, Agent(), session_id="s1")
+
+    assert result == payload
+
+
+def test_sanitize_retrieved_text_returns_redacted_text():
+    fw, client = make_firewall()
+    client.mesh_response = {"verdict": "REDACTED", "sanitized_text": "secret [REDACTED]"}
+
+    result = fw.sanitize_retrieved_text(text="secret 123", agent_id="agent-a", session_id="s1")
+
+    assert result == "secret [REDACTED]"
+
+
+def test_attach_firewall_is_idempotent_and_adds_hooks():
+    fw, _ = make_firewall()
+    agent = Agent()
+
+    fw.attach_firewall(agent)
+    fw.attach_firewall(agent)
+
+    assert len(agent.pre_hooks) == 1
+    assert len(agent.post_hooks) == 1
+    assert len(agent.tool_hooks) == 1
+
+
+def test_secure_tool_preserves_structured_result():
+    fw, _ = make_firewall()
+
+    @fw.secure_tool(tool_name="crm.lookup", tool_platform="crm")
+    def lookup(agent, customer_id):
+        return {"customer_id": customer_id}
+
+    result = lookup(Agent(), customer_id="cust_123", session_id="s1")
+
+    assert result == {"customer_id": "cust_123"}

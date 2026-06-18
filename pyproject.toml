@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.0.5"
+version = "1.0.6"
 description = "Official Python SDK for AgentGuard Intelligence Engine and Action Firewall."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -47,6 +47,73 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+crewai = [
+    "crewai"
+]
+redis = [
+    "redis>=4.5.0"
+]
+pydanticai = [
+    "pydantic-ai",
+    "anyio>=4.0.0"
+]
+pydantic = [
+    "pydantic-ai",
+    "anyio>=4.0.0"
+]
+langgraph = [
+    "langgraph",
+    "langchain-core",
+    "anyio>=4.0.0"
+]
+microsoft = []
+foundry = [
+    "azure-ai-projects",
+    "azure-identity"
+]
+agno = [
+    "agno"
+]
+openai-agents = [
+    "openai-agents"
+]
+mcp = [
+    "mcp"
+]
+bedrock = [
+    "boto3"
+]
+aws-bedrock = [
+    "boto3"
+]
+llamaindex = [
+    "llama-index"
+]
+llama-index = [
+    "llama-index"
+]
+google-adk = [
+    "google-adk"
+]
+adk = [
+    "google-adk"
+]
+all = [
+    "crewai",
+    "redis>=4.5.0",
+    "pydantic-ai",
+    "anyio>=4.0.0",
+    "langgraph",
+    "langchain-core",
+    "agno",
+    "azure-ai-projects",
+    "azure-identity",
+    "openai-agents",
+    "mcp",
+    "boto3",
+    "llama-index",
+    "google-adk"
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.5.0",
