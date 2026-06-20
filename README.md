@@ -1,3 +1,5 @@
+
+
 # AgenticDome Python SDK
 
 [![PyPI version](https://img.shields.io/pypi/v/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
@@ -186,7 +188,6 @@ If you are an Enterprise Administrator securing your OpenClaw stack or another P
 1. Create an account in the AgenticDome Management Console for the AU region.
 2. Log in and copy your unique workspace or organization tenant identifier from organization settings.
 3. Navigate to the access-control or API-key section and generate a production API key.
-4. Configure your local OpenClaw runtime, server, worker, or hosting container with the required environment variables before attaching any SDK framework integration.
 
 ---
 
@@ -3249,5 +3250,5 @@ or terms published by AgenticDome for this package.
 For enterprise deployments, advanced governance workflows, dedicated regional control planes, or priority integration support, visit:
 
 ```text
-https://au.agenticdome.io
+https://agenticdome.io
 ```

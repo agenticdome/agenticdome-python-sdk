@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: agenticdome-python-sdk
-Version: 1.1.0
+Version: 1.1.1
 Summary: Official Python SDK for AgentGuard Intelligence Engine and Action Firewall.
 Home-page: https://github.com/agenticdome/agenticdome-python-sdk-python
 Author: AgenticDome
@@ -87,6 +87,8 @@ Requires-Dist: twine>=5.0.0; extra == "dev"
 Dynamic: home-page
 Dynamic: license-file
 Dynamic: requires-python
+
+
 
 # AgenticDome Python SDK
 
@@ -276,7 +278,6 @@ If you are an Enterprise Administrator securing your OpenClaw stack or another P
 1. Create an account in the AgenticDome Management Console for the AU region.
 2. Log in and copy your unique workspace or organization tenant identifier from organization settings.
 3. Navigate to the access-control or API-key section and generate a production API key.
-4. Configure your local OpenClaw runtime, server, worker, or hosting container with the required environment variables before attaching any SDK framework integration.
 
 ---
 
@@ -3339,5 +3340,5 @@ or terms published by AgenticDome for this package.
 For enterprise deployments, advanced governance workflows, dedicated regional control planes, or priority integration support, visit:
 
 ```text
-https://au.agenticdome.io
+https://agenticdome.io
 ```
