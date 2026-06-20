@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import hmac
+import inspect
 import json
 import logging
 import os
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 from agenticdome_sdk.client import AgentGuardClient
 
@@ -80,6 +84,8 @@ class FirewallConfig:
     timeout_s: int = 20
     fail_closed: bool = True
     require_explicit_session_id: bool = False
+    production_mode: bool = False
+    require_stable_session_id_in_prod: bool = True
 
     redact_pii: bool = True
     redact_secrets: bool = True
@@ -94,6 +100,24 @@ class FirewallConfig:
 
     enable_copilot_threat_api: bool = False
     copilot_api_version: str = "2025-09-01"
+    enforce_copilot_threat_api: bool = False
+
+    max_input_chars: int = 50_000
+    max_output_chars: int = 100_000
+    max_tool_arg_chars: int = 20_000
+    rate_limit_per_minute: int = 0
+
+    retry_attempts: int = 2
+    retry_backoff_s: float = 0.25
+    circuit_breaker_failures: int = 5
+    circuit_breaker_reset_s: int = 60
+
+    audit_logging: bool = True
+    otel_enabled: bool = True
+
+    emergency_block_tools: str = ""
+    emergency_block_agents: str = ""
+    token_hmac_secret: str = ""
 
 
 def load_config() -> FirewallConfig:
@@ -109,6 +133,8 @@ def load_config() -> FirewallConfig:
         timeout_s=_env_int("AGENTICDOME_TIMEOUT_S", 20),
         fail_closed=_env_bool("AGENTICDOME_FAIL_CLOSED", True),
         require_explicit_session_id=_env_bool("AGENTICDOME_REQUIRE_SESSION_ID", False),
+        production_mode=_env_bool("AGENTICDOME_PRODUCTION_MODE", False),
+        require_stable_session_id_in_prod=_env_bool("AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD", True),
         redact_pii=_env_bool("AGENTICDOME_REDACT_PII", True),
         redact_secrets=_env_bool("AGENTICDOME_REDACT_SECRETS", True),
         block_on_sensitive_output=_env_bool("AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT", False),
@@ -125,6 +151,20 @@ def load_config() -> FirewallConfig:
         ),
         enable_copilot_threat_api=_env_bool("AGENTICDOME_ENABLE_COPILOT_THREAT_API", False),
         copilot_api_version=_env("AGENTICDOME_COPILOT_API_VERSION", "2025-09-01"),
+        enforce_copilot_threat_api=_env_bool("AGENTICDOME_ENFORCE_COPILOT_THREAT_API", False),
+        max_input_chars=_env_int("AGENTICDOME_MSAF_MAX_INPUT_CHARS", 50_000),
+        max_output_chars=_env_int("AGENTICDOME_MSAF_MAX_OUTPUT_CHARS", 100_000),
+        max_tool_arg_chars=_env_int("AGENTICDOME_MSAF_MAX_TOOL_ARG_CHARS", 20_000),
+        rate_limit_per_minute=_env_int("AGENTICDOME_MSAF_RATE_LIMIT_PER_MINUTE", 0),
+        retry_attempts=_env_int("AGENTICDOME_MSAF_RETRY_ATTEMPTS", 2),
+        retry_backoff_s=float(_env("AGENTICDOME_MSAF_RETRY_BACKOFF_S", "0.25") or "0.25"),
+        circuit_breaker_failures=_env_int("AGENTICDOME_MSAF_CIRCUIT_BREAKER_FAILURES", 5),
+        circuit_breaker_reset_s=_env_int("AGENTICDOME_MSAF_CIRCUIT_BREAKER_RESET_S", 60),
+        audit_logging=_env_bool("AGENTICDOME_MSAF_AUDIT_LOGGING", True),
+        otel_enabled=_env_bool("AGENTICDOME_MSAF_OTEL_ENABLED", True),
+        emergency_block_tools=_env("AGENTICDOME_MSAF_EMERGENCY_BLOCK_TOOLS", ""),
+        emergency_block_agents=_env("AGENTICDOME_MSAF_EMERGENCY_BLOCK_AGENTS", ""),
+        token_hmac_secret=_env("AGENTICDOME_TOKEN_HMAC_SECRET", ""),
     )
 
 
@@ -141,6 +181,7 @@ class DecisionTokenRecord:
     decision_token: str
     source_agent_id: str
     created_at: float
+    token_hmac: str = ""
 
 
 class DecisionTokenStore:
@@ -175,6 +216,29 @@ class DecisionTokenStore:
         tool_args: Dict[str, Any],
     ) -> None:
         raise NotImplementedError
+
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        record = self.get(
+            session_id=session_id,
+            target_agent_id=target_agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        if record is not None:
+            self.delete(
+                session_id=session_id,
+                target_agent_id=target_agent_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+            )
+        return record
 
 
 def _canonical_json(value: Any) -> str:
@@ -311,6 +375,7 @@ class RedisDecisionTokenStore(DecisionTokenStore):
             "decision_token": record.decision_token,
             "source_agent_id": record.source_agent_id,
             "created_at": record.created_at,
+            "token_hmac": record.token_hmac,
         }
         self._client.setex(key, ttl_s, _canonical_json(payload))
 
@@ -338,6 +403,7 @@ class RedisDecisionTokenStore(DecisionTokenStore):
                 decision_token=str(payload["decision_token"]),
                 source_agent_id=str(payload["source_agent_id"]),
                 created_at=float(payload["created_at"]),
+                token_hmac=str(payload.get("token_hmac", "")),
             )
         except Exception:
             try:
@@ -362,6 +428,43 @@ class RedisDecisionTokenStore(DecisionTokenStore):
         )
         self._client.delete(key)
 
+
+
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        key = self._key(
+            session_id=session_id,
+            target_agent_id=target_agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        raw = None
+        try:
+            raw = self._client.execute_command("GETDEL", key)
+        except Exception:
+            pipe = self._client.pipeline()
+            pipe.get(key)
+            pipe.delete(key)
+            values = pipe.execute()
+            raw = values[0] if values else None
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            return DecisionTokenRecord(
+                decision_token=str(payload["decision_token"]),
+                source_agent_id=str(payload["source_agent_id"]),
+                created_at=float(payload["created_at"]),
+                token_hmac=str(payload.get("token_hmac", "")),
+            )
+        except Exception:
+            return None
 
 def _build_token_store(config: FirewallConfig) -> DecisionTokenStore:
     if config.redis_url:
@@ -413,26 +516,65 @@ class AgenticDomeMicrosoftAgentFirewall:
             )
 
         self.token_store = _build_token_store(self.config)
+        self._rate_lock = Lock()
+        self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
+        self._circuit_lock = Lock()
+        self._circuit_failures = 0
+        self._circuit_open_until = 0.0
 
     async def _to_thread(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
+    def _circuit_allows_call(self) -> bool:
+        with self._circuit_lock:
+            return time.time() >= self._circuit_open_until
+
+    def _record_client_success(self) -> None:
+        with self._circuit_lock:
+            self._circuit_failures = 0
+            self._circuit_open_until = 0.0
+
+    def _record_client_failure(self) -> None:
+        with self._circuit_lock:
+            self._circuit_failures += 1
+            if (
+                self.config.circuit_breaker_failures > 0
+                and self._circuit_failures >= self.config.circuit_breaker_failures
+            ):
+                self._circuit_open_until = time.time() + max(1, self.config.circuit_breaker_reset_s)
+
     async def _client_call(self, method_names: Tuple[str, ...], *args: Any, **kwargs: Any) -> Any:
+        if not self._circuit_allows_call():
+            raise MicrosoftAgentFirewallDenied("AgenticDome circuit breaker is open for Microsoft Agent Framework firewall calls.")
+
         last_type_error: Optional[TypeError] = None
+        last_error: Optional[Exception] = None
+        attempts = max(1, self.config.retry_attempts)
 
         for method_name in method_names:
             method = getattr(self.client, method_name, None)
             if method is None:
                 continue
 
-            try:
-                return await self._to_thread(method, *args, **kwargs)
-            except TypeError as exc:
-                last_type_error = exc
-                continue
+            for attempt in range(attempts):
+                try:
+                    result = await self._to_thread(method, *args, **kwargs)
+                    self._record_client_success()
+                    return result
+                except TypeError as exc:
+                    last_type_error = exc
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    self._record_client_failure()
+                    if attempt + 1 >= attempts:
+                        break
+                    await asyncio.sleep(max(0.0, self.config.retry_backoff_s) * (2 ** attempt))
 
-        if last_type_error:
+        if last_type_error and last_error is None:
             raise last_type_error
+        if last_error:
+            raise last_error
 
         raise AttributeError(
             f"AgenticDome client does not implement any of: {', '.join(method_names)}"
@@ -479,6 +621,119 @@ class AgenticDomeMicrosoftAgentFirewall:
             and not str(key).startswith("_decision_")
         }
 
+    def _csv_set(self, value: str) -> set:
+        return {item.strip() for item in (value or "").split(",") if item.strip()}
+
+    def _token_hmac(self, token: str) -> str:
+        if not self.config.token_hmac_secret or not token:
+            return ""
+        digest = hmac.new(
+            self.config.token_hmac_secret.encode("utf-8"),
+            token.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+    def _verify_record_hmac(self, record: DecisionTokenRecord) -> bool:
+        if not self.config.token_hmac_secret:
+            return True
+        expected = self._token_hmac(record.decision_token)
+        return bool(record.token_hmac) and hmac.compare_digest(record.token_hmac, expected)
+
+    def _bounded_text(self, text: str, *, limit: int, label: str) -> str:
+        if limit > 0 and len(text) > limit:
+            return text[:limit] + f"\n[TRUNCATED BY AgenticDome {label}]"
+        return text
+
+    def _enforce_tool_arg_size(self, *, tool_name: str, tool_args: Dict[str, Any]) -> None:
+        if self.config.max_tool_arg_chars <= 0:
+            return
+        serialized = json.dumps(tool_args or {}, sort_keys=True, default=str)
+        if len(serialized) > self.config.max_tool_arg_chars:
+            raise MicrosoftAgentFirewallDenied(f"Microsoft Agent Framework tool arguments exceed max size for {tool_name}.")
+
+    def _rate_key(self, *, agent_id: str, session_id: str, purpose: str) -> str:
+        return f"{agent_id}:{session_id}:{purpose}"
+
+    def _check_rate_limit(self, *, agent_id: str, session_id: str, purpose: str) -> None:
+        limit = self.config.rate_limit_per_minute
+        if limit <= 0:
+            return
+        key = self._rate_key(agent_id=agent_id, session_id=session_id, purpose=purpose)
+        now = time.time()
+        cutoff = now - 60
+        with self._rate_lock:
+            events = self._rate_events[key]
+            while events and events[0] < cutoff:
+                events.popleft()
+            if len(events) >= limit:
+                raise MicrosoftAgentFirewallDenied(f"Microsoft Agent Framework rate limit exceeded for {purpose}.")
+            events.append(now)
+
+    def _emergency_policy_check(self, *, agent_id: str, tool_name: Optional[str] = None) -> None:
+        if agent_id in self._csv_set(self.config.emergency_block_agents):
+            raise MicrosoftAgentFirewallDenied(f"Emergency local policy blocked agent: {agent_id}")
+        if tool_name and tool_name in self._csv_set(self.config.emergency_block_tools):
+            raise MicrosoftAgentFirewallDenied(f"Emergency local policy blocked tool: {tool_name}")
+
+    def _audit(self, event: str, *, agent_id: str, session_id: str, details: Optional[Dict[str, Any]] = None) -> None:
+        if not self.config.audit_logging:
+            return
+        payload = {
+            "event": event,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "platform": self.config.platform,
+        }
+        if details:
+            payload.update(details)
+        logger.info("AgenticDome Microsoft Agent Framework audit: %s", json.dumps(payload, sort_keys=True, default=str))
+
+    def _otel_event(self, name: str, attributes: Dict[str, Any]) -> None:
+        if not self.config.otel_enabled:
+            return
+        try:
+            from opentelemetry import trace
+
+            span = trace.get_current_span()
+            if span and span.is_recording():
+                span.add_event(name, attributes={k: self._safe_str(v) for k, v in attributes.items()})
+        except Exception:
+            pass
+
+    def _identity_context(self, ctx: Any, policy_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        source = dict(policy_context or {})
+        identity = self._ctx_get(ctx, "identity", "entra_identity", "user", "principal", default=None)
+        for key in (
+            "tenant_id",
+            "entra_tenant_id",
+            "oid",
+            "object_id",
+            "appid",
+            "app_id",
+            "client_id",
+            "upn",
+            "username",
+            "email",
+            "roles",
+            "scp",
+            "azp",
+        ):
+            value = self._ctx_get(ctx, key, default=None)
+            if value is None and identity is not None:
+                value = self._ctx_get(identity, key, default=None)
+            if value is not None and key not in source:
+                source[key] = value
+        return source
+
+    def _sanitized_args(self, payload: Any) -> Optional[Dict[str, Any]]:
+        env = self._extract_result(payload)
+        for key in ("sanitized_tool_args", "sanitized_args", "tool_args"):
+            value = env.get(key)
+            if isinstance(value, dict):
+                return self._strip_internal_tool_args(value)
+        return None
+
     @staticmethod
     def _extract_result(payload: Any) -> Dict[str, Any]:
         if not isinstance(payload, dict):
@@ -512,9 +767,11 @@ class AgenticDomeMicrosoftAgentFirewall:
             if value:
                 return self._safe_str(value)
 
-        if self.config.require_explicit_session_id:
+        if self.config.require_explicit_session_id or (
+            self.config.production_mode and self.config.require_stable_session_id_in_prod
+        ):
             raise MicrosoftAgentFirewallDenied(
-                "Missing session_id/run_id/trace_id in Microsoft Agent Framework context."
+                "Missing stable session_id/run_id/trace_id in Microsoft Agent Framework context."
             )
 
         return f"msaf-{uuid.uuid4().hex}"
@@ -616,9 +873,19 @@ class AgenticDomeMicrosoftAgentFirewall:
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         try:
+            self._emergency_policy_check(agent_id=agent_id)
+            self._check_rate_limit(agent_id=agent_id, session_id=session_id, purpose="input")
+            bounded_text = self._bounded_text(text, limit=self.config.max_input_chars, label="MSAF INPUT")
+            if self.config.enforce_copilot_threat_api:
+                await self._enforce_copilot_threat(
+                    payload={"text": bounded_text, "agent_id": agent_id, "session_id": session_id, "stage": "input"},
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    stage="input",
+                )
             response = await self._client_call(
                 ("guardrail_validate", "guardrailValidate"),
-                text=text,
+                text=bounded_text,
                 agent_id=agent_id,
                 platform=self.config.platform,
                 source_platform=self.config.platform,
@@ -642,6 +909,8 @@ class AgenticDomeMicrosoftAgentFirewall:
                     f"AgenticDome blocked prompt: {self._reason(response)}"
                 )
 
+            self._audit("msaf_input_allowed", agent_id=agent_id, session_id=session_id)
+            self._otel_event("agenticdome.msaf.input_allowed", {"agent_id": agent_id, "session_id": session_id})
             return self._extract_result(response) or response
 
         except Exception as exc:
@@ -660,12 +929,24 @@ class AgenticDomeMicrosoftAgentFirewall:
         source_agent_id: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        effective_tool_platform = self._tool_platform(tool_platform, tool_args)
+        clean_tool_args = self._strip_internal_tool_args(tool_args)
+        effective_tool_platform = self._tool_platform(tool_platform, clean_tool_args)
 
         try:
+            self._emergency_policy_check(agent_id=agent_id, tool_name=tool_name)
+            self._check_rate_limit(agent_id=agent_id, session_id=session_id, purpose=f"tool:{tool_name}")
+            self._enforce_tool_arg_size(tool_name=tool_name, tool_args=clean_tool_args)
+            bounded_text = self._bounded_text(text or f"[Microsoft Agent Framework] Agent {agent_id} executing tool {tool_name}", limit=self.config.max_input_chars, label="MSAF TOOL AUTH")
+            if self.config.enforce_copilot_threat_api:
+                await self._enforce_copilot_threat(
+                    payload={"text": bounded_text, "agent_id": agent_id, "session_id": session_id, "tool_name": tool_name, "tool_args": clean_tool_args, "stage": "tool"},
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    stage="tool",
+                )
             response = await self._client_call(
                 ("guardrail_validate", "guardrailValidate"),
-                text=text or f"[Microsoft Agent Framework] Agent {agent_id} executing tool {tool_name}",
+                text=bounded_text,
                 agent_id=agent_id,
                 platform=self.config.platform,
                 source_platform=self.config.platform,
@@ -673,7 +954,7 @@ class AgenticDomeMicrosoftAgentFirewall:
                 session_id=session_id,
                 tool_platform=effective_tool_platform,
                 tool_name=tool_name,
-                tool_args=tool_args,
+                tool_args=clean_tool_args,
                 policy_context=self._policy_context(
                     session_id=session_id,
                     agent_id=agent_id,
@@ -697,7 +978,10 @@ class AgenticDomeMicrosoftAgentFirewall:
                     f"AgenticDome blocked tool: {self._reason(response)}"
                 )
 
-            return self._extract_result(response) or response
+            result = self._extract_result(response) or response
+            self._audit("msaf_tool_allowed", agent_id=agent_id, session_id=session_id, details={"tool_name": tool_name})
+            self._otel_event("agenticdome.msaf.tool_allowed", {"agent_id": agent_id, "session_id": session_id, "tool_name": tool_name})
+            return result
 
         except Exception as exc:
             await self._handle_error(exc, "authorize_direct_tool_call")
@@ -719,10 +1003,17 @@ class AgenticDomeMicrosoftAgentFirewall:
         effective_tool_platform = self._tool_platform(tool_platform, clean_tool_args)
 
         try:
+            self._emergency_policy_check(agent_id=manager_agent_id, tool_name=tool_name)
+            self._check_rate_limit(agent_id=manager_agent_id, session_id=session_id, purpose=f"handoff:{tool_name}")
+            self._enforce_tool_arg_size(tool_name=tool_name, tool_args=clean_tool_args)
+            bounded_text = self._bounded_text(
+                text or f"[Microsoft Agent Framework] Manager {manager_agent_id} delegates {tool_name} to {specialist_agent_id}",
+                limit=self.config.max_input_chars,
+                label="MSAF HANDOFF",
+            )
             response = await self._client_call(
                 ("a2a_authorize_tool", "a2aAuthorizeTool"),
-                text=text
-                or f"[Microsoft Agent Framework] Manager {manager_agent_id} delegates {tool_name} to {specialist_agent_id}",
+                text=bounded_text,
                 agent_id=specialist_agent_id,
                 platform=self.config.platform,
                 source_platform=self.config.platform,
@@ -771,10 +1062,12 @@ class AgenticDomeMicrosoftAgentFirewall:
                         decision_token=decision_token,
                         source_agent_id=manager_agent_id,
                         created_at=time.time(),
+                        token_hmac=self._token_hmac(decision_token),
                     ),
                     ttl_s=self.config.handoff_token_ttl_s,
                 )
 
+            self._audit("msaf_handoff_authorized", agent_id=manager_agent_id, session_id=session_id, details={"specialist_agent_id": specialist_agent_id, "tool_name": tool_name})
             return envelope
 
         except Exception as exc:
@@ -796,13 +1089,15 @@ class AgenticDomeMicrosoftAgentFirewall:
         source = source_agent_id
 
         if not token:
-            pending = self.token_store.get(
+            pending = self.token_store.consume(
                 session_id=session_id,
                 target_agent_id=specialist_agent_id,
                 tool_name=tool_name,
                 tool_args=clean_tool_args,
             )
             if pending:
+                if not self._verify_record_hmac(pending):
+                    raise MicrosoftAgentFirewallDenied("Stored AgenticDome decision token failed local HMAC verification.")
                 token = pending.decision_token
                 source = pending.source_agent_id
 
@@ -842,13 +1137,7 @@ class AgenticDomeMicrosoftAgentFirewall:
                     f"AgenticDome blocked delegated execution: {result.get('reason') or result}"
                 )
 
-            self.token_store.delete(
-                session_id=session_id,
-                target_agent_id=specialist_agent_id,
-                tool_name=tool_name,
-                tool_args=clean_tool_args,
-            )
-
+            self._audit("msaf_delegation_verified", agent_id=specialist_agent_id, session_id=session_id, details={"tool_name": tool_name, "source_agent_id": source})
             return result
 
         except Exception as exc:
@@ -864,9 +1153,11 @@ class AgenticDomeMicrosoftAgentFirewall:
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         try:
+            self._check_rate_limit(agent_id=agent_id, session_id=session_id, purpose="output")
+            bounded_text = self._bounded_text(text, limit=self.config.max_output_chars, label="MSAF OUTPUT")
             response = await self._client_call(
                 ("mesh_validate", "meshValidate"),
-                text=text,
+                text=bounded_text,
                 agent_id=agent_id,
                 direction="output",
                 session_id=session_id,
@@ -909,7 +1200,7 @@ class AgenticDomeMicrosoftAgentFirewall:
             if sanitized_text is not None:
                 return self._safe_str(sanitized_text)
 
-            return text
+            return bounded_text
 
         except Exception as exc:
             await self._handle_error(exc, "sanitize_text")
@@ -945,6 +1236,72 @@ class AgenticDomeMicrosoftAgentFirewall:
             api_version=self.config.copilot_api_version,
         )
 
+    async def _enforce_copilot_threat(
+        self,
+        *,
+        payload: Dict[str, Any],
+        agent_id: str,
+        session_id: str,
+        stage: str,
+    ) -> Dict[str, Any]:
+        if not self.config.enable_copilot_threat_api:
+            return {"enabled": False}
+        try:
+            response = await self.copilot_validate_optional(payload)
+            envelope = self._extract_result(response)
+            verdict = self._verdict(envelope)
+            blocked = verdict in {"BLOCKED", "DENY", "DENIED", "REJECTED"} or bool(envelope.get("blocked"))
+            if blocked:
+                reason = self._reason(envelope)
+                await self._report_incident_best_effort(
+                    agent_id=agent_id,
+                    incident_type=f"copilot_threat_blocked_{stage}",
+                    details=reason,
+                    severity="high",
+                )
+                raise MicrosoftAgentFirewallDenied(f"Copilot threat helper blocked {stage}: {reason}")
+            return envelope or response
+        except MicrosoftAgentFirewallDenied:
+            raise
+        except Exception as exc:
+            if self.config.enforce_copilot_threat_api:
+                raise MicrosoftAgentFirewallDenied(f"Copilot threat helper failed during {stage}: {exc}") from exc
+            logger.warning("Copilot threat helper failed open during %s: %s", stage, exc)
+            return {}
+
+    async def copilot_analyze_tool_execution_enforced(
+        self,
+        *,
+        payload: Dict[str, Any],
+        agent_id: str,
+        session_id: str,
+        tool_name: str,
+    ) -> Dict[str, Any]:
+        if not self.config.enable_copilot_threat_api:
+            return {"enabled": False}
+        try:
+            response = await self.copilot_analyze_tool_execution_optional(payload)
+            envelope = self._extract_result(response)
+            verdict = self._verdict(envelope)
+            blocked = verdict in {"BLOCKED", "DENY", "DENIED", "REJECTED"} or bool(envelope.get("blocked"))
+            if blocked:
+                reason = self._reason(envelope)
+                await self._report_incident_best_effort(
+                    agent_id=agent_id,
+                    incident_type="copilot_threat_blocked_tool_execution",
+                    details=f"tool={tool_name} reason={reason}",
+                    severity="high",
+                )
+                raise MicrosoftAgentFirewallDenied(f"Copilot threat helper blocked tool execution: {reason}")
+            return envelope or response
+        except MicrosoftAgentFirewallDenied:
+            raise
+        except Exception as exc:
+            if self.config.enforce_copilot_threat_api:
+                raise MicrosoftAgentFirewallDenied(f"Copilot threat helper failed during tool execution: {exc}") from exc
+            logger.warning("Copilot threat helper failed open during tool execution: %s", exc)
+            return {}
+
     # ------------------------------------------------------------------
     # Wrappers
     # ------------------------------------------------------------------
@@ -973,12 +1330,15 @@ class AgenticDomeMicrosoftAgentFirewall:
             policy_context=policy_context,
         )
 
-        if (
-            preserve_structured_output
-            and isinstance(raw_result, (dict, list, tuple))
-            and sanitized == result_text
-        ):
-            return raw_result
+        if preserve_structured_output and isinstance(raw_result, (dict, list, tuple)):
+            if sanitized == result_text:
+                return raw_result
+            try:
+                parsed = json.loads(sanitized)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except Exception:
+                pass
 
         return sanitized
 
@@ -1006,13 +1366,14 @@ class AgenticDomeMicrosoftAgentFirewall:
                 else f"[Microsoft Agent Framework] {agent_id} intends to execute {tool_name}"
             )
 
-            policy_context = (
+            policy_context = self._identity_context(
+                ctx,
                 policy_context_builder(ctx, clean_args)
                 if policy_context_builder
-                else {"sdk": "microsoft_agent_framework", "agent_name": agent_id}
+                else {"sdk": "microsoft_agent_framework", "agent_name": agent_id},
             )
 
-            await self.authorize_direct_tool_call(
+            decision = await self.authorize_direct_tool_call(
                 text=text,
                 agent_id=agent_id,
                 session_id=session_id,
@@ -1022,11 +1383,20 @@ class AgenticDomeMicrosoftAgentFirewall:
                 source_agent_id=source_agent_id,
                 policy_context=policy_context,
             )
+            execution_args = self._sanitized_args(decision) or clean_args
+
+            if self.config.enable_copilot_threat_api:
+                await self.copilot_analyze_tool_execution_enforced(
+                    payload={"tool_name": tool_name, "tool_args": execution_args, "agent_id": agent_id, "session_id": session_id},
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                )
 
             if asyncio.iscoroutinefunction(handler):
-                raw_result = await handler(ctx, clean_args, *a, **kw)
+                raw_result = await handler(ctx, execution_args, *a, **kw)
             else:
-                raw_result = await asyncio.to_thread(handler, ctx, clean_args, *a, **kw)
+                raw_result = await asyncio.to_thread(handler, ctx, execution_args, *a, **kw)
 
             if not sanitize_output:
                 return raw_result
@@ -1099,10 +1469,11 @@ class AgenticDomeMicrosoftAgentFirewall:
             if not sanitize_output:
                 return raw_result
 
-            policy_context = (
+            policy_context = self._identity_context(
+                ctx,
                 policy_context_builder(ctx, clean_args)
                 if policy_context_builder
-                else {"sdk": "microsoft_agent_framework", "agent_name": agent_id}
+                else {"sdk": "microsoft_agent_framework", "agent_name": agent_id},
             )
 
             return await self._sanitize_handler_result(
@@ -1170,6 +1541,8 @@ class AgenticDomeMicrosoftAgentFirewall:
         agent_id: str,
         policy_context: Optional[Dict[str, Any]] = None,
         output_extractor: Optional[Callable[[Any], str]] = None,
+        preserve_response_object: bool = False,
+        response_mutator: Optional[Callable[[Any, str], Any]] = None,
         **kwargs: Any,
     ) -> Any:
         await self.screen_input(
@@ -1179,23 +1552,23 @@ class AgenticDomeMicrosoftAgentFirewall:
             policy_context=policy_context,
         )
 
+        bounded_input = self._bounded_text(input_text, limit=self.config.max_input_chars, label="MSAF RUN")
         if asyncio.iscoroutinefunction(run_callable):
             result = await run_callable(
-                input_text=input_text,
+                input_text=bounded_input,
                 session_id=session_id,
                 **kwargs,
             )
         else:
             result = await asyncio.to_thread(
                 run_callable,
-                input_text=input_text,
+                input_text=bounded_input,
                 session_id=session_id,
                 **kwargs,
             )
 
         output_text = output_extractor(result) if output_extractor else self._safe_str(result)
-
-        return await self.sanitize_text(
+        sanitized = await self.sanitize_text(
             text=output_text,
             agent_id=agent_id,
             session_id=session_id,
@@ -1204,6 +1577,184 @@ class AgenticDomeMicrosoftAgentFirewall:
                 "request_purpose": "final_user_output",
             },
         )
+        if preserve_response_object:
+            if response_mutator:
+                return response_mutator(result, sanitized)
+            for attr in ("text", "content", "message", "output"):
+                if hasattr(result, attr):
+                    try:
+                        setattr(result, attr, sanitized)
+                        return result
+                    except Exception:
+                        pass
+        return sanitized
+
+    async def sanitize_streaming_response(
+        self,
+        *,
+        chunks: Any,
+        agent_id: str,
+        session_id: str,
+        policy_context: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[Any]:
+        if hasattr(chunks, "__aiter__"):
+            async for chunk in chunks:
+                yield await self._sanitize_stream_chunk(
+                    chunk=chunk,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    policy_context=policy_context,
+                )
+            return
+        if isinstance(chunks, Iterable) and not isinstance(chunks, (str, bytes, dict)):
+            for chunk in chunks:
+                yield await self._sanitize_stream_chunk(
+                    chunk=chunk,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    policy_context=policy_context,
+                )
+            return
+        yield await self._sanitize_stream_chunk(
+            chunk=chunks,
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_context=policy_context,
+        )
+
+    async def _sanitize_stream_chunk(
+        self,
+        *,
+        chunk: Any,
+        agent_id: str,
+        session_id: str,
+        policy_context: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if isinstance(chunk, str):
+            return await self.sanitize_text(text=chunk, agent_id=agent_id, session_id=session_id, policy_context=policy_context)
+        if isinstance(chunk, dict):
+            return await self._sanitize_handler_result(
+                raw_result=chunk,
+                agent_id=agent_id,
+                session_id=session_id,
+                policy_context=policy_context or {},
+                preserve_structured_output=True,
+            )
+        text = self._safe_str(chunk)
+        sanitized = await self.sanitize_text(text=text, agent_id=agent_id, session_id=session_id, policy_context=policy_context)
+        for attr in ("text", "content", "message", "output"):
+            if hasattr(chunk, attr):
+                try:
+                    setattr(chunk, attr, sanitized)
+                    return chunk
+                except Exception:
+                    pass
+        return sanitized
+
+    async def before_agent_run(self, ctx: Any, input_text: str, policy_context: Optional[Dict[str, Any]] = None) -> None:
+        agent_id = self._agent_id(ctx, default="microsoft_agent")
+        session_id = self._session_id(ctx)
+        await self.screen_input(
+            text=input_text,
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_context=self._identity_context(ctx, policy_context),
+        )
+
+    async def after_agent_run(self, ctx: Any, output: Any, policy_context: Optional[Dict[str, Any]] = None) -> Any:
+        agent_id = self._agent_id(ctx, default="microsoft_agent")
+        session_id = self._session_id(ctx)
+        text = self._safe_str(output)
+        return await self.sanitize_text(
+            text=text,
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_context=self._identity_context(ctx, policy_context),
+        )
+
+    async def before_tool_call(
+        self,
+        ctx: Any,
+        *,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_platform: Optional[str] = None,
+        policy_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        agent_id = self._agent_id(ctx, default="microsoft_agent")
+        session_id = self._session_id(ctx)
+        decision = await self.authorize_direct_tool_call(
+            text=f"[Microsoft Agent Framework] {agent_id} intends to execute {tool_name}",
+            agent_id=agent_id,
+            session_id=session_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_platform=tool_platform,
+            source_agent_id=self._source_agent_id(ctx),
+            policy_context=self._identity_context(ctx, policy_context),
+        )
+        return self._sanitized_args(decision) or self._strip_internal_tool_args(tool_args)
+
+    async def after_tool_call(
+        self,
+        ctx: Any,
+        *,
+        tool_name: str,
+        result: Any,
+        policy_context: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        agent_id = self._agent_id(ctx, default="microsoft_agent")
+        session_id = self._session_id(ctx)
+        return await self._sanitize_handler_result(
+            raw_result=result,
+            agent_id=agent_id,
+            session_id=session_id,
+            preserve_structured_output=True,
+            policy_context={**self._identity_context(ctx, policy_context), "tool_name": tool_name},
+        )
+
+    def create_middleware(self) -> Any:
+        firewall = self
+
+        class AgenticDomeMicrosoftAgentMiddleware:
+            async def before_agent_run(self, ctx: Any, input_text: str, **kwargs: Any) -> None:
+                await firewall.before_agent_run(ctx, input_text, policy_context=kwargs.get("policy_context"))
+
+            async def after_agent_run(self, ctx: Any, output: Any, **kwargs: Any) -> Any:
+                return await firewall.after_agent_run(ctx, output, policy_context=kwargs.get("policy_context"))
+
+            async def before_tool_call(self, ctx: Any, tool_name: str, tool_args: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+                return await firewall.before_tool_call(
+                    ctx,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_platform=kwargs.get("tool_platform"),
+                    policy_context=kwargs.get("policy_context"),
+                )
+
+            async def after_tool_call(self, ctx: Any, tool_name: str, result: Any, **kwargs: Any) -> Any:
+                return await firewall.after_tool_call(
+                    ctx,
+                    tool_name=tool_name,
+                    result=result,
+                    policy_context=kwargs.get("policy_context"),
+                )
+
+        return AgenticDomeMicrosoftAgentMiddleware()
+
+    def install_on_agent(self, agent: Any, *, attr_name: str = "agenticdome_middleware") -> Any:
+        middleware = self.create_middleware()
+        try:
+            existing = getattr(agent, attr_name, None)
+            if isinstance(existing, list):
+                existing.append(middleware)
+            elif existing is None:
+                setattr(agent, attr_name, [middleware])
+            else:
+                setattr(agent, attr_name, [existing, middleware])
+        except Exception:
+            setattr(agent, attr_name, [middleware])
+        return agent
 
     def close(self) -> None:
         try:

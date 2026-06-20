@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import inspect
 import json
 import logging
 import os
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast, Annotated
+from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Optional, Tuple, cast, Annotated
 
 import anyio
 from typing_extensions import TypedDict
@@ -61,6 +64,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = _env(name, "")
+    if value == "":
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -77,7 +90,9 @@ class FirewallConfig:
 
     timeout_s: int = 20
     fail_closed: bool = True
+    production_mode: bool = False
     require_explicit_session_id: bool = True
+    require_stable_session_id_in_prod: bool = True
 
     default_tool_platform: str = "unknown"
 
@@ -88,6 +103,26 @@ class FirewallConfig:
     handoff_token_ttl_s: int = 900
     redis_url: str = ""
     redis_key_prefix: str = "AgenticDome:langgraph:handoff"
+    token_hmac_secret: str = ""
+    require_server_issued_decision_tokens: bool = False
+    strict_delegated_execution: bool = True
+
+    max_input_chars: int = 50_000
+    max_output_chars: int = 100_000
+    max_tool_arg_chars: int = 20_000
+    streaming_buffer_chars: int = 4_000
+    rate_limit_per_minute: int = 0
+    retry_attempts: int = 2
+    retry_backoff_s: float = 0.25
+    circuit_breaker_failures: int = 5
+    circuit_breaker_reset_s: int = 60
+    audit_logging: bool = True
+    otel_enabled: bool = True
+    emergency_block_tools: str = ""
+    emergency_block_agents: str = ""
+    cloud_provider: str = ""
+    cloud_project_id: str = ""
+    identity_provider: str = ""
 
     report_incidents: bool = True
     blocked_incident_severity: str = "medium"
@@ -102,7 +137,9 @@ DEFAULT_CONFIG = FirewallConfig(
     final_agent_id=_env("AGENTICDOME_LANGGRAPH_FINAL_ID", "langgraph_final_node"),
     timeout_s=_env_int("AGENTICDOME_TIMEOUT_S", 20),
     fail_closed=_env_bool("AGENTICDOME_FAIL_CLOSED", True),
+    production_mode=_env_bool("AGENTICDOME_PRODUCTION_MODE", False),
     require_explicit_session_id=_env_bool("AGENTICDOME_REQUIRE_SESSION_ID", True),
+    require_stable_session_id_in_prod=_env_bool("AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD", True),
     default_tool_platform=_env("AGENTICDOME_DEFAULT_TOOL_PLATFORM", "unknown"),
     redact_pii=_env_bool("AGENTICDOME_REDACT_PII", True),
     redact_secrets=_env_bool("AGENTICDOME_REDACT_SECRETS", True),
@@ -110,6 +147,25 @@ DEFAULT_CONFIG = FirewallConfig(
     handoff_token_ttl_s=_env_int("AGENTICDOME_HANDOFF_TOKEN_TTL_S", 900),
     redis_url=_env("AGENTICDOME_REDIS_URL", "").strip(),
     redis_key_prefix=_env("AGENTICDOME_REDIS_KEY_PREFIX", "AgenticDome:langgraph:handoff"),
+    token_hmac_secret=_env("AGENTICDOME_TOKEN_HMAC_SECRET", ""),
+    require_server_issued_decision_tokens=_env_bool("AGENTICDOME_LANGGRAPH_REQUIRE_SERVER_TOKENS", False),
+    strict_delegated_execution=_env_bool("AGENTICDOME_LANGGRAPH_STRICT_DELEGATED_EXECUTION", True),
+    max_input_chars=_env_int("AGENTICDOME_LANGGRAPH_MAX_INPUT_CHARS", 50_000),
+    max_output_chars=_env_int("AGENTICDOME_LANGGRAPH_MAX_OUTPUT_CHARS", 100_000),
+    max_tool_arg_chars=_env_int("AGENTICDOME_LANGGRAPH_MAX_TOOL_ARG_CHARS", 20_000),
+    streaming_buffer_chars=_env_int("AGENTICDOME_LANGGRAPH_STREAMING_BUFFER_CHARS", 4_000),
+    rate_limit_per_minute=_env_int("AGENTICDOME_LANGGRAPH_RATE_LIMIT_PER_MINUTE", 0),
+    retry_attempts=_env_int("AGENTICDOME_LANGGRAPH_RETRY_ATTEMPTS", 2),
+    retry_backoff_s=_env_float("AGENTICDOME_LANGGRAPH_RETRY_BACKOFF_S", 0.25),
+    circuit_breaker_failures=_env_int("AGENTICDOME_LANGGRAPH_CIRCUIT_BREAKER_FAILURES", 5),
+    circuit_breaker_reset_s=_env_int("AGENTICDOME_LANGGRAPH_CIRCUIT_BREAKER_RESET_S", 60),
+    audit_logging=_env_bool("AGENTICDOME_LANGGRAPH_AUDIT_LOGGING", True),
+    otel_enabled=_env_bool("AGENTICDOME_LANGGRAPH_OTEL_ENABLED", True),
+    emergency_block_tools=_env("AGENTICDOME_LANGGRAPH_EMERGENCY_BLOCK_TOOLS", ""),
+    emergency_block_agents=_env("AGENTICDOME_LANGGRAPH_EMERGENCY_BLOCK_AGENTS", ""),
+    cloud_provider=_env("AGENTICDOME_CLOUD_PROVIDER", ""),
+    cloud_project_id=_env("AGENTICDOME_CLOUD_PROJECT_ID", ""),
+    identity_provider=_env("AGENTICDOME_IDENTITY_PROVIDER", ""),
     report_incidents=_env_bool("AGENTICDOME_REPORT_INCIDENTS", True),
     blocked_incident_severity=_env("AGENTICDOME_BLOCKED_INCIDENT_SEVERITY", "medium"),
 )
@@ -128,6 +184,11 @@ class AgentState(TypedDict, total=False):
     current_agent_id: str
     next_agent_id: str
     target_agent_id: str
+    user_id: str
+    subject_id: str
+    account_id: str
+    organization_id: str
+    tenant_context: str
 
     policy_context: Dict[str, Any]
     AgenticDome: Dict[str, Any]
@@ -158,6 +219,7 @@ class DecisionTokenRecord:
     decision_token: str
     source_agent_id: str
     created_at: float
+    token_hmac: str = ""
 
 
 class DecisionTokenStore:
@@ -192,6 +254,29 @@ class DecisionTokenStore:
         tool_args: Dict[str, Any],
     ) -> None:
         raise NotImplementedError
+
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        record = self.get(
+            session_id=session_id,
+            target_agent_id=target_agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        if record:
+            self.delete(
+                session_id=session_id,
+                target_agent_id=target_agent_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+            )
+        return record
 
 
 def _canonical_json(value: Any) -> str:
@@ -292,6 +377,25 @@ class InMemoryDecisionTokenStore(DecisionTokenStore):
         with self._lock:
             self._data.pop(key, None)
 
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        key = self._key(
+            session_id=session_id,
+            target_agent_id=target_agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        with self._lock:
+            self._cleanup()
+            entry = self._data.pop(key, None)
+            return entry[1] if entry else None
+
 
 class RedisDecisionTokenStore(DecisionTokenStore):
     def __init__(self, redis_url: str, key_prefix: str, tenant_id: str) -> None:
@@ -332,6 +436,7 @@ class RedisDecisionTokenStore(DecisionTokenStore):
             "decision_token": record.decision_token,
             "source_agent_id": record.source_agent_id,
             "created_at": record.created_at,
+            "token_hmac": record.token_hmac,
         }
         self._client.setex(key, ttl_s, _canonical_json(payload))
 
@@ -359,6 +464,7 @@ class RedisDecisionTokenStore(DecisionTokenStore):
                 decision_token=str(payload["decision_token"]),
                 source_agent_id=str(payload["source_agent_id"]),
                 created_at=float(payload["created_at"]),
+                token_hmac=str(payload.get("token_hmac") or ""),
             )
         except Exception:
             try:
@@ -382,6 +488,44 @@ class RedisDecisionTokenStore(DecisionTokenStore):
             tool_args=tool_args,
         )
         self._client.delete(key)
+
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        key = self._key(
+            session_id=session_id,
+            target_agent_id=target_agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        try:
+            raw = self._client.getdel(key)
+        except Exception:
+            raw = None
+            try:
+                pipe = self._client.pipeline()
+                pipe.get(key)
+                pipe.delete(key)
+                raw = pipe.execute()[0]
+            except Exception:
+                raw = None
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            return DecisionTokenRecord(
+                decision_token=str(payload["decision_token"]),
+                source_agent_id=str(payload["source_agent_id"]),
+                created_at=float(payload["created_at"]),
+                token_hmac=str(payload.get("token_hmac") or ""),
+            )
+        except Exception:
+            return None
 
 
 def _build_token_store(config: FirewallConfig) -> DecisionTokenStore:
@@ -543,7 +687,14 @@ def _strip_private_args(args: Dict[str, Any]) -> Dict[str, Any]:
         key: value
         for key, value in (args or {}).items()
         if not key.startswith("_AgenticDome_")
-        and key not in {"_decision_token", "_source_agent_id"}
+        and key not in {
+            "_decision_token",
+            "_source_agent_id",
+            "decision_token",
+            "source_agent_id",
+            "AgenticDome_decision_token",
+            "AgenticDome_source_agent_id",
+        }
     }
 
 
@@ -661,6 +812,76 @@ def _detect_delegation_tool_call(
     return is_delegation, target_agent_id, delegated_tool_name, delegated_tool_args
 
 
+def _csv_set(value: str) -> set:
+    return {item.strip().lower() for item in (value or "").split(",") if item.strip()}
+
+
+def _bounded_text(value: Any, limit: int, label: str) -> str:
+    text = _safe_str(value)
+    if limit > 0 and len(text) > limit:
+        raise AgenticDomeDenied(f"LangGraph {label} exceeds max size.")
+    return text
+
+
+def _serialized_size(value: Any) -> int:
+    return len(_canonical_json(value))
+
+
+def _parse_structured_like(original: Any, sanitized_text: str) -> Any:
+    if isinstance(original, str):
+        return sanitized_text
+    if isinstance(original, (dict, list, tuple)):
+        try:
+            parsed = json.loads(sanitized_text)
+        except Exception:
+            return sanitized_text
+        if isinstance(original, tuple) and isinstance(parsed, list):
+            return tuple(parsed)
+        return parsed
+    return sanitized_text
+
+
+def _extract_sanitized_tool_args(payload: Any) -> Optional[Dict[str, Any]]:
+    env = _extract_result(payload)
+    value = env.get("sanitized_tool_args") or env.get("sanitized_args") or env.get("sanitized_arguments")
+    if value is None and env.get("args_sanitized"):
+        value = env.get("tool_args")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _set_tool_call_args(call: Dict[str, Any], new_args: Dict[str, Any]) -> None:
+    if not isinstance(call, dict):
+        return
+    if "name" in call or "args" in call or "arguments" in call:
+        if "arguments" in call and "args" not in call:
+            call["arguments"] = _canonical_json(new_args) if isinstance(call.get("arguments"), str) else dict(new_args)
+        else:
+            call["args"] = dict(new_args)
+        return
+    fn = call.get("function")
+    if isinstance(fn, dict):
+        fn["arguments"] = _canonical_json(new_args)
+
+
+def _token_hmac(secret: str, *, token: str, source_agent_id: str, target_agent_id: str, tool_name: str, tool_args: Dict[str, Any]) -> str:
+    if not secret:
+        return ""
+    payload = _canonical_json({
+        "token": token,
+        "source_agent_id": source_agent_id,
+        "target_agent_id": target_agent_id,
+        "tool_name": tool_name,
+        "tool_args_hash": _hash_args(tool_args),
+    })
+    digest = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
 # ----------------------------------------------------------------------------
 # Main firewall
 # ----------------------------------------------------------------------------
@@ -693,6 +914,90 @@ class AgenticDomeLangGraphFirewall:
             timeout=config.timeout_s,
         )
         self.token_store = _build_token_store(config)
+        self._rate_lock = Lock()
+        self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
+        self._circuit_lock = Lock()
+        self._circuit_failures = 0
+        self._circuit_open_until = 0.0
+
+    def _audit(self, event: str, **fields: Any) -> None:
+        if not self.config.audit_logging:
+            return
+        safe_fields = {
+            key: value
+            for key, value in fields.items()
+            if key not in {"text", "prompt", "output", "tool_args", "decision_token"}
+        }
+        logger.info("AgenticDome LangGraph audit %s %s", event, _canonical_json(safe_fields))
+
+    def _otel_event(self, event: str, **attrs: Any) -> None:
+        if not self.config.otel_enabled:
+            return
+        try:
+            logger.debug("AgenticDome LangGraph otel_event=%s attrs=%s", event, _canonical_json(attrs))
+        except Exception:
+            pass
+
+    def _check_rate_limit(self, key: str) -> None:
+        limit = self.config.rate_limit_per_minute
+        if limit <= 0:
+            return
+        now = time.time()
+        cutoff = now - 60
+        with self._rate_lock:
+            events = self._rate_events[key]
+            while events and events[0] <= cutoff:
+                events.popleft()
+            if len(events) >= limit:
+                raise AgenticDomeDenied(f"LangGraph rate limit exceeded for {key}.")
+            events.append(now)
+
+    def _enforce_tool_arg_size(self, tool_name: str, tool_args: Dict[str, Any]) -> None:
+        limit = self.config.max_tool_arg_chars
+        if limit > 0 and _serialized_size(tool_args) > limit:
+            raise AgenticDomeDenied(f"LangGraph tool arguments exceed max size for {tool_name}.")
+
+    def _emergency_policy_check(self, *, agent_id: str, tool_name: str = "") -> None:
+        blocked_agents = _csv_set(self.config.emergency_block_agents)
+        blocked_tools = _csv_set(self.config.emergency_block_tools)
+        if agent_id.lower() in blocked_agents:
+            raise AgenticDomeDenied(f"LangGraph agent {agent_id} is blocked by local emergency policy.")
+        if tool_name and tool_name.lower() in blocked_tools:
+            raise AgenticDomeDenied(f"LangGraph tool {tool_name} is blocked by local emergency policy.")
+
+    def _record_client_success(self) -> None:
+        with self._circuit_lock:
+            self._circuit_failures = 0
+            self._circuit_open_until = 0.0
+
+    def _record_client_failure(self) -> None:
+        if self.config.circuit_breaker_failures <= 0:
+            return
+        with self._circuit_lock:
+            self._circuit_failures += 1
+            if self._circuit_failures >= self.config.circuit_breaker_failures:
+                self._circuit_open_until = time.time() + max(1, self.config.circuit_breaker_reset_s)
+
+    def _verify_record_hmac(
+        self,
+        record: DecisionTokenRecord,
+        *,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> None:
+        if not self.config.token_hmac_secret:
+            return
+        expected = _token_hmac(
+            self.config.token_hmac_secret,
+            token=record.decision_token,
+            source_agent_id=record.source_agent_id,
+            target_agent_id=target_agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        if not record.token_hmac or not hmac.compare_digest(record.token_hmac, expected):
+            raise AgenticDomeDenied("AgenticDome blocked delegated execution: invalid decision token binding.")
 
     async def _to_thread(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
@@ -703,19 +1008,39 @@ class AgenticDomeLangGraphFirewall:
         return await self._to_thread(fn, *args, **kwargs)
 
     async def _client_call(self, method_names: Tuple[str, ...], *args: Any, **kwargs: Any) -> Any:
+        with self._circuit_lock:
+            if self._circuit_open_until > time.time():
+                raise AgenticDomeError("AgenticDome LangGraph circuit breaker is open.")
+
         last_type_error: Optional[TypeError] = None
+        last_exc: Optional[Exception] = None
+        attempts = max(1, self.config.retry_attempts + 1)
 
-        for method_name in method_names:
-            method = getattr(self.client, method_name, None)
-            if method is None:
-                continue
+        for attempt in range(attempts):
+            for method_name in method_names:
+                method = getattr(self.client, method_name, None)
+                if method is None:
+                    continue
 
-            try:
-                return await self._to_thread(method, *args, **kwargs)
-            except TypeError as exc:
-                last_type_error = exc
-                continue
+                try:
+                    result = await self._to_thread(method, *args, **kwargs)
+                    self._record_client_success()
+                    return result
+                except TypeError as exc:
+                    last_type_error = exc
+                    continue
+                except Exception as exc:
+                    last_exc = exc
+                    break
 
+            if last_exc is None:
+                break
+            if attempt < attempts - 1 and self.config.retry_backoff_s > 0:
+                await anyio.sleep(self.config.retry_backoff_s * (2 ** attempt))
+
+        if last_exc is not None:
+            self._record_client_failure()
+            raise last_exc
         if last_type_error:
             raise last_type_error
 
@@ -739,7 +1064,9 @@ class AgenticDomeLangGraphFirewall:
         if explicit:
             return str(explicit)
 
-        if self.config.require_explicit_session_id:
+        if self.config.require_explicit_session_id or (
+            self.config.production_mode and self.config.require_stable_session_id_in_prod
+        ):
             raise AgenticDomeConfigurationError(
                 "Missing session_id in LangGraph state. "
                 "Set state['session_id'] to a stable correlation ID or disable strict session enforcement."
@@ -788,6 +1115,21 @@ class AgenticDomeLangGraphFirewall:
         ctx.setdefault("source_agent_id", agent_id)
         ctx.setdefault("request_purpose", default_request_purpose)
         ctx.setdefault("platform", self.config.platform)
+        ctx.setdefault("tenant_id", self.config.tenant_id)
+
+        identity_fields = {
+            "user_id": state.get("user_id"),
+            "subject_id": state.get("subject_id"),
+            "account_id": state.get("account_id"),
+            "organization_id": state.get("organization_id"),
+            "tenant_context": state.get("tenant_context"),
+            "cloud_provider": self.config.cloud_provider,
+            "cloud_project_id": self.config.cloud_project_id,
+            "identity_provider": self.config.identity_provider,
+        }
+        for key, value in identity_fields.items():
+            if value and key not in ctx:
+                ctx[key] = value
 
         if extra:
             ctx.update(extra)
@@ -856,6 +1198,10 @@ class AgenticDomeLangGraphFirewall:
         ns["reason"] = reason
         ns["blocked_by"] = "AgenticDome"
         ns["blocked_at"] = time.time()
+        ns["route"] = "security_block"
+        state["next_agent_id"] = "security_block"
+        self._audit("blocked", agent_id=agent_id, reason=reason, incident_type=incident_type, severity=severity)
+        self._otel_event("agenticdome.langgraph.blocked", agent_id=agent_id, incident_type=incident_type)
 
         await self._report_incident_best_effort(
             agent_id=agent_id,
@@ -918,8 +1264,18 @@ class AgenticDomeLangGraphFirewall:
             self._clear_delegation_state(state)
             return
 
-        arg_token = _safe_str(tool_args.get("_AgenticDome_decision_token") or tool_args.get("_decision_token"))
-        arg_source = _safe_str(tool_args.get("_AgenticDome_source_agent_id") or tool_args.get("_source_agent_id"))
+        arg_token = _safe_str(
+            tool_args.get("_AgenticDome_decision_token")
+            or tool_args.get("_decision_token")
+            or tool_args.get("decision_token")
+            or tool_args.get("AgenticDome_decision_token")
+        )
+        arg_source = _safe_str(
+            tool_args.get("_AgenticDome_source_agent_id")
+            or tool_args.get("_source_agent_id")
+            or tool_args.get("source_agent_id")
+            or tool_args.get("AgenticDome_source_agent_id")
+        )
 
         if arg_token and arg_source:
             valid, verification = await self._verify_token_rpc(
@@ -933,7 +1289,7 @@ class AgenticDomeLangGraphFirewall:
                 raise AgenticDomeDenied(f"AgenticDome blocked delegated execution: {_reason(verification)}")
             return
 
-        pending = self.token_store.get(
+        pending = self.token_store.consume(
             session_id=session_id,
             target_agent_id=agent_id,
             tool_name=tool_name,
@@ -941,6 +1297,12 @@ class AgenticDomeLangGraphFirewall:
         )
 
         if pending:
+            self._verify_record_hmac(
+                pending,
+                target_agent_id=agent_id,
+                tool_name=tool_name,
+                tool_args=clean_args,
+            )
             valid, verification = await self._verify_token_rpc(
                 token=pending.decision_token,
                 tool_name=tool_name,
@@ -950,13 +1312,23 @@ class AgenticDomeLangGraphFirewall:
             )
             if not valid:
                 raise AgenticDomeDenied(f"AgenticDome blocked delegated execution: {_reason(verification)}")
+            self._audit("delegated_execution_allowed", agent_id=agent_id, source_agent_id=pending.source_agent_id, tool_name=tool_name)
+            return
 
-            self.token_store.delete(
-                session_id=session_id,
-                target_agent_id=agent_id,
-                tool_name=tool_name,
-                tool_args=clean_args,
-            )
+        if self.config.strict_delegated_execution and (
+            ns.get("target_agent_id") == agent_id
+            or any(key in tool_args for key in (
+                "_AgenticDome_decision_token",
+                "_decision_token",
+                "decision_token",
+                "AgenticDome_decision_token",
+                "_AgenticDome_source_agent_id",
+                "_source_agent_id",
+                "source_agent_id",
+                "AgenticDome_source_agent_id",
+            ))
+        ):
+            raise AgenticDomeDenied("AgenticDome blocked delegated execution: missing valid decision token.")
 
     async def _authorize_explicit_handoff(
         self,
@@ -1038,6 +1410,9 @@ class AgenticDomeLangGraphFirewall:
             raise AgenticDomeDenied(f"AgenticDome blocked delegation: {_reason(envelope)}")
 
         decision_token = _safe_str(envelope.get("decision_token") or envelope.get("token"))
+        decision_id = _safe_str(envelope.get("decision_id") or envelope.get("policy_decision_id") or envelope.get("id"))
+        if self.config.require_server_issued_decision_tokens and not decision_token:
+            raise AgenticDomeDenied("AgenticDome allowed handoff without a server-issued decision token.")
 
         if decision_token:
             ns = _state_ns(state)
@@ -1047,6 +1422,17 @@ class AgenticDomeLangGraphFirewall:
             ns["authorized_tool_name"] = delegated_tool_name
             ns["authorized_tool_args"] = clean_delegated_args
             ns["handoff_authorized_at"] = time.time()
+            if decision_id:
+                ns["last_policy_decision_id"] = decision_id
+
+            token_hmac = _token_hmac(
+                self.config.token_hmac_secret,
+                token=decision_token,
+                source_agent_id=manager_agent_id,
+                target_agent_id=target_agent_id,
+                tool_name=delegated_tool_name,
+                tool_args=clean_delegated_args,
+            )
 
             self.token_store.put(
                 session_id=session_id,
@@ -1057,9 +1443,13 @@ class AgenticDomeLangGraphFirewall:
                     decision_token=decision_token,
                     source_agent_id=manager_agent_id,
                     created_at=time.time(),
+                    token_hmac=token_hmac,
                 ),
                 ttl_s=self.config.handoff_token_ttl_s,
             )
+
+        self._audit("handoff_allowed", agent_id=manager_agent_id, target_agent_id=target_agent_id, tool_name=delegated_tool_name, tool_platform=tool_platform, decision_id=decision_id)
+        self._otel_event("agenticdome.langgraph.handoff_allowed", agent_id=manager_agent_id, target_agent_id=target_agent_id)
 
         ns = _state_ns(state)
         ns.pop("handoff", None)
@@ -1079,10 +1469,13 @@ class AgenticDomeLangGraphFirewall:
         if not text.strip():
             return state
 
-        session_id = self._resolve_session_id(state)
         effective_agent_id = self._resolve_agent_id(state, agent_id, self.config.orchestrator_agent_id)
 
         try:
+            session_id = self._resolve_session_id(state)
+            self._emergency_policy_check(agent_id=effective_agent_id)
+            self._check_rate_limit(f"input:{self.config.tenant_id}:{session_id}:{effective_agent_id}")
+            text = _bounded_text(text, self.config.max_input_chars, "input")
             response = await self._client_call(
                 ("guardrail_validate", "guardrailValidate"),
                 session_id=session_id,
@@ -1106,6 +1499,12 @@ class AgenticDomeLangGraphFirewall:
                     incident_type="blocked_prompt_input",
                 )
 
+            envelope = _extract_result(response)
+            decision_id = _safe_str(envelope.get("decision_id") or envelope.get("policy_decision_id") or envelope.get("id"))
+            if decision_id:
+                _state_ns(state)["last_policy_decision_id"] = decision_id
+            self._audit("input_allowed", agent_id=effective_agent_id, session_id=session_id, decision_id=decision_id)
+            self._otel_event("agenticdome.langgraph.input_allowed", agent_id=effective_agent_id)
             return state
 
         except Exception as exc:
@@ -1131,6 +1530,9 @@ class AgenticDomeLangGraphFirewall:
         tool_calls = _extract_tool_calls(last)
 
         try:
+            self._emergency_policy_check(agent_id=current_agent_id)
+            self._check_rate_limit(f"transition:{self.config.tenant_id}:{session_id}:{current_agent_id}")
+            text = _bounded_text(text, self.config.max_input_chars, "transition text")
             explicit_handoff = self._extract_explicit_handoff(state)
             if explicit_handoff:
                 await self._authorize_explicit_handoff(
@@ -1145,6 +1547,8 @@ class AgenticDomeLangGraphFirewall:
                 tool_name, tool_args = _normalize_tool_call(raw_call)
                 clean_tool_args = _strip_private_args(tool_args)
                 tool_platform = self._tool_platform(clean_tool_args)
+                self._emergency_policy_check(agent_id=current_agent_id, tool_name=tool_name)
+                self._enforce_tool_arg_size(tool_name, clean_tool_args)
 
                 await self._verify_delegated_execution_if_needed(
                     state,
@@ -1197,13 +1601,26 @@ class AgenticDomeLangGraphFirewall:
                     ),
                 )
 
-                if _verdict(response) == "BLOCKED":
+                envelope = _extract_result(response)
+                if _verdict(envelope) == "BLOCKED":
                     return await self._block_state(
                         state,
-                        reason=_reason(response),
+                        reason=_reason(envelope),
                         agent_id=current_agent_id,
                         incident_type="blocked_tool_execution",
                     )
+
+                sanitized_args = _extract_sanitized_tool_args(envelope)
+                if sanitized_args is not None:
+                    self._enforce_tool_arg_size(tool_name, sanitized_args)
+                    clean_tool_args = _strip_private_args(sanitized_args)
+                    _set_tool_call_args(raw_call, clean_tool_args)
+
+                decision_id = _safe_str(envelope.get("decision_id") or envelope.get("policy_decision_id") or envelope.get("id"))
+                if decision_id:
+                    _state_ns(state)["last_policy_decision_id"] = decision_id
+                self._audit("tool_allowed", agent_id=current_agent_id, session_id=session_id, tool_name=tool_name, tool_platform=tool_platform, decision_id=decision_id)
+                self._otel_event("agenticdome.langgraph.tool_allowed", agent_id=current_agent_id, tool_name=tool_name)
 
             return state
 
@@ -1246,6 +1663,9 @@ class AgenticDomeLangGraphFirewall:
         effective_agent_id = self._resolve_agent_id(state, agent_id, self.config.final_agent_id)
 
         try:
+            self._emergency_policy_check(agent_id=effective_agent_id)
+            self._check_rate_limit(f"output:{self.config.tenant_id}:{session_id}:{effective_agent_id}")
+            text = _bounded_text(text, self.config.max_output_chars, "output")
             response = await self._client_call(
                 ("mesh_validate", "meshValidate"),
                 agent_id=effective_agent_id,
@@ -1295,6 +1715,11 @@ class AgenticDomeLangGraphFirewall:
                     messages[-1] = _replace_message_content(messages[-1], _safe_str(sanitized_text))
                     _set_messages(state, messages)
 
+            decision_id = _safe_str(envelope.get("decision_id") or envelope.get("policy_decision_id") or envelope.get("id"))
+            if decision_id:
+                _state_ns(state)["last_policy_decision_id"] = decision_id
+            self._audit("output_allowed", agent_id=effective_agent_id, session_id=session_id, decision_id=decision_id)
+            self._otel_event("agenticdome.langgraph.output_allowed", agent_id=effective_agent_id)
             return state
 
         except Exception as exc:
@@ -1308,6 +1733,209 @@ class AgenticDomeLangGraphFirewall:
                 )
             return state
 
+    async def authorize_graph_transition(
+        self,
+        state: AgentState,
+        *,
+        from_node: str,
+        to_node: str,
+        agent_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AgentState:
+        state = cast(AgentState, dict(state))
+        session_id = self._resolve_session_id(state)
+        effective_agent_id = self._resolve_agent_id(state, agent_id, self.config.orchestrator_agent_id)
+        try:
+            self._emergency_policy_check(agent_id=effective_agent_id)
+            self._check_rate_limit(f"graph_transition:{self.config.tenant_id}:{session_id}:{effective_agent_id}")
+            response = await self._client_call(
+                ("guardrail_validate", "guardrailValidate"),
+                session_id=session_id,
+                direction="graph_transition",
+                text=f"[LangGraph] transition {from_node} -> {to_node}",
+                agent_id=effective_agent_id,
+                platform=self.config.platform,
+                source_platform=self.config.platform,
+                tool_platform="langgraph",
+                tool_name="langgraph.transition",
+                tool_args={"from_node": from_node, "to_node": to_node, "metadata": metadata or {}},
+                policy_context=self._merged_policy_context(
+                    state,
+                    agent_id=effective_agent_id,
+                    default_request_purpose="graph_transition",
+                    extra={"from_node": from_node, "to_node": to_node, **(metadata or {})},
+                ),
+            )
+            envelope = _extract_result(response)
+            if _verdict(envelope) == "BLOCKED":
+                return await self._block_state(
+                    state,
+                    reason=_reason(envelope),
+                    agent_id=effective_agent_id,
+                    incident_type="blocked_graph_transition",
+                )
+            decision_id = _safe_str(envelope.get("decision_id") or envelope.get("policy_decision_id") or envelope.get("id"))
+            if decision_id:
+                _state_ns(state)["last_policy_decision_id"] = decision_id
+            self._audit("graph_transition_allowed", agent_id=effective_agent_id, session_id=session_id, from_node=from_node, to_node=to_node, decision_id=decision_id)
+            return state
+        except AgenticDomeDenied as exc:
+            return await self._block_state(
+                state,
+                reason=str(exc),
+                agent_id=effective_agent_id,
+                incident_type="blocked_graph_transition",
+            )
+        except Exception as exc:
+            if not self._fail_or_allow(f"AgenticDome graph transition authorization error: {exc}", exc=exc):
+                return await self._block_state(
+                    state,
+                    reason=f"graph transition authorization error ({exc})",
+                    agent_id=effective_agent_id,
+                    incident_type="graph_transition_error",
+                    severity="high",
+                )
+            return state
+
+    def security_route(
+        self,
+        state: AgentState,
+        *,
+        allowed_route: str = "continue",
+        blocked_route: str = "security_block",
+    ) -> str:
+        return blocked_route if _state_ns(state).get("blocked") else allowed_route
+
+    async def sanitize_retrieval_documents(
+        self,
+        documents: Iterable[Any],
+        *,
+        state: Optional[AgentState] = None,
+        agent_id: Optional[str] = None,
+        request_purpose: str = "retrieval_context_review",
+    ) -> List[Any]:
+        working_state: AgentState = cast(AgentState, dict(state or {}))
+        if "session_id" not in working_state and state is None and not self.config.require_explicit_session_id:
+            working_state["session_id"] = f"langgraph-retrieval-{uuid.uuid4().hex}"
+        session_id = self._resolve_session_id(working_state)
+        effective_agent_id = self._resolve_agent_id(working_state, agent_id, self.config.orchestrator_agent_id)
+        sanitized: List[Any] = []
+        for index, doc in enumerate(list(documents)):
+            text = _safe_str(
+                _safe_getattr(doc, "page_content")
+                or _safe_getattr(doc, "content")
+                or (doc.get("page_content") if isinstance(doc, dict) else None)
+                or (doc.get("content") if isinstance(doc, dict) else None)
+                or (doc.get("text") if isinstance(doc, dict) else None)
+                or doc
+            )
+            if not text:
+                sanitized.append(doc)
+                continue
+            text = _bounded_text(text, self.config.max_output_chars, "retrieval document")
+            response = await self._client_call(
+                ("mesh_validate", "meshValidate"),
+                agent_id=effective_agent_id,
+                session_id=session_id,
+                direction="retrieval",
+                text=text,
+                platform=self.config.platform,
+                redact_pii=self.config.redact_pii,
+                redact_secrets=self.config.redact_secrets,
+                block_on_sensitive_output=self.config.block_on_sensitive_output,
+                policy_context=self._merged_policy_context(
+                    working_state,
+                    agent_id=effective_agent_id,
+                    default_request_purpose=request_purpose,
+                    extra={"document_index": index},
+                ),
+            )
+            envelope = _extract_result(response)
+            if _verdict(envelope) == "BLOCKED":
+                raise AgenticDomeDenied(f"AgenticDome blocked retrieval document: {_reason(envelope)}")
+            sanitized_text = envelope.get("text") or envelope.get("sanitized_text") or envelope.get("output")
+            if sanitized_text is not None and _safe_str(sanitized_text) != text:
+                if isinstance(doc, dict):
+                    updated = dict(doc)
+                    for key in ("page_content", "content", "text"):
+                        if key in updated:
+                            updated[key] = _safe_str(sanitized_text)
+                            break
+                    else:
+                        updated["text"] = _safe_str(sanitized_text)
+                    sanitized.append(updated)
+                else:
+                    copied = doc
+                    changed = False
+                    for attr in ("page_content", "content", "text"):
+                        if hasattr(copied, attr):
+                            try:
+                                setattr(copied, attr, _safe_str(sanitized_text))
+                                changed = True
+                                break
+                            except Exception:
+                                pass
+                    sanitized.append(copied if changed else _safe_str(sanitized_text))
+            else:
+                sanitized.append(doc)
+        self._audit("retrieval_sanitized", agent_id=effective_agent_id, session_id=session_id, document_count=len(sanitized))
+        return sanitized
+
+    async def sanitize_streaming_events(
+        self,
+        events: AsyncIterator[Any],
+        *,
+        state: AgentState,
+        agent_id: Optional[str] = None,
+    ) -> AsyncIterator[Any]:
+        session_id = self._resolve_session_id(state)
+        effective_agent_id = self._resolve_agent_id(state, agent_id, self.config.final_agent_id)
+        buffer = ""
+        async for event in events:
+            text = _safe_str(
+                event.get("content") if isinstance(event, dict) else _safe_getattr(event, "content", event)
+            )
+            if not text:
+                yield event
+                continue
+            buffer = (buffer + text)[-max(1, self.config.streaming_buffer_chars):]
+            response = await self._client_call(
+                ("mesh_validate", "meshValidate"),
+                agent_id=effective_agent_id,
+                session_id=session_id,
+                direction="stream_output",
+                text=buffer,
+                platform=self.config.platform,
+                redact_pii=self.config.redact_pii,
+                redact_secrets=self.config.redact_secrets,
+                block_on_sensitive_output=self.config.block_on_sensitive_output,
+                policy_context=self._merged_policy_context(
+                    state,
+                    agent_id=effective_agent_id,
+                    default_request_purpose="streaming_output_review",
+                ),
+            )
+            envelope = _extract_result(response)
+            if _verdict(envelope) == "BLOCKED":
+                raise AgenticDomeDenied(f"AgenticDome blocked streaming output: {_reason(envelope)}")
+            sanitized_text = envelope.get("text") or envelope.get("sanitized_text") or envelope.get("output")
+            if sanitized_text is not None and _safe_str(sanitized_text) != buffer:
+                replacement = _safe_str(sanitized_text)[-len(text):] if text else _safe_str(sanitized_text)
+                if isinstance(event, dict):
+                    updated = dict(event)
+                    updated["content"] = replacement
+                    yield updated
+                elif hasattr(event, "content"):
+                    try:
+                        setattr(event, "content", replacement)
+                        yield event
+                    except Exception:
+                        yield replacement
+                else:
+                    yield replacement
+            else:
+                yield event
+
     # ------------------------------------------------------------------
     # Node factories
     # ------------------------------------------------------------------
@@ -1320,6 +1948,24 @@ class AgenticDomeLangGraphFirewall:
     def transition_node(self, *, agent_id: Optional[str] = None) -> Callable[[AgentState], Any]:
         async def _node(state: AgentState) -> AgentState:
             return await self.authorize_transition(state, agent_id=agent_id)
+        return _node
+
+    def graph_transition_node(
+        self,
+        *,
+        from_node: str,
+        to_node: str,
+        agent_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Callable[[AgentState], Any]:
+        async def _node(state: AgentState) -> AgentState:
+            return await self.authorize_graph_transition(
+                state,
+                from_node=from_node,
+                to_node=to_node,
+                agent_id=agent_id,
+                metadata=metadata,
+            )
         return _node
 
     def output_node(
@@ -1493,6 +2139,7 @@ class AgenticDomeLangChainMiddleware:
         if _state_ns(checked).get("blocked"):
             raise AgenticDomeDenied(_safe_str(_state_ns(checked).get("reason") or "Tool call blocked"))
 
+        self._apply_checked_tool_call(request, checked)
         result = await self.firewall._invoke_callable(handler, request)
         if not self.sanitize_tool_output or result is None:
             return result
@@ -1512,11 +2159,37 @@ class AgenticDomeLangChainMiddleware:
             raise AgenticDomeDenied(_safe_str(_state_ns(sanitized_state).get("reason") or "Tool output blocked"))
 
         sanitized_text = _message_text(_get_last_message(sanitized_state))
-        if isinstance(result, (dict, list, tuple)) and sanitized_text == review_text:
-            return result
+        if isinstance(result, (dict, list, tuple)):
+            return result if sanitized_text == review_text else _parse_structured_like(result, sanitized_text)
         if isinstance(result, str):
             return sanitized_text
         return result if sanitized_text == review_text else sanitized_text
+
+    def _apply_checked_tool_call(self, request: Any, checked: AgentState) -> None:
+        calls = _extract_tool_calls(_get_last_message(checked))
+        if not calls:
+            return
+        sanitized_call = dict(calls[0])
+        original = request.get("tool_call") if isinstance(request, dict) else _safe_getattr(request, "tool_call")
+        if isinstance(original, dict):
+            original.clear()
+            original.update(sanitized_call)
+            return
+        name, args = _normalize_tool_call(sanitized_call)
+        if isinstance(request, dict):
+            request["tool_call"] = sanitized_call
+            request["name"] = name
+            request["args"] = args
+            return
+        try:
+            setattr(request, "tool_call", sanitized_call)
+        except Exception:
+            pass
+        for attr, value in (("name", name), ("args", args), ("arguments", args)):
+            try:
+                setattr(request, attr, value)
+            except Exception:
+                pass
 
     def _state_from_tool_request(self, request: Any) -> AgentState:
         tool_call = self._extract_tool_call(request)

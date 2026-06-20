@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: agenticdome-python-sdk
-Version: 1.0.6
+Version: 1.0.7
 Summary: Official Python SDK for AgentGuard Intelligence Engine and Action Firewall.
 Home-page: https://github.com/agenticdome/agenticdome-python-sdk-python
 Author: AgenticDome
@@ -109,7 +109,7 @@ The package includes:
 - MCP host, gateway, and third-party server forwarding wrappers
 - AWS Bedrock Runtime, Converse, InvokeModel, tool/action, and retrieval wrappers
 - Google ADK model/tool callback wrappers
-- LlamaIndex FunctionTool, query, retrieval, and output wrappers
+- LlamaIndex FunctionTool, query, retrieval, callback, and optional handoff wrappers
 - Manager-to-specialist delegation token handling
 - Output DLP and sanitization workflows
 - Optional Redis-backed distributed token storage
@@ -478,17 +478,17 @@ export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:production:handoff"
 
 | Framework | Can AgenticDome be applied globally by config only? | Global code location | Required code action | Tool-level code action |
 | :--- | :--- | :--- | :--- | :--- |
-| CrewAI | No. Env config is global, but hooks activate only after import. | Application bootstrap before crews are created, for example `main.py`, `worker.py`, or `celery_app.py`. | `import agenticdome_sdk.crewai` once. | Usually none; global hooks protect CrewAI tool calls. Ensure tool inputs include session/agent metadata where your CrewAI version supports it. |
-| PydanticAI | No. Env config initializes defaults, but each agent/tool must be attached or decorated. | Module where each `Agent(...)` is constructed. | Create `CyberSecFirewall(...)` and call `firewall.attach_to_agent(agent)`. | Decorate sensitive tools with `@firewall.secure_tool`. |
-| LangGraph | No. Env config initializes defaults, but graph interception requires graph nodes, wrappers, or middleware. | Module where `StateGraph` or LangChain `create_agent()` is assembled. | Add `input_node()`, `transition_node()`, `output_node()` to the graph, or use `as_langchain_middleware()`. | Wrap existing tool nodes with `wrap_tool_node()` when you cannot edit graph topology. |
-| Microsoft Agent Framework | No. Env config initializes defaults, but local tools and run boundaries must be wrapped. | Module where agents, workflows, and local function tools are declared. | Use `run_agent_securely()` around whole-agent calls where possible. | Use `@firewall.secure_tool`, `wrap_tool_handler()`, `secure_delegated_tool()`, or `wrap_delegated_tool_handler()`. |
-| Microsoft AI Foundry | No. Env config initializes threat and Mesh clients, but local run/tool boundaries must be wrapped. | Module that handles Foundry prompt runs, function-call execution, or `FoundryChatClient` local tools. | Use `run_secure()` around local Foundry run calls. | Use `wrap_tool_executor()` or `@firewall.secure_tool(...)` around local function tools before submitting tool output back to Foundry. |
-| Agno | No. Env config initializes defaults, but hooks must be attached to each Agent, Team, or AgentOS component. | Module where `Agent(...)`, Team, or AgentOS components are declared. | Use `attach_firewall(agent_or_team)` or `firewall.attach_firewall(agent_or_team)` to add `pre_hooks`, `post_hooks`, and `tool_hooks`. | Use `@firewall.secure_tool(...)` for high-risk local tools or custom tool functions. |
-| OpenAI Agents SDK | No. Env config initializes defaults, but runner and function-tool boundaries must be wrapped. | Module where `Agent(...)`, `Runner.run(...)`, `@function_tool`, or handoff tools are declared. | Use `run_agent_securely()` around `Runner.run(...)`. | Use `wrap_tool_handler()`, `wrap_delegated_tool_handler()`, or `@firewall.secure_tool(...)` before applying `@function_tool`. |
-| MCP host / gateway | No. Env config initializes defaults, but MCP interception must be placed in the host forwarding path. | The JSON-RPC gateway/proxy function that receives MCP requests before forwarding to third-party MCP servers. | Use `preflight_request()` before forwarding `tools/call`, or `forward_with_firewall()` around the forwarder. | Tool authorization is automatic for `tools/call`; private `_AgenticDome_*` metadata is stripped before forwarding. |
-| AWS Bedrock | No. Env config initializes defaults, but Bedrock calls and local tools must be wrapped in application code. | Module that calls `bedrock-runtime.converse(...)`, `invoke_model(...)`, Bedrock Agent action-group handlers, or knowledge-base retrieval handlers. | Use `converse_securely()` or `invoke_model_securely()` around model calls. | Use `wrap_tool_handler()` or `@firewall.secure_tool(...)` around local action-group and tool-use handlers. |
-| Google ADK | No. Env config initializes defaults, but ADK callbacks must be registered on each agent. | Module where `LlmAgent(...)` or agent config is declared. | Register `before_model`, `after_model`, `before_tool`, and `after_tool` callbacks using `install_on_agent(...)` or pass the callback methods at construction. | Use `wrap_tool_handler()` or `@firewall.secure_tool(...)` for local functions that need explicit protection outside ADK callbacks. |
-| LlamaIndex | No. Env config initializes defaults, but tools/query/retrieval boundaries must be wrapped in code. | Module where `FunctionTool`, `QueryEngineTool`, retrievers, query engines, or agents are assembled. | Use `run_query_securely()` around query flows and `sanitize_retrieval_result()` after retrieval. | Use `wrap_tool_function()`, `to_function_tool()`, or `@firewall.secure_tool(...)` before giving tools to an agent. |
+| CrewAI | No. Env config is global, but hooks activate only after import or scoped attachment. | Application bootstrap before crews are created, or the module where Crew/CrewAI-compatible objects are assembled. | `import agenticdome_sdk.crewai` once for global hooks, or use `AgenticDomeCrewAIFirewall().attach(...)` for scoped hook lists. | Global hooks protect CrewAI tool calls; use `AgenticDomeCrewAIFirewall.secure_tool(...)` where you need explicit local wrapper enforcement, schema validation, or sanitized-argument execution. |
+| PydanticAI | No. Env config initializes defaults, but each agent/tool must be attached or decorated. | Module where each `Agent(...)`, `Hooks`, and local function tool is constructed. | Create `CyberSecFirewall(...)` and call `create_hooks()`, `install_native_hooks(agent)`, or `attach_to_agent(agent)` depending on your PydanticAI version. | Decorate sensitive tools with `@firewall.secure_tool(...)` and optional `tool_schema` validation. |
+| LangGraph | No. Env config initializes defaults, but graph interception requires graph nodes, wrappers, or middleware. | Module where `StateGraph` or LangChain `create_agent()` is assembled. | Add `input_node()`, `transition_node()`, `graph_transition_node()`, `output_node()` to the graph, or use `as_langchain_middleware()`. | Wrap existing nodes with `wrap_agent_node()` / `wrap_tool_node()` and use `security_route()` for blocked conditional edges. |
+| Microsoft Agent Framework | No. Env config initializes defaults, but local tools, middleware hooks, and run boundaries must be attached in code. | Module where agents, workflows, local function tools, or framework middleware are declared. | Use `create_middleware()`, `install_on_agent()`, or `run_agent_securely()` around whole-agent calls where possible. | Use `@firewall.secure_tool`, `wrap_tool_handler`, `secure_delegated_tool`, `wrap_delegated_tool_handler`, and sanitized-argument enforcement for local tools. |
+| Microsoft AI Foundry | No. Env config initializes threat and Mesh clients, but local run/tool/middleware boundaries must be attached in code. | Module that handles Foundry prompt runs, function-call execution, `FoundryChatClient` local tools, or Foundry client construction. | Use `create_middleware()`, `install_on_client()`, or `run_secure()` around local Foundry run calls. | Use `wrap_tool_executor()`, `@firewall.secure_tool(...)`, `before_tool_call()`, `authorize_manager_handoff()`, and `verify_delegated_execution()` around local and delegated tools. |
+| Agno | No. Env config initializes defaults, but hooks or middleware-style helpers must be attached to each Agent, Team, Workflow, or AgentOS component. | Module where `Agent(...)`, Team, Workflow, or AgentOS components are declared. | Use `attach_firewall(agent_or_team)`, `create_hook_bundle()`, `create_middleware()`, or `create_plugin()` to add `pre_hooks`, `post_hooks`, and `tool_hooks`. | Use `@firewall.secure_tool(...)` for high-risk local tools; sanitized args, schema validation, delegation verification, and streaming sanitization are available. |
+| OpenAI Agents SDK | No. Env config initializes defaults, but runner, guardrail, stream, function-tool, and handoff boundaries must be wrapped or registered. | Module where `Agent(...)`, `Runner.run(...)`, `Runner.run_streamed(...)`, `@function_tool`, guardrails, or handoff tools are declared. | Use `run_agent_securely()`, `run_agent_stream_securely()`, `create_input_guardrail()`, or `create_output_guardrail()` around agent runs and SDK guardrail slots. | Use `wrap_tool_handler()`, `wrap_delegated_tool_handler()`, `@firewall.secure_tool(...)`, `authorize_manager_handoff()`, and `verify_specialist_execution()` before applying `@function_tool` or executing specialist tools. |
+| MCP host / gateway | No. Env config initializes defaults, but MCP interception must be placed in the host forwarding path. | The JSON-RPC gateway/proxy function that receives MCP requests before forwarding to third-party MCP servers. | Use `preflight_request()` or `forward_with_firewall()` around the forwarder for tools, resources, prompts, sampling, and list methods. | Use `authorize_manager_handoff()` and `verify_decision_token_if_present()` for delegated MCP execution; private `_AgenticDome_*` metadata is stripped before forwarding. |
+| AWS Bedrock | No. Env config initializes defaults, but Bedrock Runtime, Bedrock Agents, action groups, retrieval, and local tools must be wrapped in application code. | Module that calls `bedrock-runtime.converse(...)`, `converse_stream(...)`, `invoke_model(...)`, `invoke_model_with_response_stream(...)`, `bedrock-agent-runtime.invoke_agent(...)`, action-group Lambda handlers, or knowledge-base retrieval handlers. | Use `converse_securely()`, `converse_stream_securely()`, `invoke_model_securely()`, `invoke_model_with_response_stream_securely()`, or `invoke_agent_securely()` around model/agent calls. | Use `wrap_tool_handler()`, `@firewall.secure_tool(...)`, `wrap_action_group_lambda()`, `authorize_manager_handoff()`, and `verify_delegated_execution()` around local and delegated tool execution. |
+| Google ADK | No. Env config initializes defaults, but ADK callbacks or plugin-style hooks must be registered on each agent. | Module where `LlmAgent(...)`, ADK plugins, or agent config are declared. | Use `build_callback_kwargs()`, `create_plugin()`, or `install_on_agent(...)` to register before/after agent, model, and tool callbacks. | Use `wrap_tool_handler()` or `@firewall.secure_tool(...)` for local functions; sanitized arguments, schema validation, delegation tokens, and streaming output helpers are available for sensitive tools. |
+| LlamaIndex | No. Env config initializes defaults, but tools/query/retrieval/callback boundaries must be wrapped in code. | Module where `FunctionTool`, `QueryEngineTool`, retrievers, query engines, node postprocessors, callbacks, or agents are assembled. | Use `run_query_securely()`, `wrap_query_engine()`, `wrap_retriever()`, `create_node_postprocessor()`, and `create_callback_handler()` at assembly boundaries. | Use `wrap_tool_function()`, `to_function_tool()`, `@firewall.secure_tool(...)`, `authorize_manager_handoff()`, and `verify_delegated_execution()` for tools and multi-agent handoffs. |
 | Custom Python | No. Env config initializes the client only. | Your API handler, agent gateway, router, or tool executor. | Call `guardrail_validate()` before prompts/tools and `mesh_validate()` before returning output. | Call `a2a_authorize_tool()` and `a2a_verify_decision_token_rpc()` for manager/specialist delegation. |
 
 ### CrewAI: Global Hook Activation
@@ -635,11 +635,138 @@ secure_refund = firewall.wrap_delegated_tool_handler(
 | `AGENTICDOME_REDIS_KEY_PREFIX` | string | framework-specific | Redis key prefix. |
 | `AGENTICDOME_LANGGRAPH_AGENT_ID` | string | `langgraph_orchestrator` | Default LangGraph orchestrator node identity. |
 | `AGENTICDOME_LANGGRAPH_FINAL_ID` | string | `langgraph_final_node` | Default LangGraph final-output node identity. |
+| `AGENTICDOME_LANGGRAPH_REQUIRE_SERVER_TOKENS` | boolean | `false` | Requires handoff authorization responses to include server-issued decision tokens. |
+| `AGENTICDOME_LANGGRAPH_STRICT_DELEGATED_EXECUTION` | boolean | `true` | Blocks delegated executions that carry delegation metadata without a valid token. |
+| `AGENTICDOME_LANGGRAPH_MAX_INPUT_CHARS` | integer | `50000` | Maximum LangGraph input or transition text reviewed before local blocking. |
+| `AGENTICDOME_LANGGRAPH_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum LangGraph output, stream buffer, or retrieval document text reviewed before local blocking. |
+| `AGENTICDOME_LANGGRAPH_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized LangGraph tool arguments before blocking. |
+| `AGENTICDOME_LANGGRAPH_STREAMING_BUFFER_CHARS` | integer | `4000` | Sliding buffer size used by streaming event sanitization. |
+| `AGENTICDOME_LANGGRAPH_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local LangGraph rate limit; `0` disables it. |
+| `AGENTICDOME_LANGGRAPH_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for LangGraph policy client calls. |
+| `AGENTICDOME_LANGGRAPH_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for LangGraph policy client retries. |
+| `AGENTICDOME_LANGGRAPH_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the LangGraph circuit breaker. |
+| `AGENTICDOME_LANGGRAPH_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the LangGraph circuit breaker opens. |
+| `AGENTICDOME_LANGGRAPH_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the LangGraph adapter. |
+| `AGENTICDOME_LANGGRAPH_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry-compatible debug events from the LangGraph adapter. |
+| `AGENTICDOME_LANGGRAPH_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for LangGraph tool names. |
+| `AGENTICDOME_LANGGRAPH_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for LangGraph agent IDs. |
+| `AGENTICDOME_CLOUD_PROVIDER` | string | empty | Optional cloud/provider label added to policy context. |
+| `AGENTICDOME_CLOUD_PROJECT_ID` | string | empty | Optional project/account label added to policy context. |
+| `AGENTICDOME_IDENTITY_PROVIDER` | string | empty | Optional identity-provider label added to policy context. |
 | `AGENTICDOME_ENABLE_COPILOT_THREAT_API` | boolean | `false` | Enables optional Microsoft Copilot / AI Foundry threat helper calls where available. |
+| `AGENTICDOME_ENFORCE_COPILOT_THREAT_API` | boolean | `false` | Makes optional Copilot / AI Foundry threat helper failures or blocks enforce locally. |
+| `AGENTICDOME_PRODUCTION_MODE` | boolean | `false` | Enables production hardening such as stable session ID enforcement. |
+| `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD` | boolean | `true` | Requires a stable session/run/trace ID when production mode is enabled. |
+| `AGENTICDOME_PYDANTICAI_MAX_INPUT_CHARS` | integer | `50000` | Maximum PydanticAI prompt/input text reviewed before local truncation. |
+| `AGENTICDOME_PYDANTICAI_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum PydanticAI output text reviewed before local truncation. |
+| `AGENTICDOME_PYDANTICAI_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized PydanticAI tool arguments before blocking. |
+| `AGENTICDOME_PYDANTICAI_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local rate limit; `0` disables it. |
+| `AGENTICDOME_PYDANTICAI_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for PydanticAI policy client calls. |
+| `AGENTICDOME_PYDANTICAI_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for PydanticAI policy client retries. |
+| `AGENTICDOME_PYDANTICAI_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local PydanticAI circuit breaker. |
+| `AGENTICDOME_PYDANTICAI_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the PydanticAI circuit breaker opens. |
+| `AGENTICDOME_PYDANTICAI_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the PydanticAI adapter. |
+| `AGENTICDOME_PYDANTICAI_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_PYDANTICAI_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for PydanticAI tool names. |
+| `AGENTICDOME_PYDANTICAI_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for PydanticAI agent IDs. |
+| `AGENTICDOME_MSAF_MAX_INPUT_CHARS` | integer | `50000` | Maximum Microsoft Agent Framework input text reviewed before local truncation. |
+| `AGENTICDOME_MSAF_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum Microsoft Agent Framework output text reviewed before local truncation. |
+| `AGENTICDOME_MSAF_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized local tool arguments before blocking. |
+| `AGENTICDOME_MSAF_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local rate limit; `0` disables it. |
+| `AGENTICDOME_MSAF_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for AgenticDome policy client calls. |
+| `AGENTICDOME_MSAF_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local circuit breaker. |
+| `AGENTICDOME_MSAF_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the circuit breaker opens. |
+| `AGENTICDOME_MSAF_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the Microsoft Agent Framework adapter. |
+| `AGENTICDOME_MSAF_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_MSAF_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for tool names. |
+| `AGENTICDOME_MSAF_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for agent IDs. |
+| `AGENTICDOME_TOKEN_HMAC_SECRET` | string | empty | Optional HMAC secret for tagging stored decision-token records. |
 | `AGENTICDOME_COPILOT_API_VERSION` | string | `2025-09-01` | API version used by optional Copilot / AI Foundry threat helper calls. |
 | `AGENTICDOME_BEARER_TOKEN` | string | optional | Bearer token used by Microsoft AI Foundry threat-contract endpoints. |
+| `AGENTICDOME_FOUNDRY_REQUIRE_OUTPUT_SANITIZATION_IN_PROD` | boolean | `true` | Requires API-key-backed Mesh output sanitization when Foundry production mode is enabled. |
+| `AGENTICDOME_FOUNDRY_MAX_INPUT_CHARS` | integer | `50000` | Maximum Microsoft AI Foundry prompt/input text reviewed before local truncation. |
+| `AGENTICDOME_FOUNDRY_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum Foundry output text reviewed before local truncation. |
+| `AGENTICDOME_FOUNDRY_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized Foundry local tool arguments before blocking. |
+| `AGENTICDOME_FOUNDRY_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local rate limit; `0` disables it. |
+| `AGENTICDOME_FOUNDRY_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for Foundry policy client calls. |
+| `AGENTICDOME_FOUNDRY_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for Foundry policy client retries. |
+| `AGENTICDOME_FOUNDRY_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local Foundry circuit breaker. |
+| `AGENTICDOME_FOUNDRY_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the Foundry circuit breaker opens. |
+| `AGENTICDOME_FOUNDRY_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the Microsoft AI Foundry adapter. |
+| `AGENTICDOME_FOUNDRY_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_FOUNDRY_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for Foundry tool names. |
+| `AGENTICDOME_FOUNDRY_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for Foundry agent IDs. |
+| `AGENTICDOME_CREWAI_MAX_INPUT_CHARS` | integer | `50000` | Maximum CrewAI prompt or authorization text reviewed before local truncation. |
+| `AGENTICDOME_CREWAI_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum CrewAI output text reviewed before local truncation. |
+| `AGENTICDOME_CREWAI_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized CrewAI tool arguments before blocking. |
+| `AGENTICDOME_CREWAI_STREAMING_BUFFER_CHARS` | integer | `4000` | Sliding context window used by CrewAI streaming sanitization helpers. |
+| `AGENTICDOME_CREWAI_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local CrewAI rate limit; `0` disables it. |
+| `AGENTICDOME_CREWAI_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for CrewAI policy client calls. |
+| `AGENTICDOME_CREWAI_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for CrewAI policy client retries. |
+| `AGENTICDOME_CREWAI_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local CrewAI circuit breaker. |
+| `AGENTICDOME_CREWAI_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the CrewAI circuit breaker opens. |
+| `AGENTICDOME_CREWAI_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the CrewAI adapter. |
+| `AGENTICDOME_CREWAI_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_CREWAI_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for CrewAI tool names. |
+| `AGENTICDOME_CREWAI_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for CrewAI agent IDs. |
+| `AGENTICDOME_AGNO_MAX_INPUT_CHARS` | integer | `50000` | Maximum Agno prompt or authorization text reviewed before local truncation. |
+| `AGENTICDOME_AGNO_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum Agno output or retrieved-context text reviewed before local truncation. |
+| `AGENTICDOME_AGNO_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized Agno tool arguments before blocking. |
+| `AGENTICDOME_AGNO_STREAMING_BUFFER_CHARS` | integer | `4000` | Sliding context window used by Agno streaming sanitization helpers. |
+| `AGENTICDOME_AGNO_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local Agno rate limit; `0` disables it. |
+| `AGENTICDOME_AGNO_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for Agno policy client calls. |
+| `AGENTICDOME_AGNO_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for Agno policy client retries. |
+| `AGENTICDOME_AGNO_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local Agno circuit breaker. |
+| `AGENTICDOME_AGNO_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the Agno circuit breaker opens. |
+| `AGENTICDOME_AGNO_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the Agno adapter. |
+| `AGENTICDOME_AGNO_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_AGNO_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for Agno tool names. |
+| `AGENTICDOME_AGNO_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for Agno agent IDs. |
+| `AGENTICDOME_OPENAI_AGENTS_MAX_INPUT_CHARS` | integer | `50000` | Maximum OpenAI Agents prompt or authorization text reviewed before local truncation. |
+| `AGENTICDOME_OPENAI_AGENTS_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum OpenAI Agents output text reviewed before local truncation. |
+| `AGENTICDOME_OPENAI_AGENTS_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized OpenAI Agents tool arguments before blocking. |
+| `AGENTICDOME_OPENAI_AGENTS_STREAMING_BUFFER_CHARS` | integer | `4000` | Sliding context window used by OpenAI Agents streaming sanitization helpers. |
+| `AGENTICDOME_OPENAI_AGENTS_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local OpenAI Agents rate limit; `0` disables it. |
+| `AGENTICDOME_OPENAI_AGENTS_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for OpenAI Agents policy client calls. |
+| `AGENTICDOME_OPENAI_AGENTS_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for OpenAI Agents policy client retries. |
+| `AGENTICDOME_OPENAI_AGENTS_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local OpenAI Agents circuit breaker. |
+| `AGENTICDOME_OPENAI_AGENTS_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the OpenAI Agents circuit breaker opens. |
+| `AGENTICDOME_OPENAI_AGENTS_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the OpenAI Agents adapter. |
+| `AGENTICDOME_OPENAI_AGENTS_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_OPENAI_AGENTS_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for OpenAI Agents tool names. |
+| `AGENTICDOME_OPENAI_AGENTS_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for OpenAI Agents agent IDs. |
 | `AGENTICDOME_BEDROCK_AGENT_ID` | string | `aws_bedrock_agent` | Default agent identity for AWS Bedrock runtime calls and local action handlers. |
+| `AGENTICDOME_AWS_ACCOUNT_ID` | string | empty | AWS account ID added to Bedrock policy context when available. |
+| `AGENTICDOME_AWS_REGION` | string | `AWS_REGION` / `AWS_DEFAULT_REGION` | AWS region added to Bedrock policy context when available. |
+| `AGENTICDOME_AWS_ROLE_ARN` | string | empty | AWS role ARN added to Bedrock policy context. |
+| `AGENTICDOME_AWS_PRINCIPAL_ARN` | string | empty | AWS principal/caller ARN added to Bedrock policy context. |
+| `AGENTICDOME_BEDROCK_MAX_INPUT_CHARS` | integer | `50000` | Maximum Bedrock prompt or authorization text reviewed before local truncation. |
+| `AGENTICDOME_BEDROCK_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum Bedrock output text reviewed before local truncation. |
+| `AGENTICDOME_BEDROCK_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized Bedrock local tool/action-group arguments before blocking. |
+| `AGENTICDOME_BEDROCK_STREAMING_BUFFER_CHARS` | integer | `4000` | Sliding review buffer size for Bedrock streaming sanitization helpers. |
+| `AGENTICDOME_BEDROCK_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local Bedrock rate limit; `0` disables it. |
+| `AGENTICDOME_BEDROCK_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for Bedrock policy client calls. |
+| `AGENTICDOME_BEDROCK_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for Bedrock policy client retries. |
+| `AGENTICDOME_BEDROCK_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local Bedrock circuit breaker. |
+| `AGENTICDOME_BEDROCK_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the Bedrock circuit breaker opens. |
+| `AGENTICDOME_BEDROCK_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the AWS Bedrock adapter. |
+| `AGENTICDOME_BEDROCK_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_BEDROCK_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for Bedrock tool/action names. |
+| `AGENTICDOME_BEDROCK_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for Bedrock agent IDs. |
 | `AGENTICDOME_GOOGLE_ADK_AGENT_ID` | string | `google_adk_agent` | Default agent identity for Google ADK callback enforcement. |
+| `AGENTICDOME_GOOGLE_ADK_MAX_INPUT_CHARS` | integer | `50000` | Maximum Google ADK prompt or authorization text reviewed before local truncation. |
+| `AGENTICDOME_GOOGLE_ADK_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum Google ADK model or tool output text reviewed before local truncation. |
+| `AGENTICDOME_GOOGLE_ADK_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized Google ADK tool arguments before blocking. |
+| `AGENTICDOME_GOOGLE_ADK_STREAMING_BUFFER_CHARS` | integer | `4000` | Sliding context window used by Google ADK streaming sanitization helpers. |
+| `AGENTICDOME_GOOGLE_ADK_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-agent/session/purpose local Google ADK rate limit; `0` disables it. |
+| `AGENTICDOME_GOOGLE_ADK_RETRY_ATTEMPTS` | integer | `2` | Retry attempts for Google ADK policy client calls. |
+| `AGENTICDOME_GOOGLE_ADK_RETRY_BACKOFF_S` | float | `0.25` | Initial exponential backoff delay for Google ADK policy client retries. |
+| `AGENTICDOME_GOOGLE_ADK_CIRCUIT_BREAKER_FAILURES` | integer | `5` | Consecutive policy call failures before opening the local Google ADK circuit breaker. |
+| `AGENTICDOME_GOOGLE_ADK_CIRCUIT_BREAKER_RESET_S` | integer | `60` | Seconds before retrying after the Google ADK circuit breaker opens. |
+| `AGENTICDOME_GOOGLE_ADK_AUDIT_LOGGING` | boolean | `true` | Emits structured audit logs from the Google ADK adapter. |
+| `AGENTICDOME_GOOGLE_ADK_OTEL_ENABLED` | boolean | `true` | Emits OpenTelemetry span events when OpenTelemetry is installed and a span is active. |
+| `AGENTICDOME_GOOGLE_ADK_EMERGENCY_BLOCK_TOOLS` | CSV string | empty | Local emergency deny list for Google ADK tool names. |
+| `AGENTICDOME_GOOGLE_ADK_EMERGENCY_BLOCK_AGENTS` | CSV string | empty | Local emergency deny list for Google ADK agent IDs. |
 | `AGENTICDOME_LLAMAINDEX_AGENT_ID` | string | `llamaindex_agent` | Default agent identity for LlamaIndex tools, query engines, and retrievers. |
 | `AGENTICDOME_SANITIZE_QUERY_OUTPUT` | boolean | `true` | Enables Mesh output review for LlamaIndex query responses. |
 | `AGENTICDOME_BEDROCK_MODEL_ID` | string | empty | Optional default Bedrock model ID for policy context. |
@@ -649,6 +776,24 @@ secure_refund = firewall.wrap_delegated_tool_handler(
 | `AGENTICDOME_SANITIZE_TOOL_OUTPUT` | boolean | `true` | Enables Mesh output review for MCP tool results before returning to the client. |
 | `AGENTICDOME_VERIFY_DECISION_TOKENS` | boolean | `true` | Verifies delegated decision tokens when MCP tool calls carry handoff metadata. |
 | `AGENTICDOME_SCREEN_UPSTREAM_PROMPT` | boolean | `true` | Screens upstream user prompt text in MCP host context before tool forwarding. |
+| `AGENTICDOME_MCP_PROTECT_TOOLS_LIST` | boolean | `true` | Authorizes and filters MCP `tools/list` discovery responses. |
+| `AGENTICDOME_MCP_PROTECT_RESOURCES_LIST` | boolean | `true` | Authorizes MCP `resources/list` discovery requests. |
+| `AGENTICDOME_MCP_PROTECT_RESOURCES_READ` | boolean | `true` | Authorizes MCP `resources/read` requests before forwarding. |
+| `AGENTICDOME_MCP_PROTECT_PROMPTS_LIST` | boolean | `true` | Authorizes MCP `prompts/list` discovery requests. |
+| `AGENTICDOME_MCP_PROTECT_PROMPTS_GET` | boolean | `true` | Authorizes MCP `prompts/get` requests before forwarding. |
+| `AGENTICDOME_MCP_PROTECT_SAMPLING_CREATE_MESSAGE` | boolean | `true` | Authorizes MCP `sampling/createMessage` requests. |
+| `AGENTICDOME_SANITIZE_RESOURCE_OUTPUT` | boolean | `true` | Enables Mesh output review for MCP resource read results. |
+| `AGENTICDOME_SANITIZE_PROMPT_OUTPUT` | boolean | `true` | Enables Mesh output review for MCP prompt results. |
+| `AGENTICDOME_SANITIZE_STREAMING_OUTPUT` | boolean | `true` | Enables chunk-level sanitization helpers for streaming MCP responses. |
+| `AGENTICDOME_MCP_SERVER_ID` | string | empty | Default MCP server identity included in policy context. |
+| `AGENTICDOME_MCP_SERVER_URL` | string | empty | Default MCP server URL included in policy context. |
+| `AGENTICDOME_MCP_SERVER_TRUST_LEVEL` | string | empty | Default MCP server trust label included in policy context. |
+| `AGENTICDOME_MCP_SERVER_VENDOR` | string | empty | Default MCP server vendor included in policy context. |
+| `AGENTICDOME_MCP_MAX_OUTPUT_CHARS` | integer | `100000` | Maximum text sent for MCP output sanitization before local truncation. |
+| `AGENTICDOME_MCP_MAX_TOOL_ARG_CHARS` | integer | `20000` | Maximum serialized MCP arguments allowed before blocking. |
+| `AGENTICDOME_MCP_MAX_REQUEST_TEXT_CHARS` | integer | `20000` | Maximum upstream request text sent for prompt/method authorization before local truncation. |
+| `AGENTICDOME_MCP_RATE_LIMIT_PER_MINUTE` | integer | `0` | Per-principal per-server per-method local rate limit; `0` disables it. |
+| `AGENTICDOME_MCP_AUDIT_LOGGING` | boolean | `true` | Emits structured MCP gateway audit logs from the adapter. |
 | `AGENTICDOME_REPORT_INCIDENTS` | boolean | `true` | Reports blocked actions and middleware failures. |
 | `AGENTICDOME_BLOCKED_INCIDENT_SEVERITY` | string | `medium` | Default severity for incident reports. |
 
@@ -661,17 +806,17 @@ Use this table to choose the SDK module and the exact place where AgenticDome sh
 | Runtime | SDK module | Where to call AgenticDome | Primary API |
 | :--- | :--- | :--- | :--- |
 | Core Python / custom runtimes | `agenticdome_sdk.client` | Your own gateway, router, tool executor, or API handler. | `AgentGuardClient.guardrail_validate()`, `mesh_validate()`, `a2a_authorize_tool()`, `a2a_verify_decision_token_rpc()` |
-| CrewAI | `agenticdome_sdk.crewai` | Import once in the process bootstrap before crews run. Hooks are registered globally. | `import agenticdome_sdk.crewai` |
-| PydanticAI | `agenticdome_sdk.pydantic` | Instantiate the firewall near agent construction, attach lifecycle hooks, and decorate tools. | `CyberSecFirewall.attach_to_agent()`, `@firewall.secure_tool` |
-| LangGraph | `agenticdome_sdk.langgraph` | Add firewall nodes to `StateGraph`, wrap existing graph nodes, or use LangChain middleware. | `input_node()`, `transition_node()`, `output_node()`, `wrap_agent_node()`, `wrap_tool_node()`, `as_langchain_middleware()` |
-| Microsoft Agent Framework | `agenticdome_sdk.microsoft_agent_framework` | Wrap local function-tool handlers, delegated specialist handlers, and whole agent run boundaries. | `wrap_tool_handler()`, `secure_tool()`, `wrap_delegated_tool_handler()`, `secure_delegated_tool()`, `run_agent_securely()` |
-| Microsoft AI Foundry | `agenticdome_sdk.microsoft_ai_foundry` | Validate Foundry prompt contracts, analyze local function tool execution, and optionally sanitize output with Mesh. | `validate_prompt_contract()`, `analyze_tool_execution()`, `wrap_tool_executor()`, `secure_tool()`, `run_secure()` |
-| Agno | `agenticdome_sdk.agno` | Attach hooks to agents/teams and optionally decorate high-risk local tools. | `attach_firewall()`, `cybersec_pre_hook`, `cybersec_post_hook`, `cybersec_tool_hook`, `@firewall.secure_tool` |
-| OpenAI Agents SDK | `agenticdome_sdk.openai_agents` | Wrap `Runner.run(...)`, function tools, and delegated specialist tools. | `run_agent_securely()`, `wrap_tool_handler()`, `wrap_delegated_tool_handler()`, `secure_tool()`, `authorize_manager_handoff()` |
-| MCP host / gateway | `agenticdome_sdk.mcp_host` | Guard MCP JSON-RPC `tools/call` before third-party server forwarding and sanitize returned tool results. | `preflight_request()`, `forward_with_firewall()`, `verify_decision_token_if_present()`, `sanitize_mcp_result()` |
-| AWS Bedrock | `agenticdome_sdk.aws_bedrock` | Guard Bedrock Runtime prompt ingress, local tool/action execution, model output, and retrieval results. | `converse_securely()`, `invoke_model_securely()`, `wrap_tool_handler()`, `secure_tool()`, `sanitize_retrieval_result()` |
-| Google ADK | `agenticdome_sdk.google_adk` | Register model/tool callbacks for prompt screening, tool authorization, and output sanitization. | `install_on_agent()`, `before_model`, `after_model`, `before_tool`, `after_tool`, `wrap_tool_handler()` |
-| LlamaIndex | `agenticdome_sdk.llamaindex` | Wrap FunctionTool functions, query calls, retrieval results, and final output. | `wrap_tool_function()`, `to_function_tool()`, `run_query_securely()`, `sanitize_retrieval_result()` |
+| CrewAI | `agenticdome_sdk.crewai` | Import once for global hook registration, or use the class facade for scoped attach/unregister, local wrappers, streaming sanitization, and delegated execution hardening. | `import agenticdome_sdk.crewai`, `AgenticDomeCrewAIFirewall`, `attach_firewall()`, `unregister_firewall()`, `sanitize_streaming_response()` |
+| PydanticAI | `agenticdome_sdk.pydantic` | Instantiate the firewall near agent construction, attach native Hooks where supported, decorate tools, verify delegated execution, and sanitize output/streams. | `CyberSecFirewall.create_hooks()`, `install_native_hooks()`, `attach_to_agent()`, `@firewall.secure_tool(...)`, `sanitize_text()`, `sanitize_streaming_response()` |
+| LangGraph | `agenticdome_sdk.langgraph` | Add firewall nodes to `StateGraph`, wrap existing graph nodes, or use LangChain middleware. | `input_node()`, `transition_node()`, `graph_transition_node()`, `output_node()`, `wrap_agent_node()`, `wrap_tool_node()`, `sanitize_retrieval_documents()`, `sanitize_streaming_events()`, `security_route()`, `as_langchain_middleware()` |
+| Microsoft Agent Framework | `agenticdome_sdk.microsoft_agent_framework` | Attach middleware hooks, wrap local/delegated function-tool handlers, and protect whole agent run boundaries. | `create_middleware()`, `install_on_agent()`, `before_agent_run()`, `before_tool_call()`, `wrap_tool_handler()`, `secure_tool()`, `wrap_delegated_tool_handler()`, `secure_delegated_tool()`, `run_agent_securely()`, `sanitize_streaming_response()` |
+| Microsoft AI Foundry | `agenticdome_sdk.microsoft_ai_foundry` | Validate Foundry prompt contracts, attach middleware-style hooks, analyze local/delegated function tool execution, and sanitize output with Mesh. | `create_middleware()`, `install_on_client()`, `validate_prompt_contract()`, `analyze_tool_execution()`, `before_tool_call()`, `wrap_tool_executor()`, `secure_tool()`, `run_secure()`, `sanitize_streaming_response()`, `authorize_manager_handoff()` |
+| Agno | `agenticdome_sdk.agno` | Attach hooks or middleware-style helper objects to agents/teams/workflows, decorate high-risk local tools, verify delegated execution, and sanitize output/streams. | `attach_firewall()`, `create_hook_bundle()`, `create_middleware()`, `create_plugin()`, `cybersec_pre_hook`, `cybersec_post_hook`, `cybersec_tool_hook`, `@firewall.secure_tool`, `sanitize_streaming_response()` |
+| OpenAI Agents SDK | `agenticdome_sdk.openai_agents` | Wrap `Runner.run(...)`, streamed runs, SDK guardrail slots, function tools, and delegated specialist tools. | `run_agent_securely()`, `run_agent_stream_securely()`, `create_input_guardrail()`, `create_output_guardrail()`, `wrap_tool_handler()`, `wrap_delegated_tool_handler()`, `secure_tool()`, `sanitize_streaming_response()`, `authorize_manager_handoff()`, `verify_specialist_execution()` |
+| MCP host / gateway | `agenticdome_sdk.mcp_host` | Guard MCP JSON-RPC tool/resource/prompt/sampling/list methods before third-party server forwarding and sanitize returned results. | `preflight_request()`, `forward_with_firewall()`, `authorize_manager_handoff()`, `verify_decision_token_if_present()`, `filter_tools_list_result()`, `sanitize_mcp_result()`, `sanitize_streaming_response()` |
+| AWS Bedrock | `agenticdome_sdk.aws_bedrock` | Guard Bedrock Runtime, Bedrock Agents, local tool/action execution, model output, streaming output, and retrieval results. | `converse_securely()`, `converse_stream_securely()`, `invoke_model_securely()`, `invoke_model_with_response_stream_securely()`, `invoke_agent_securely()`, `wrap_tool_handler()`, `secure_tool()`, `wrap_action_group_lambda()`, `sanitize_retrieval_result()`, `authorize_manager_handoff()`, `verify_delegated_execution()` |
+| Google ADK | `agenticdome_sdk.google_adk` | Register ADK callbacks or plugin-style hooks for agent/model/tool lifecycle enforcement, local tool authorization, delegation tokens, and output sanitization. | `build_callback_kwargs()`, `create_plugin()`, `install_on_agent()`, `before_model`, `after_model`, `before_tool`, `after_tool`, `wrap_tool_handler()`, `secure_tool()`, `authorize_manager_handoff()`, `verify_delegated_execution()`, `sanitize_streaming_response()` |
+| LlamaIndex | `agenticdome_sdk.llamaindex` | Wrap FunctionTool functions, query calls, retrieval results, callbacks, and optional multi-agent handoffs. | `wrap_tool_function()`, `to_function_tool()`, `run_query_securely()`, `wrap_query_engine()`, `wrap_retriever()`, `create_node_postprocessor()`, `create_callback_handler()`, `authorize_manager_handoff()` |
 
 ### Core Python Module
 
@@ -862,7 +1007,7 @@ secure_refund = firewall.wrap_delegated_tool_handler(
 
 ## CrewAI Integration
 
-AgenticDome provides native CrewAI lifecycle hook integration.
+AgenticDome provides CrewAI lifecycle hook integration for prompt ingress, tool authorization, delegation, token verification, and output DLP. Importing the module still registers the global CrewAI hooks, and the adapter now also exposes `AgenticDomeCrewAIFirewall` for scoped attach/unregister, explicit local tool wrapping, and testable non-global usage.
 
 Importing the CrewAI module once registers global hooks for:
 
@@ -871,6 +1016,19 @@ before_llm_call
 before_tool_call
 after_tool_call
 ```
+
+The CrewAI integration supports:
+
+- Prompt screening before LLM calls
+- Direct tool authorization before tool execution
+- Manager-to-specialist handoff authorization with explicit target metadata
+- Specialist-side delegated execution verification using direct token metadata or one-time token-store recovery
+- Redis-backed token storage with `GETDEL` consume fallback and optional HMAC validation
+- Private `_AgenticDome_*` argument stripping, sanitized tool arguments, and optional schema validation
+- Output DLP with structured-output preservation and sanitized JSON parsing
+- Streaming output sanitization through `sanitize_streaming_response()`
+- Production mode with stable session ID requirements
+- Local size limits, rate limits, retries/backoff, circuit breaker behavior, audit logs, OpenTelemetry events, and emergency local deny lists
 
 ### Install CrewAI Support
 
@@ -883,13 +1041,10 @@ pip install "agenticdome-python-sdk[crewai]"
 To activate global security policies across CrewAI agents, import the CrewAI integration once at the application entry point, such as `main.py`, `app.py`, or your worker bootstrap file.
 
 ```python
-import os
-
 from crewai import Agent, Crew, Task
 
 # Importing this module registers AgenticDome global before/after hooks.
 import agenticdome_sdk.crewai  # noqa: F401
-
 
 manager = Agent(
     role="Operations Manager",
@@ -910,36 +1065,62 @@ task = Task(
     agent=manager,
 )
 
-crew = Crew(
-    agents=[manager, researcher],
-    tasks=[task],
-)
-
+crew = Crew(agents=[manager, researcher], tasks=[task])
 result = crew.kickoff()
-print(result)
+```
+
+### Scoped CrewAI Integration
+
+Use the class facade when you want explicit hook functions, scoped attach/unregister, or a test-local client/token store. This is additive to the global import behavior.
+
+```python
+from agenticdome_sdk.crewai import AgenticDomeCrewAIFirewall
+
+firewall = AgenticDomeCrewAIFirewall()
+firewall.attach(crew)
+# ... run a scoped test or runtime ...
+firewall.unregister(crew)
+```
+
+For high-risk local tools, wrap the function explicitly. If AgenticDome returns sanitized arguments, the wrapper executes the tool with those sanitized values.
+
+```python
+@firewall.secure_tool(
+    tool_name="crm.customer.read",
+    tool_platform="crm",
+    tool_schema={"required": ["customer_id"], "properties": {"customer_id": {"type": "string"}}},
+)
+def lookup_customer(agent, customer_id: str):
+    return crm.get_customer(customer_id)
 ```
 
 ### CrewAI Security Flow
 
-#### 1. Prompt Ingress Screening
+1. Before the LLM is called, AgenticDome screens prompts for hostile or policy-violating input.
+2. Before a tool is executed, AgenticDome validates tool name, clean tool arguments, session context, agent identity, and policy metadata.
+3. When a manager agent delegates work to a specialist, AgenticDome authorizes the handoff and can return a decision token.
+4. When the specialist executes the delegated tool, the token is verified against the AgenticDome central plane and consumed once from the local token store when recovered from Redis/in-memory storage.
+5. After tool execution, AgenticDome reviews output content and can redact, block, or preserve structured outputs before they leave the runtime boundary.
 
-Before the LLM is called, AgenticDome screens prompts for hostile or policy-violating input.
+### Runtime Configuration
 
-#### 2. Tool Authorization
-
-Before a tool is executed, AgenticDome validates tool name, tool arguments, session context, agent identity, and policy metadata.
-
-#### 3. Manager Delegation Authorization
-
-When a manager agent delegates work to a specialist, AgenticDome authorizes the handoff and can return a cryptographic decision token.
-
-#### 4. Specialist Token Verification
-
-When the specialist executes the delegated tool, the token is verified against the AgenticDome central plane.
-
-#### 5. Output DLP
-
-After tool execution, AgenticDome reviews output content for sensitive data and can redact or block it before it leaves the runtime boundary.
+```bash
+export AGENTICDOME_PLATFORM="crewai"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_CREWAI_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_CREWAI_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_CREWAI_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_CREWAI_RATE_LIMIT_PER_MINUTE="120"
+export AGENTICDOME_CREWAI_RETRY_ATTEMPTS="2"
+export AGENTICDOME_CREWAI_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_CREWAI_AUDIT_LOGGING="true"
+export AGENTICDOME_CREWAI_OTEL_ENABLED="true"
+# Optional for distributed multi-worker delegation:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:crewai:handoff"
+# export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
+```
 
 ### CrewAI Import Reference
 
@@ -953,6 +1134,7 @@ Optional exported CrewAI objects:
 from agenticdome_sdk.crewai import (
     CONFIG,
     CLIENT,
+    AgenticDomeCrewAIFirewall,
     DecisionTokenRecord,
     DecisionTokenStore,
     InMemoryDecisionTokenStore,
@@ -960,10 +1142,11 @@ from agenticdome_sdk.crewai import (
     AgenticDome_before_tool_call,
     AgenticDome_after_tool_call,
     AgenticDome_before_llm_call,
+    sanitize_streaming_response,
+    attach_firewall,
+    unregister_firewall,
 )
 ```
-
----
 
 ## PydanticAI Integration
 
@@ -971,12 +1154,20 @@ AgenticDome also provides a native PydanticAI firewall integration.
 
 The PydanticAI integration supports:
 
-- Prompt ingress checks where lifecycle hooks are available
-- Tool perimeter authorization through `@firewall.secure_tool`
-- Delegation-token generation for handoff tools
-- Specialist decision-token verification
-- Egress output DLP
-- Redis-backed multi-worker handoff-token storage
+- Prompt ingress checks through legacy lifecycle hooks where available
+- Native PydanticAI `Hooks` capability creation through `create_hooks()` for current PydanticAI versions
+- Tool perimeter authorization through `@firewall.secure_tool(...)`
+- Pydantic/JSON-schema tool argument validation and sanitized-argument execution
+- Delegation-token generation for handoff tools using clean target args before token injection
+- Specialist decision-token verification from explicit args or one-time token-store fallback
+- In-memory and Redis-backed multi-worker handoff-token storage with optional HMAC-tagged records
+- Egress output DLP with correct `block_on_sensitive_output` semantics
+- Structured-output preservation by parsing sanitized JSON back to dictionaries/lists
+- Stable session ID enforcement in production mode
+- Local rate limits, input/output/tool-argument size limits, retries, circuit breaker behavior, audit logging, and OpenTelemetry span events
+- Streaming output sanitization with `sanitize_streaming_response()`
+- Identity-rich policy context from `ctx`, `deps`, or nested identity/principal objects
+- Local emergency deny lists for tools and agents
 
 ### Install PydanticAI Support
 
@@ -1041,13 +1232,24 @@ customer_support_agent = Agent(
 )
 
 
-# 3. Attach ingress/egress lifecycle protections where supported by the runtime.
+# 3. Prefer native PydanticAI Hooks where your version supports capabilities.
+# You can also pass firewall.create_hooks() at Agent construction time via capabilities=[...].
+firewall.install_native_hooks(customer_support_agent)
+
+# Legacy PydanticAI versions can still use compatibility lifecycle hooks.
 firewall.attach_to_agent(customer_support_agent)
 
 
 # 4. Protect capability tools using the perimeter decorator.
 @customer_support_agent.tool
-@firewall.secure_tool
+@firewall.secure_tool(
+    tool_name="customer.profile.read",
+    tool_platform="crm",
+    tool_schema={
+        "required": ["user_id"],
+        "properties": {"user_id": {"type": "string"}},
+    },
+)
 async def fetch_user_profile(ctx: RunContext[Any], user_id: str) -> dict:
     """Retrieves account management metadata profiles for a corporate ID."""
     return {
@@ -1073,8 +1275,16 @@ firewall = CyberSecFirewall(
         api_key=os.getenv("AGENTICDOME_API_KEY", ""),
         tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
         fail_closed=True,
+        production_mode=True,
     )
 )
+
+async for safe_chunk in firewall.sanitize_streaming_response(
+    chunks=agent_stream,
+    agent_id="customer_support_agent",
+    session_id="sess_prod_01J4X",
+):
+    yield safe_chunk
 ```
 
 ### PydanticAI Import Reference
@@ -1085,6 +1295,7 @@ from agenticdome_sdk.pydantic import (
     FirewallConfig,
     PydanticAIFirewallError,
     PydanticAIFirewallDenied,
+    PydanticAIFirewallConfigurationError,
     DecisionTokenRecord,
     DecisionTokenStore,
     InMemoryDecisionTokenStore,
@@ -1094,11 +1305,13 @@ from agenticdome_sdk.pydantic import (
 
 ### PydanticAI Notes
 
-PydanticAI lifecycle hook APIs may vary between framework versions. The firewall handles this safely:
+PydanticAI lifecycle hook APIs have evolved. Current PydanticAI documents `pydantic_ai.capabilities.Hooks` for lifecycle interception across runs, model requests, tool validation/execution, output processing, and event streams. Prefer `create_hooks()` or `install_native_hooks()` for current runtimes, and keep `@firewall.secure_tool(...)` on sensitive local tools as a hard enforcement boundary.
 
-- If compatible lifecycle decorators are available, `attach_to_agent()` attaches prompt ingress and egress DLP hooks.
-- If lifecycle decorators are not available, `@firewall.secure_tool` still protects tool execution.
-- Tool authorization and DLP remain available through the secure tool decorator.
+- If compatible legacy lifecycle decorators are available, `attach_to_agent()` attaches prompt ingress and egress DLP hooks.
+- If native `Hooks` capabilities are available, `create_hooks()` returns a capability object you can pass into `Agent(..., capabilities=[...])`.
+- If lifecycle decorators are not available, `@firewall.secure_tool(...)` still protects tool execution.
+- In production mode, configure API base, API key, tenant ID, and stable session IDs.
+- `AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT=true` means AgenticDome may ask Mesh to block sensitive output; the SDK only blocks when the policy response verdict is `BLOCKED`.
 
 ---
 
@@ -1112,7 +1325,13 @@ The LangGraph integration supports:
 - Tool-call authorization through `authorize_transition()` or `transition_node()`
 - Delegation authorization when state or tool arguments identify `target_agent_id`, `delegate_to`, `coworker`, `specialist_agent_id`, or equivalent handoff fields
 - Specialist-side decision-token verification from graph state, tool arguments, or Redis/in-memory token storage
+- One-time decision-token consumption with optional HMAC binding for stored token records
+- Sanitized tool-argument mutation before local tool execution
 - Final message and tool-output DLP through `sanitize_output()` or `output_node()`
+- Retrieval/document sanitization through `sanitize_retrieval_documents()`
+- Streaming event sanitization through `sanitize_streaming_events()`
+- Graph transition authorization through `authorize_graph_transition()` or `graph_transition_node()`
+- `security_block` route support through `security_route()`
 - Wrapper helpers for existing agent nodes and tool nodes
 
 ### Install LangGraph Support
@@ -1168,7 +1387,10 @@ firewall = AgenticDomeLangGraphFirewall(
         api_key=os.getenv("AGENTICDOME_API_KEY", ""),
         tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
         fail_closed=True,
+        production_mode=True,
         require_explicit_session_id=True,
+        rate_limit_per_minute=120,
+        max_tool_arg_chars=20_000,
     )
 )
 
@@ -1250,7 +1472,30 @@ state["AgenticDome"] = {
 }
 ```
 
-The specialist execution is verified when the specialist tool call reaches `authorize_transition()` or a wrapped tool node. Tokens can be carried in state, passed as `_AgenticDome_decision_token`, or recovered from Redis/in-memory token storage.
+The specialist execution is verified when the specialist tool call reaches `authorize_transition()` or a wrapped tool node. Tokens can be carried in state, passed as `_AgenticDome_decision_token`, or recovered from Redis/in-memory token storage. Stored records are consumed once; Redis deployments use atomic `GETDEL` when available and fall back to a pipeline. Set `AGENTICDOME_TOKEN_HMAC_SECRET` to bind stored tokens to the source agent, target agent, tool name, and sanitized argument hash.
+
+### LangGraph Hardening Helpers
+
+Use `authorize_graph_transition()` or `graph_transition_node()` when sensitive graph edges should be policy-controlled. Blocked states set `AgenticDome.route` and `next_agent_id` to `security_block`, and `security_route()` can be used as a conditional-edge router.
+
+```python
+graph.add_node(
+    "authorize_escalation",
+    firewall.graph_transition_node(
+        from_node="triage",
+        to_node="refund_specialist",
+        agent_id="support_orchestrator",
+    ),
+)
+
+graph.add_conditional_edges(
+    "authorize_escalation",
+    firewall.security_route,
+    {"continue": "refund_specialist", "security_block": "security_block"},
+)
+```
+
+Use `sanitize_retrieval_documents()` before adding retrieved chunks to model context, and `sanitize_streaming_events()` for async event streams. Both use the same Mesh output policy path as final-output sanitization.
 
 ### LangGraph Import Reference
 
@@ -1271,7 +1516,7 @@ from agenticdome_sdk.langgraph import (
 ### LangGraph Accuracy and Interception Notes
 
 - LangGraph itself is graph-native: reliable interception is normally achieved by inserting security nodes into the graph or wrapping existing nodes/tool nodes.
-- LangChain's modern `create_agent()` API supports a `middleware` parameter, and LangChain documents middleware hooks as the way to intercept model, tool, and agent-loop behavior. This SDK exposes `as_langchain_middleware()` for that style while keeping LangGraph node wrappers for teams that own explicit `StateGraph` topology.
+- LangChain's modern `create_agent()` API supports a `middleware` parameter, and LangChain documents middleware hooks as the way to intercept model, tool, and agent-loop behavior. This SDK exposes `as_langchain_middleware()` for that style while keeping LangGraph node wrappers for teams that own explicit `StateGraph` topology. The adapter mutates sanitized tool arguments back into the tool request for local execution.
 - For custom `StateGraph` workflows, middleware is still needed in practice, but it should be implemented as graph nodes or wrappers at the boundaries you need to enforce: before model input, before tool execution, before handoff execution, and before final output.
 - If a graph contains remote tools or provider-hosted tools that execute outside your Python process, the Python SDK can only guard the local request/response boundary. It cannot intercept inside the remote provider runtime.
 
@@ -1288,13 +1533,19 @@ AgenticDome provides an async firewall helper for Microsoft Agent Framework for 
 
 The Microsoft Agent Framework integration supports:
 
-- Prompt ingress screening with `screen_input()` or `run_agent_securely()`
-- Direct function-tool authorization with `authorize_direct_tool_call()` or `wrap_tool_handler()`
-- Manager-to-specialist delegation authorization with `authorize_manager_handoff()`
+- Prompt ingress screening with `screen_input()`, native-style middleware hooks, or `run_agent_securely()`
+- Direct function-tool authorization with internal argument stripping and sanitized-argument enforcement
+- Manager-to-specialist delegation authorization with HMAC-tagged token records and atomic Redis consumption where available
 - Specialist-side token verification with `verify_specialist_execution()` or `wrap_delegated_tool_handler()`
-- Output DLP with `sanitize_text()`
-- Optional Copilot / AI Foundry helper calls when enabled
+- Stable session ID enforcement for production deployments
+- Entra/principal identity context propagation into policy context
+- Output DLP with structured JSON preservation and optional response-object mutation
+- Streaming output sanitization with `sanitize_streaming_response()`
+- OpenTelemetry event emission and structured audit logging
+- Local rate limits, input/output/argument size limits, retries, and circuit breaker protection
+- Optional Copilot / AI Foundry threat helper enforcement when enabled
 - Redis-backed multi-worker decision-token storage
+- Emergency local deny lists for tools or agents
 
 ### Install Microsoft Helper Support
 
@@ -1362,6 +1613,9 @@ secure_get_customer_profile = firewall.wrap_tool_handler(
     tool_platform="crm",
 )
 
+# If AgenticDome returns sanitized_tool_args, the wrapped handler receives
+# those safe arguments instead of the original model-provided arguments.
+
 
 @tool(approval_mode="never_require")
 async def get_customer_profile(
@@ -1375,6 +1629,25 @@ async def get_customer_profile(
     }
     return await secure_get_customer_profile(ctx, {"customer_id": customer_id})
 ```
+
+### Microsoft Native-Style Middleware Hooks
+
+Use `create_middleware()` or `install_on_agent()` when your Microsoft Agent Framework runtime exposes middleware or callback-style extension points. These hooks provide a harder-to-bypass assembly-level integration while preserving the explicit wrappers for tool enforcement.
+
+```python
+firewall = AgenticDomeMicrosoftAgentFirewall()
+
+agent = firewall.install_on_agent(agent)
+middleware = firewall.create_middleware()
+
+# The returned middleware exposes async hook methods:
+# before_agent_run(ctx, input_text)
+# after_agent_run(ctx, output)
+# before_tool_call(ctx, tool_name, tool_args)
+# after_tool_call(ctx, tool_name, result)
+```
+
+`before_tool_call()` returns the sanitized tool arguments that should be forwarded to the local tool executor.
 
 ### Microsoft Quickstart: Secure an Agent Run Boundary
 
@@ -1416,6 +1689,31 @@ secure_refund_handler = firewall.wrap_delegated_tool_handler(
 )
 ```
 
+### Microsoft Production Configuration
+
+```bash
+export AGENTICDOME_PLATFORM="microsoft_agent_framework_v1"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_MSAF_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_MSAF_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_MSAF_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_MSAF_RATE_LIMIT_PER_MINUTE="0"
+export AGENTICDOME_MSAF_RETRY_ATTEMPTS="2"
+export AGENTICDOME_MSAF_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_MSAF_CIRCUIT_BREAKER_RESET_S="60"
+export AGENTICDOME_MSAF_AUDIT_LOGGING="true"
+export AGENTICDOME_MSAF_OTEL_ENABLED="true"
+# Optional local emergency controls:
+# export AGENTICDOME_MSAF_EMERGENCY_BLOCK_TOOLS="payments.refund.create"
+# export AGENTICDOME_MSAF_EMERGENCY_BLOCK_AGENTS="legacy_agent"
+# Optional HMAC tag for stored decision-token records:
+# export AGENTICDOME_TOKEN_HMAC_SECRET="change-me"
+# Optional Copilot / AI Foundry helper enforcement:
+# export AGENTICDOME_ENABLE_COPILOT_THREAT_API="true"
+# export AGENTICDOME_ENFORCE_COPILOT_THREAT_API="true"
+```
+
 ### Microsoft Import Reference
 
 ```python
@@ -1437,7 +1735,7 @@ from agenticdome_sdk.microsoft_agent_framework import (
 - The framework has a tool approval feature for human-in-the-loop gating, but approval is not the same as policy enforcement, DLP, or tenant-aware A2A token verification. AgenticDome should sit at the local tool handler or workflow executor boundary for deterministic enforcement.
 - Microsoft workflows expose execution through workflow builders, executors, streaming events, and output events. For security enforcement, wrap the executor/run boundary or the tool/executor functions that process sensitive actions.
 - If a tool executes remotely inside a hosted provider, Foundry agent, Copilot Studio agent, hosted MCP server, or remote A2A agent, this local Python SDK cannot intercept inside that remote runtime. It can still protect the local request before the call, local function tools, local MCP gateways, workflow executor boundaries, and returned output.
-- Middleware/wrappers are therefore needed for robust interception. Use `wrap_tool_handler()` for local tools, `wrap_delegated_tool_handler()` for delegated specialist tools, and `run_agent_securely()` for whole-agent ingress/egress protection.
+- Middleware/wrappers are therefore needed for robust interception. Prefer `create_middleware()` or `install_on_agent()` where the runtime supports hooks, use `wrap_tool_handler()` for local tools, `wrap_delegated_tool_handler()` for delegated specialist tools, and `run_agent_securely()` for whole-agent ingress/egress protection. In production, pass stable `session_id`/`run_id`/`trace_id` values and Entra/principal identity fields in context.
 
 Official references:
 
@@ -1453,12 +1751,19 @@ AgenticDome provides a Microsoft AI Foundry adapter for the local boundaries you
 
 The Foundry integration supports:
 
-- Prompt/run validation through `validate_prompt_contract()` or `run_secure()`
-- Local function-tool execution analysis through `analyze_tool_execution()` or `wrap_tool_executor()`
+- Prompt/run validation through `validate_prompt_contract()`, `before_run()`, or `run_secure()`
+- Native-style middleware hooks through `create_middleware()` and `install_on_client()` for clients that expose a middleware list
+- Local function-tool execution analysis through `analyze_tool_execution()`, `before_tool_call()`, or `wrap_tool_executor()`
 - `@firewall.secure_tool(...)` for high-risk local tool callables
-- Optional output DLP through Mesh when `AGENTICDOME_API_KEY` and `AGENTICDOME_TENANT_ID` are configured
-- Optional incident reporting when API-key auth is configured
-- Structured-output preservation when Mesh returns unchanged JSON
+- Direct tool-argument stripping, lightweight JSON-schema validation, and sanitized-argument execution when AgenticDome returns safer arguments
+- Enterprise identity context propagation for Entra IDs, roles/scopes, Foundry project IDs, and Purview or sensitivity labels
+- Production-mode stable session ID enforcement and output-sanitization requirements
+- Output DLP through Mesh when `AGENTICDOME_API_KEY` and `AGENTICDOME_TENANT_ID` are configured
+- Structured-output preservation by parsing sanitized JSON back to dictionaries/lists where possible
+- Local rate limits, input/output/tool-argument size limits, retries, circuit breaker behavior, audit logging, and OpenTelemetry span events
+- Streaming response sanitization through `sanitize_streaming_response()`
+- Optional manager-to-specialist handoff authorization, decision-token verification, in-memory token storage, Redis token storage, and HMAC-tagged token records
+- Local emergency deny lists for tools and agents
 
 ### Install Foundry Support
 
@@ -1483,11 +1788,39 @@ export AGENTICDOME_API_BASE="https://au.agenticdome.io"
 export AGENTICDOME_BEARER_TOKEN="your_foundry_threat_contract_bearer_token"
 ```
 
-Mesh output DLP and incident reporting are optional and use API-key authentication:
+Mesh output DLP and incident reporting use API-key authentication. In production mode, output sanitization is required by default, so configure API-key auth as part of deployment:
 
 ```bash
 export AGENTICDOME_API_KEY="your_api_key"
 export AGENTICDOME_TENANT_ID="your_tenant_id"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_FOUNDRY_REQUIRE_OUTPUT_SANITIZATION_IN_PROD="true"
+```
+
+For distributed delegated execution, configure Redis and optionally HMAC-tag stored decision-token records:
+
+```bash
+export AGENTICDOME_REDIS_URL="redis://redis.internal:6379/0"
+export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:foundry:handoff"
+export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-kms"
+```
+
+### Native-Style Middleware Hooks
+
+Use middleware hooks where your Foundry client or local runtime exposes a middleware pipeline. Hard enforcement still happens inside the hook methods and wrappers.
+
+```python
+from agenticdome_sdk.microsoft_ai_foundry import AgenticDomeMicrosoftAIFoundryFirewall
+
+firewall = AgenticDomeMicrosoftAIFoundryFirewall()
+foundry_client = firewall.install_on_client(foundry_client)
+
+# For custom runtimes, register the middleware object explicitly.
+middleware = firewall.create_middleware()
+await middleware.before_run(ctx, input_text)
+result = await foundry_agent.run(input_text)
+result = await middleware.after_run(ctx, result)
 ```
 
 ### Secure a Foundry Run Boundary
@@ -1523,6 +1856,10 @@ secure_lookup_customer = firewall.wrap_tool_executor(
     tool_name="crm.customer.read",
     tool_platform="crm",
     handler=raw_lookup_customer,
+    tool_schema={
+        "required": ["customer_id"],
+        "properties": {"customer_id": {"type": "string"}},
+    },
 )
 
 result = await secure_lookup_customer(
@@ -1534,9 +1871,53 @@ result = await secure_lookup_customer(
 ### Decorator Form
 
 ```python
-@firewall.secure_tool(tool_name="payments.refund.create", tool_platform="payments")
+@firewall.secure_tool(
+    tool_name="payments.refund.create",
+    tool_platform="payments",
+    tool_schema={
+        "required": ["customer_id", "amount_cents"],
+        "properties": {
+            "customer_id": {"type": "string"},
+            "amount_cents": {"type": "integer"},
+        },
+    },
+)
 def create_refund(ctx, args):
     return {"refund_id": "rfnd_123", "status": "created"}
+```
+
+### Delegated Foundry Tool Execution
+
+Use handoff controls when one Foundry agent or manager delegates sensitive local tool execution to another agent. The authorization response can store a decision token locally or in Redis; the specialist side consumes and verifies that token before executing.
+
+```python
+await firewall.authorize_manager_handoff(
+    text="Ask the billing specialist to create a refund.",
+    manager_agent_id="foundry_manager",
+    specialist_agent_id="billing_specialist",
+    tool_name="payments.refund.create",
+    tool_args={"customer_id": "cust_123", "amount_cents": 2500},
+    session_id="sess_prod_01J4X",
+    tool_platform="payments",
+)
+
+await firewall.verify_delegated_execution(
+    specialist_agent_id="billing_specialist",
+    tool_name="payments.refund.create",
+    tool_args={"customer_id": "cust_123", "amount_cents": 2500},
+    session_id="sess_prod_01J4X",
+)
+```
+
+### Streaming Output Sanitization
+
+```python
+async for safe_chunk in firewall.sanitize_streaming_response(
+    chunks=foundry_stream,
+    agent_id="foundry_support_agent",
+    session_id="sess_prod_01J4X",
+):
+    yield safe_chunk
 ```
 
 ### Import Reference
@@ -1548,15 +1929,21 @@ from agenticdome_sdk.microsoft_ai_foundry import (
     MicrosoftAIFoundryDenied,
     MicrosoftAIFoundryFirewallError,
     MicrosoftAIFoundryConfigurationError,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
 )
 ```
 
 ### Microsoft AI Foundry Accuracy and Interception Notes
 
-- Environment configuration alone does not intercept Foundry execution. You must call `run_secure()`, `wrap_tool_executor()`, or `@firewall.secure_tool(...)` at the local run/tool boundary.
+- Environment configuration alone does not intercept Foundry execution. Attach `create_middleware()` / `install_on_client()` where supported, and still use `run_secure()`, `wrap_tool_executor()`, or `@firewall.secure_tool(...)` at hard local boundaries.
 - Foundry function calling asks your application to execute local functions and return tool output. AgenticDome should wrap that local execution before tool output is submitted back to Foundry.
+- Production deployments should pass a stable `session_id`, `run_id`, `trace_id`, `conversation_id`, or `thread_id`; generated fallback IDs are intended for local development only.
+- Pass Entra identity, roles/scopes, Foundry project IDs, and Purview/sensitivity labels on `ctx` or `policy_context` so server-side policy can make identity-aware decisions.
 - If a Foundry hosted tool executes entirely inside a remote provider runtime, this local Python SDK can protect the local request/response boundary but cannot inspect inside the remote execution environment.
-- Mesh output DLP is skipped when `AGENTICDOME_API_KEY` is not configured; threat-contract prompt and tool analysis still use bearer auth.
+- Mesh output DLP is skipped when `AGENTICDOME_API_KEY` is not configured unless production mode requires output sanitization. Threat-contract prompt and tool analysis still use bearer auth.
 
 Official references:
 
@@ -1567,17 +1954,21 @@ Official references:
 
 ## OpenAI Agents SDK Integration
 
-AgenticDome provides a Python adapter for OpenAI Agents SDK local execution boundaries. This integration makes sense because the OpenAI Agents SDK is Python-first, supports `Runner.run(...)`, function tools, guardrails, handoffs, and agents-as-tools. AgenticDome complements those primitives by enforcing tenant policy before local function tools execute and by sanitizing outputs before they leave the runtime.
+AgenticDome provides a production OpenAI Agents SDK adapter for the local execution boundaries your application controls. The OpenAI Agents SDK includes agents, function tools, guardrails, handoffs, sessions, streaming, and tracing; AgenticDome complements those primitives by enforcing tenant policy before local tool execution, validating delegated specialist execution, and sanitizing outputs before they leave the runtime.
 
 The OpenAI Agents SDK integration supports:
 
-- Prompt ingress screening with `screen_input()` or `run_agent_securely()`
+- Prompt ingress screening with `screen_input()`, `run_agent_securely()`, `run_agent_stream_securely()`, or `create_input_guardrail()`
 - Direct function-tool authorization with `wrap_tool_handler()` or `@firewall.secure_tool(...)`
+- Private `_AgenticDome_*` argument stripping, sanitized tool arguments, and optional schema validation
 - Manager-to-specialist handoff authorization with `authorize_manager_handoff()`
-- Specialist-side token verification with `wrap_delegated_tool_handler()`
-- Output DLP with `sanitize_output()`
-- Redis-backed multi-worker delegation-token storage
-- Structured-output preservation when Mesh returns unchanged JSON
+- Specialist-side token verification with `verify_specialist_execution()` and `wrap_delegated_tool_handler()`
+- In-memory or Redis-backed multi-worker decision-token storage with one-time consume and optional HMAC validation
+- Output DLP with `sanitize_output()` and `create_output_guardrail()`
+- Streaming output sanitization with `sanitize_streaming_response()`
+- Structured-output preservation when Mesh returns unchanged JSON, and JSON parsing when Mesh returns sanitized structured output
+- Production mode with stable session ID requirements
+- Local size limits, rate limits, retries/backoff, circuit breaker behavior, audit logs, OpenTelemetry events, identity-rich policy context, and emergency local deny lists
 
 ### Install OpenAI Agents Support
 
@@ -1608,9 +1999,20 @@ result = await firewall.run_agent_securely(
 )
 ```
 
+For streamed runs, use `run_agent_stream_securely()` or pass the stream through `sanitize_streaming_response()` before returning chunks to the caller.
+
+### Register Guardrail Helpers
+
+Use these helpers when your OpenAI Agents SDK wiring supports input/output guardrail slots. Tool authorization should still be enforced at function-tool boundaries because tool execution can happen multiple times inside a run.
+
+```python
+input_guardrail = firewall.create_input_guardrail()
+output_guardrail = firewall.create_output_guardrail()
+```
+
 ### Secure a Function Tool
 
-Wrap the local function-tool implementation before exposing it with `@function_tool`.
+Wrap the local function-tool implementation before exposing it with `@function_tool`. If AgenticDome returns sanitized arguments, the wrapper executes the tool with the sanitized arguments and strips private metadata before the handler runs.
 
 ```python
 from agents import function_tool
@@ -1624,6 +2026,7 @@ async def raw_lookup_customer(ctx, args):
 secure_lookup_customer = firewall.wrap_tool_handler(
     tool_name="crm.customer.read",
     tool_platform="crm",
+    tool_schema={"required": ["customer_id"], "properties": {"customer_id": {"type": "string"}}},
     handler=raw_lookup_customer,
 )
 
@@ -1654,6 +2057,26 @@ secure_refund_tool = firewall.wrap_delegated_tool_handler(
 )
 ```
 
+### Runtime Configuration
+
+```bash
+export AGENTICDOME_PLATFORM="openai_agents_sdk"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_OPENAI_AGENTS_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_OPENAI_AGENTS_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_OPENAI_AGENTS_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_OPENAI_AGENTS_RATE_LIMIT_PER_MINUTE="120"
+export AGENTICDOME_OPENAI_AGENTS_RETRY_ATTEMPTS="2"
+export AGENTICDOME_OPENAI_AGENTS_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_OPENAI_AGENTS_AUDIT_LOGGING="true"
+export AGENTICDOME_OPENAI_AGENTS_OTEL_ENABLED="true"
+# Optional for distributed multi-worker delegation:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:openai_agents:handoff"
+# export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
+```
+
 ### Import Reference
 
 ```python
@@ -1663,6 +2086,7 @@ from agenticdome_sdk.openai_agents import (
     OpenAIAgentsFirewallDenied,
     OpenAIAgentsFirewallError,
     DecisionTokenRecord,
+    DecisionTokenStore,
     InMemoryDecisionTokenStore,
     RedisDecisionTokenStore,
 )
@@ -1670,10 +2094,11 @@ from agenticdome_sdk.openai_agents import (
 
 ### OpenAI Agents SDK Accuracy and Interception Notes
 
-- Environment configuration alone does not intercept OpenAI Agents SDK execution. You must wrap `Runner.run(...)`, local function tools, or delegated specialist tools.
-- OpenAI Agents SDK guardrails are useful, but OpenAI's own docs note that agent-level input/output guardrails run only at specific workflow boundaries; tool guardrails run around every custom function-tool invocation. AgenticDome should therefore sit at function-tool boundaries for side-effecting tools.
+- Environment configuration alone does not intercept OpenAI Agents SDK execution. You must wrap `Runner.run(...)`, streamed runner paths, local function tools, or delegated specialist tools, or register the guardrail helpers where your SDK wiring supports them.
+- OpenAI Agents SDK guardrails are useful at run boundaries, but side-effecting local tools still need function-tool wrappers because a single agent run can invoke tools multiple times.
 - Handoffs are represented as tools to the model, so manager-to-specialist policy should be enforced where handoff/tool execution is invoked.
 - Hosted tools, MCP tools, or remote runtimes that execute outside your Python process can only be protected at the local request/response boundary; the SDK cannot inspect inside the remote provider runtime.
+- Production deployments should use stable `session_id`, `run_id`, `trace_id`, `conversation_id`, or `thread_id` values and Redis-backed token storage when manager authorization and specialist execution can happen in different workers.
 
 Official references:
 
@@ -1686,16 +2111,21 @@ Official references:
 
 ## Agno Integration
 
-AgenticDome provides a production Agno adapter for the local hook surfaces that Agno exposes on agents and teams. Agno's SDK includes agents, teams, workflows, tools, guardrails, and lifecycle hooks; the AgenticDome adapter attaches to the local `pre_hooks`, `post_hooks`, and `tool_hooks` boundaries so policy can be enforced before prompts/tools run and before output is returned.
+AgenticDome provides a production Agno adapter for the local hook surfaces that Agno exposes on agents and teams. Agno's Agent reference documents `pre_hooks`, `post_hooks`, and `tool_hooks`; the adapter attaches to those boundaries so policy can be enforced before prompts/tools run and before output is returned. It also exposes middleware/plugin-shaped helper objects for applications that centralize hook registration.
 
 The Agno integration supports:
 
 - Prompt ingress screening through `pre_hook` / `cybersec_pre_hook`
 - Tool-call authorization through `pre_hook`, `tool_hook`, and `@firewall.secure_tool`
+- Private `_AgenticDome_*` argument stripping, sanitized tool arguments, and optional schema validation
 - Manager-to-specialist delegation authorization when handoff metadata is present
-- Specialist-side decision-token verification from hook kwargs, tool args, or Redis/in-memory token storage
-- Output DLP through `post_hook` / `cybersec_post_hook`
+- Specialist-side one-time decision-token verification from hook kwargs, tool args, or Redis/in-memory token storage
+- Optional token HMAC validation for stored delegation decisions
+- Output DLP through `post_hook` / `cybersec_post_hook` with structured-output preservation and sanitized JSON parsing
 - Optional retrieved-context sanitization for Agno knowledge/RAG pipelines
+- Streaming output sanitization through `sanitize_streaming_response()`
+- Production mode with stable session ID requirements
+- Local size limits, rate limits, retries/backoff, circuit breaker behavior, audit logs, OpenTelemetry events, identity-rich policy context, and emergency local deny lists
 
 ### Install Agno Support
 
@@ -1736,16 +2166,28 @@ post_hooks  -> final output DLP and redaction/blocking
 tool_hooks  -> additional local tool boundary enforcement where Agno invokes tool hooks
 ```
 
+For applications that use a centralized registration layer, use:
+
+```python
+hook_bundle = firewall.create_hook_bundle()
+middleware = firewall.create_middleware()
+plugin = firewall.create_plugin()
+```
+
 ### Agno Quickstart: Decorate High-Risk Tools
 
-Use the decorator when a local tool reads sensitive data, mutates state, sends messages, writes files, calls payment systems, or triggers external APIs.
+Use the decorator when a local tool reads sensitive data, mutates state, sends messages, writes files, calls payment systems, or triggers external APIs. If AgenticDome returns sanitized arguments, the wrapper executes the tool with sanitized values and strips private metadata.
 
 ```python
 from agenticdome_sdk.agno import AgenticDomeAgnoFirewall
 
 firewall = AgenticDomeAgnoFirewall()
 
-@firewall.secure_tool(tool_name="crm.customer.read", tool_platform="crm")
+@firewall.secure_tool(
+    tool_name="crm.customer.read",
+    tool_platform="crm",
+    tool_schema={"required": ["customer_id"], "properties": {"customer_id": {"type": "string"}}},
+)
 def lookup_customer(agent, customer_id: str) -> dict:
     return {"customer_id": customer_id, "email": "alice@example.com"}
 ```
@@ -1769,7 +2211,7 @@ firewall.pre_hook(
 )
 ```
 
-The specialist side can verify a token passed in args or recover it from Redis/in-memory storage:
+The specialist side can verify a token passed in args or recover it from Redis/in-memory storage. Stored tokens are consumed once.
 
 ```python
 firewall.pre_hook(
@@ -1780,9 +2222,9 @@ firewall.pre_hook(
 )
 ```
 
-### Agno Retrieved Context Sanitization
+### Agno Retrieved Context and Streaming Sanitization
 
-Use this helper before retrieved context is shown to a user or passed deeper into an agent loop.
+Use these helpers before retrieved or streamed content is shown to a user or passed deeper into an agent loop.
 
 ```python
 safe_context = firewall.sanitize_retrieved_text(
@@ -1791,6 +2233,33 @@ safe_context = firewall.sanitize_retrieved_text(
     session_id="sess_prod_01J4X",
     policy_context={"source": "agno_knowledge"},
 )
+
+async for safe_chunk in firewall.sanitize_streaming_response(
+    chunks,
+    agent_id="support_agent",
+    session_id="sess_prod_01J4X",
+):
+    yield safe_chunk
+```
+
+### Runtime Configuration
+
+```bash
+export AGENTICDOME_PLATFORM="agno"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_AGNO_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_AGNO_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_AGNO_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_AGNO_RATE_LIMIT_PER_MINUTE="120"
+export AGENTICDOME_AGNO_RETRY_ATTEMPTS="2"
+export AGENTICDOME_AGNO_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_AGNO_AUDIT_LOGGING="true"
+export AGENTICDOME_AGNO_OTEL_ENABLED="true"
+# Optional for distributed multi-worker delegation:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:agno:handoff"
+# export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
 ```
 
 ### Agno Import Reference
@@ -1801,6 +2270,7 @@ from agenticdome_sdk.agno import (
     FirewallConfig,
     AgenticDomeAgnoDenied,
     DecisionTokenRecord,
+    DecisionTokenStore,
     InMemoryDecisionTokenStore,
     RedisDecisionTokenStore,
     attach_firewall,
@@ -1813,9 +2283,10 @@ from agenticdome_sdk.agno import (
 
 ### Agno Accuracy and Interception Notes
 
-- Environment configuration alone does not attach AgenticDome to Agno. You must call `attach_firewall(agent_or_team)` or assign `cybersec_pre_hook`, `cybersec_post_hook`, and `cybersec_tool_hook` to the Agno component's hooks.
+- Environment configuration alone does not attach AgenticDome to Agno. You must call `attach_firewall(agent_or_team)`, register `create_hook_bundle()`, use the middleware/plugin helper object, or assign `cybersec_pre_hook`, `cybersec_post_hook`, and `cybersec_tool_hook` to the Agno component's hooks.
 - Agno hosted or remote tools that execute outside your local Python process can only be protected at the local request/response boundary. The SDK cannot inspect inside a remote provider runtime.
 - For production teams and AgentOS deployments, configure Redis so delegation tokens are available across workers and pods.
+- Use stable `session_id`, `run_id`, or `trace_id` values in production so policy decisions, audit logs, and delegation tokens are traceable.
 
 Official references:
 
@@ -1824,20 +2295,22 @@ Official references:
 
 
 
-
-
 ## Google ADK Integration
 
-AgenticDome provides a production Google ADK adapter for the callback boundaries ADK exposes around model calls and tool execution. This is the strongest integration point because ADK callbacks can inspect or stop execution before a model call or tool call, and can replace model or tool outputs after execution.
+AgenticDome provides a production Google ADK adapter for the lifecycle boundaries ADK exposes around agent execution, model calls, and tool execution. Register it at agent construction time with ADK callback keyword arguments, attach it to an existing agent, or expose it as a plugin-style object for applications that use ADK plugin registration.
 
 The Google ADK integration supports:
 
 - Prompt screening through `before_model`
 - Model output sanitization through `after_model`
-- Tool argument authorization through `before_tool`
-- Tool result sanitization through `after_tool`
+- Tool argument authorization, internal metadata stripping, schema validation, and sanitized-argument enforcement through `before_tool`
+- Tool result sanitization with structured JSON preservation through `after_tool`
+- Agent lifecycle audit visibility through `before_agent` and `after_agent`
 - Explicit local tool wrappers with `wrap_tool_handler()` and `@firewall.secure_tool(...)`
-- Sync callback methods for synchronous ADK configurations and async callback methods for async runners
+- Manager-to-specialist handoff authorization with `DecisionTokenStore`, `InMemoryDecisionTokenStore`, and optional `RedisDecisionTokenStore`
+- Delegated execution verification with one-time token consumption and optional HMAC validation
+- Streaming output sanitization with a sliding review buffer
+- Local rate limits, size limits, retries/backoff, circuit breaker behavior, structured audit logs, OpenTelemetry span events, identity-rich policy context, and emergency local deny lists
 
 ### Install Google ADK Support
 
@@ -1847,7 +2320,7 @@ pip install "agenticdome-python-sdk[google-adk]"
 
 ### Google ADK Quickstart: Register Callbacks
 
-Apply AgenticDome where you create the ADK agent.
+Apply AgenticDome where you create the ADK agent. `build_callback_kwargs()` returns the official callback keyword names used by `LlmAgent(...)`.
 
 ```python
 from google.adk.agents import LlmAgent
@@ -1859,10 +2332,7 @@ agent = LlmAgent(
     name="support_adk_agent",
     model="gemini-2.5-flash",
     instruction="Help support analysts safely.",
-    before_model_callback=firewall.before_model,
-    after_model_callback=firewall.after_model,
-    before_tool_callback=firewall.before_tool,
-    after_tool_callback=firewall.after_tool,
+    **firewall.build_callback_kwargs(),
 )
 ```
 
@@ -1872,14 +2342,53 @@ If the agent object already exists, attach callbacks after construction:
 firewall.install_on_agent(agent)
 ```
 
+For ADK applications that centralize guardrails through plugin registration, expose the same enforcement callbacks as a plugin-style object:
+
+```python
+plugin = firewall.create_plugin()
+```
+
 ### Google ADK Tool Protection
 
-Use the decorator when the function can read sensitive records, mutate systems, call SaaS APIs, write files, send messages, or trigger payments.
+Use the decorator when the function can read sensitive records, mutate systems, call SaaS APIs, write files, send messages, or trigger payments. If AgenticDome returns sanitized tool arguments, the wrapper executes the tool with the sanitized arguments and strips private `_AgenticDome_*` metadata before the handler runs.
 
 ```python
 @firewall.secure_tool(tool_name="crm.customer.read", tool_platform="crm")
 def lookup_customer(tool_context, args):
     return crm.get_customer(args["customer_id"])
+```
+
+Pass a Pydantic model, Pydantic v1 model, or JSON-schema-like dict to validate arguments before execution:
+
+```python
+secured_lookup = firewall.wrap_tool_handler(
+    tool_name="crm.customer.read",
+    tool_platform="crm",
+    tool_schema={"required": ["customer_id"], "properties": {"customer_id": {"type": "string"}}},
+    handler=lookup_customer,
+)
+```
+
+### Google ADK Multi-Agent Delegation
+
+Use explicit handoff authorization when a manager delegates a tool call to another ADK agent. The adapter stores a decision token against the clean target tool arguments, injects private handoff metadata into the handoff payload, and verifies delegated execution before the specialist runs the tool.
+
+```python
+record = await firewall.authorize_manager_handoff(
+    source_agent_id="manager",
+    target_agent_id="filesystem_specialist",
+    target_tool_name="filesystem.read",
+    target_tool_args={"path": "/reports/q4.txt"},
+    tool_context=tool_context,
+)
+
+await firewall.verify_delegated_execution(
+    target_agent_id="filesystem_specialist",
+    tool_name="filesystem.read",
+    tool_args={"path": "/reports/q4.txt"},
+    tool_context=tool_context,
+    decision_token=record.decision_token,
+)
 ```
 
 ### Google ADK Runtime Configuration
@@ -1889,19 +2398,43 @@ export AGENTICDOME_PLATFORM="google_adk"
 export AGENTICDOME_GOOGLE_ADK_AGENT_ID="support_adk_agent"
 export AGENTICDOME_SANITIZE_MODEL_OUTPUT="true"
 export AGENTICDOME_SANITIZE_TOOL_OUTPUT="true"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_HANDOFF_TOKEN_TTL_S="900"
+export AGENTICDOME_GOOGLE_ADK_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_GOOGLE_ADK_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_GOOGLE_ADK_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_GOOGLE_ADK_RATE_LIMIT_PER_MINUTE="120"
+export AGENTICDOME_GOOGLE_ADK_RETRY_ATTEMPTS="2"
+export AGENTICDOME_GOOGLE_ADK_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_GOOGLE_ADK_AUDIT_LOGGING="true"
+export AGENTICDOME_GOOGLE_ADK_OTEL_ENABLED="true"
+# Optional for distributed multi-worker handoff verification:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:google_adk:handoff"
+# export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
 ```
 
 ### Google ADK Accuracy and Interception Notes
 
-- Environment configuration alone does not intercept ADK execution. You must register callbacks on the ADK agent or wrap local tool handlers.
+- Environment configuration alone does not intercept ADK execution. You must register callbacks on the ADK agent, register the plugin-style object where your ADK runtime supports plugins, or wrap local tool handlers.
 - Use async callback methods (`before_model`, `after_model`, `before_tool`, `after_tool`) when your ADK runner supports async callbacks. Use the `*_callback` sync methods only for synchronous configurations.
+- In production mode, provide stable ADK context values such as `session_id`, `run_id`, `trace_id`, `conversation_id`, or `request_id`; otherwise the adapter fails closed when `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD=true`.
 - AgenticDome protects the local ADK callback boundary and returned content. It cannot inspect execution inside remote tools or services after your process hands off control.
-- Use stable session IDs in ADK context/state for auditability. Set `AGENTICDOME_REQUIRE_SESSION_ID=true` when every request must be traceable.
+- Include Google Cloud identity and project context in ADK context/state when available, for example `project_id`, `service_account_email`, `principal_id`, `roles`, `scopes`, `region`, and `sensitivity_label`.
+- Use Redis and `AGENTICDOME_TOKEN_HMAC_SECRET` for multi-worker or Kubernetes deployments where handoff authorization and specialist execution can happen in different processes.
 
 ### Google ADK Import Reference
 
 ```python
-from agenticdome_sdk.google_adk import AgenticDomeGoogleADKFirewall, FirewallConfig
+from agenticdome_sdk.google_adk import (
+    AgenticDomeGoogleADKFirewall,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    FirewallConfig,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+)
 ```
 
 ---
@@ -1917,6 +2450,11 @@ The LlamaIndex integration supports:
 - Tool output review before results return to the agent
 - Query output DLP and redaction
 - Retrieval-result sanitization before retrieved context enters a prompt or reaches a user
+- Query-engine and retriever wrappers for central assembly points
+- LlamaIndex node postprocessor creation for RAG context sanitization
+- Callback handler creation for global audit visibility and optional extra input blocking
+- Optional manager-to-specialist handoff authorization and decision-token verification
+- Optional Redis-backed decision token storage for multi-worker LlamaIndex deployments
 - Optional creation of LlamaIndex `FunctionTool` objects when LlamaIndex is installed
 
 ### Install LlamaIndex Support
@@ -1971,12 +2509,77 @@ answer = await firewall.run_query_securely(
 )
 ```
 
+For central assembly code, wrap query engines and retrievers before passing them to agents or workflows.
+
+```python
+secure_query_engine = firewall.wrap_query_engine(
+    query_engine,
+    agent_id="support_llamaindex_agent",
+    session_id="sess_prod_01J4X",
+)
+
+secure_retriever = firewall.wrap_retriever(
+    retriever,
+    agent_id="support_llamaindex_agent",
+    session_id="sess_prod_01J4X",
+)
+```
+
 Use `sanitize_retrieval_result()` after retrievers return nodes and before retrieved text is inserted into a prompt.
 
 ```python
 safe_nodes = await firewall.sanitize_retrieval_result(
     retrieval_result=nodes,
     agent_id="support_llamaindex_agent",
+    session_id="sess_prod_01J4X",
+)
+```
+
+For RAG pipelines that accept node postprocessors, create one from the firewall.
+
+```python
+node_postprocessor = firewall.create_node_postprocessor(
+    agent_id="support_llamaindex_agent",
+    session_id="sess_prod_01J4X",
+)
+```
+
+### LlamaIndex Callback Visibility
+
+Use callbacks for global audit visibility, incident telemetry, and optional extra blocking. Keep hard enforcement in the query, retriever, and tool wrappers.
+
+```python
+from llama_index.core import Settings
+from llama_index.core.callbacks import CallbackManager
+
+handler = firewall.create_callback_handler(
+    agent_id="support_llamaindex_agent",
+    session_id="sess_prod_01J4X",
+)
+
+Settings.callback_manager = CallbackManager([handler])
+```
+
+Set `enforce_input=True` only when you want callback query/prompt events to perform an additional synchronous input check. Wrappers remain the preferred enforcement boundary.
+
+### LlamaIndex Multi-Agent Handoffs
+
+Only add handoff controls when your LlamaIndex application delegates from manager agents to specialist agents that can execute sensitive tools.
+
+```python
+await firewall.authorize_manager_handoff(
+    manager_agent_id="triage_manager",
+    specialist_agent_id="billing_specialist",
+    tool_name="billing.refund.create",
+    tool_args={"invoice_id": "inv_123", "amount": 2500},
+    tool_platform="billing",
+    session_id="sess_prod_01J4X",
+)
+
+await firewall.verify_delegated_execution(
+    specialist_agent_id="billing_specialist",
+    tool_name="billing.refund.create",
+    tool_args={"invoice_id": "inv_123", "amount": 2500},
     session_id="sess_prod_01J4X",
 )
 ```
@@ -1988,35 +2591,52 @@ export AGENTICDOME_PLATFORM="llamaindex"
 export AGENTICDOME_LLAMAINDEX_AGENT_ID="support_llamaindex_agent"
 export AGENTICDOME_SANITIZE_QUERY_OUTPUT="true"
 export AGENTICDOME_SANITIZE_TOOL_OUTPUT="true"
+export AGENTICDOME_HANDOFF_TOKEN_TTL_S="900"
+# Optional for distributed multi-worker handoff verification:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:llamaindex:handoff"
 ```
 
 ### LlamaIndex Accuracy and Interception Notes
 
-- Environment configuration alone does not intercept LlamaIndex execution. You must wrap tools, query calls, query engines, retrievers, or output boundaries.
+- Environment configuration alone does not intercept LlamaIndex execution. You must wrap tools, query calls, query engines, retrievers, node postprocessors, callbacks, or output boundaries.
 - LlamaIndex has many integrations and provider-native tool specs. AgenticDome can protect local Python functions and local query/retrieval boundaries; remote services outside your process must be protected at their request/response boundary.
-- For global behavior, place wrappers in the module where tools, query engines, and agents are assembled, not inside individual request handlers only.
+- For global behavior, place wrappers in the module where tools, query engines, retrievers, node postprocessors, callbacks, and agents are assembled, not inside individual request handlers only.
 - Use stable `session_id` values for auditability. Set `AGENTICDOME_REQUIRE_SESSION_ID=true` when every query/tool call must be traceable.
 
 ### LlamaIndex Import Reference
 
 ```python
-from agenticdome_sdk.llamaindex import AgenticDomeLlamaIndexFirewall, FirewallConfig
+from agenticdome_sdk.llamaindex import (
+    AgenticDomeLlamaIndexFirewall,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    FirewallConfig,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+)
 ```
 
 ---
 
 ## AWS Bedrock Integration
 
-AgenticDome provides a production AWS Bedrock adapter for the local Python boundaries your application controls. This integration makes sense when your service calls Bedrock Runtime directly, handles Bedrock tool-use results, implements Bedrock Agent action groups, or processes knowledge-base retrieval before the content enters a model or reaches a user.
+AgenticDome provides a production AWS Bedrock adapter for the local Python boundaries your application controls. This integration is intended for services that call Bedrock Runtime directly, stream model responses, invoke Bedrock Agents, implement action-group Lambda handlers, execute local tool-use results, or process knowledge-base retrieval before content enters a model or reaches a user.
 
 The Bedrock integration supports:
 
-- Prompt screening before `bedrock-runtime.converse(...)` or `invoke_model(...)`
+- Prompt screening before `bedrock-runtime.converse(...)`, `converse_stream(...)`, `invoke_model(...)`, `invoke_model_with_response_stream(...)`, and `bedrock-agent-runtime.invoke_agent(...)`
 - Model output DLP and redaction before responses leave your application
+- Streaming response sanitization for ConverseStream and InvokeModelWithResponseStream events
+- Provider-specific prompt/response parsing for common Claude, Titan, Llama, Mistral, and Converse payload shapes
 - Local tool-use and Bedrock Agent action-group authorization
-- Tool/action output review before returning tool results to Bedrock or the user
-- Knowledge-base and retrieval-result sanitization
-- Fail-closed or fail-open behavior controlled by `AGENTICDOME_FAIL_CLOSED`
+- Sanitized tool arguments, private `_AgenticDome_*` metadata stripping, and optional schema validation
+- Tool/action output review before returning results to Bedrock or the user
+- Knowledge-base retrieval sanitization at the individual retrieval-node level
+- Production mode with stable session ID requirements
+- AWS account, region, role, principal, Bedrock agent, and knowledge-base context in policy decisions
+- Local size limits, rate limits, retries/backoff, circuit breaker behavior, structured audit logs, OpenTelemetry span events, and emergency local deny lists
+- Optional manager-to-specialist handoff authorization with in-memory or Redis-backed decision-token storage and HMAC validation
 
 ### Install AWS Bedrock Support
 
@@ -2024,7 +2644,7 @@ The Bedrock integration supports:
 pip install "agenticdome-python-sdk[bedrock]"
 ```
 
-The adapter accepts any boto3-compatible Bedrock Runtime client. It does not import boto3 at module import time, so tests and custom clients can use the same wrapper.
+The adapter accepts any boto3-compatible Bedrock Runtime or Bedrock Agent Runtime client. It does not import boto3 at module import time, so tests and custom clients can use the same wrapper.
 
 ### Bedrock Quickstart: Secure Converse
 
@@ -2057,9 +2677,22 @@ response = await firewall.converse_securely(
 messages/system -> prompt screen -> Bedrock Converse -> output review -> sanitized response
 ```
 
+For streaming Converse responses:
+
+```python
+async for event in firewall.converse_stream_securely(
+    bedrock_runtime_client=bedrock,
+    model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
+    messages=messages,
+    agent_id="support_bedrock_agent",
+    session_id="sess_prod_01J4X",
+):
+    yield event
+```
+
 ### Bedrock Quickstart: Secure InvokeModel
 
-Use `invoke_model_securely()` for provider-specific payloads such as Titan, Claude, Llama, or other model-native request bodies.
+Use `invoke_model_securely()` for provider-specific payloads such as Titan, Claude, Llama, Mistral, or other model-native request bodies.
 
 ```python
 import json
@@ -2075,9 +2708,48 @@ response = await firewall.invoke_model_securely(
 )
 ```
 
-The adapter extracts prompt text from common Bedrock payload shapes including `inputText`, `prompt`, `messages`, `contents`, `system`, and provider-native JSON bodies. If the model response uses common text fields such as `outputText`, `completion`, `generation`, `answer`, or Converse `output.message.content[].text`, sanitized text is written back into the response copy.
+For streamed provider-native responses:
 
-### Bedrock Tool / Action Group Protection
+```python
+async for event in firewall.invoke_model_with_response_stream_securely(
+    bedrock_runtime_client=bedrock,
+    model_id="amazon.titan-text-express-v1",
+    body=json.dumps({"inputText": "Draft a customer email."}),
+    agent_id="support_bedrock_agent",
+    session_id="sess_prod_01J4X",
+):
+    yield event
+```
+
+The adapter extracts prompt text from common Bedrock payload shapes including `inputText`, `prompt`, `messages`, `contents`, `system`, Claude `anthropic_version` messages, Llama/Mistral prompts, and provider-native JSON bodies. If the model response uses common text fields such as `outputText`, `completion`, `generation`, `answer`, `text`, `generated_text`, or Converse `output.message.content[].text`, sanitized text is written back into the response copy.
+
+### Bedrock Agents and Action Groups
+
+Use `invoke_agent_securely()` around Bedrock Agent Runtime calls:
+
+```python
+agent_runtime = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
+
+response = await firewall.invoke_agent_securely(
+    bedrock_agent_runtime_client=agent_runtime,
+    agent_id="BEDROCK_AGENT_ID",
+    agent_alias_id="BEDROCK_AGENT_ALIAS_ID",
+    session_id="sess_prod_01J4X",
+    input_text="Find the customer refund policy.",
+    source_agent_id="support_bedrock_agent",
+)
+```
+
+Wrap action-group Lambda handlers so tool authorization and output review happen before the Lambda result is returned to Bedrock:
+
+```python
+def lambda_handler(event, context):
+    return perform_action(event)
+
+secure_lambda_handler = firewall.wrap_action_group_lambda(handler=lambda_handler)
+```
+
+### Bedrock Tool Protection
 
 Wrap every local function that performs side effects, reads sensitive records, calls SaaS APIs, writes files, sends messages, processes payments, or handles Bedrock Agent action-group work.
 
@@ -2091,13 +2763,14 @@ def lookup_customer(ctx, args):
     return crm.get_customer(args["customer_id"])
 ```
 
-For explicit wrapping:
+For explicit wrapping with schema validation:
 
 ```python
 secure_refund = firewall.wrap_tool_handler(
     tool_name="payments.refund.create",
     tool_platform="payments",
     handler=create_refund,
+    tool_schema={"required": ["customer_id", "amount"], "properties": {"customer_id": {"type": "string"}, "amount": {"type": "number"}}},
 )
 
 result = await secure_refund(
@@ -2106,9 +2779,31 @@ result = await secure_refund(
 )
 ```
 
+### Bedrock Multi-Agent Delegation
+
+Use explicit handoff authorization when a manager delegates a sensitive Bedrock tool/action to a specialist agent. Redis is recommended when authorization and execution can happen in different workers or pods.
+
+```python
+record = await firewall.authorize_manager_handoff(
+    source_agent_id="manager",
+    target_agent_id="refund_specialist",
+    target_tool_name="payments.refund.create",
+    target_tool_args={"customer_id": "cust_123", "amount": 250},
+    session_id="sess_prod_01J4X",
+)
+
+await firewall.verify_delegated_execution(
+    target_agent_id="refund_specialist",
+    tool_name="payments.refund.create",
+    tool_args={"customer_id": "cust_123", "amount": 250},
+    session_id="sess_prod_01J4X",
+    decision_token=record.decision_token,
+)
+```
+
 ### Bedrock Retrieval Sanitization
 
-Use `sanitize_retrieval_result()` after knowledge-base retrieval and before retrieved content is placed into a prompt or returned to a user.
+Use `sanitize_retrieval_result()` after knowledge-base retrieval and before retrieved content is placed into a prompt or returned to a user. For Bedrock Knowledge Bases response shapes, each `retrievalResults[].content.text` node is sanitized independently so metadata and ranking structure are preserved.
 
 ```python
 safe_retrieval = await firewall.sanitize_retrieval_result(
@@ -2127,19 +2822,43 @@ export AGENTICDOME_BEDROCK_AGENT_ID="support_bedrock_agent"
 export AGENTICDOME_BEDROCK_MODEL_ID="anthropic.claude-3-5-sonnet-20241022-v2:0"
 export AGENTICDOME_SANITIZE_MODEL_OUTPUT="true"
 export AGENTICDOME_SANITIZE_TOOL_OUTPUT="true"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_AWS_ACCOUNT_ID="123456789012"
+export AGENTICDOME_AWS_REGION="us-east-1"
+export AGENTICDOME_BEDROCK_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_BEDROCK_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_BEDROCK_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_BEDROCK_RATE_LIMIT_PER_MINUTE="120"
+export AGENTICDOME_BEDROCK_RETRY_ATTEMPTS="2"
+export AGENTICDOME_BEDROCK_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_BEDROCK_AUDIT_LOGGING="true"
+export AGENTICDOME_BEDROCK_OTEL_ENABLED="true"
+# Optional for distributed multi-worker handoff verification:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:aws_bedrock:handoff"
+# export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
 ```
 
 ### Bedrock Accuracy and Interception Notes
 
-- Environment configuration alone does not intercept Bedrock calls. You must wrap the code path that calls `converse(...)`, `invoke_model(...)`, local tool handlers, action-group handlers, or retrieval handlers.
+- Environment configuration alone does not intercept Bedrock calls. You must wrap the code path that calls `converse(...)`, `converse_stream(...)`, `invoke_model(...)`, `invoke_model_with_response_stream(...)`, `invoke_agent(...)`, local tool handlers, action-group handlers, or retrieval handlers.
 - AgenticDome protects the local application boundary and returned content. It cannot inspect execution inside AWS-managed Bedrock services after your request has been sent.
-- Use stable `session_id` values for auditability. Set `AGENTICDOME_REQUIRE_SESSION_ID=true` when every model or tool call must be traceable.
+- Use stable `session_id` values for auditability. Set `AGENTICDOME_PRODUCTION_MODE=true` and `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD=true` when every model, agent, retrieval, or tool call must be traceable.
 - Bedrock provider-native payloads vary by model. The adapter extracts common prompt and response fields and falls back to serialized JSON review for unknown shapes.
+- Include AWS identity and resource context when available: account ID, region, principal ARN, role ARN, Bedrock agent ID, agent alias ID, knowledge-base ID, and sensitivity labels.
 
 ### Bedrock Import Reference
 
 ```python
-from agenticdome_sdk.aws_bedrock import AgenticDomeAWSBedrockFirewall, FirewallConfig
+from agenticdome_sdk.aws_bedrock import (
+    AgenticDomeAWSBedrockFirewall,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    FirewallConfig,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+)
 ```
 
 ---
@@ -2152,9 +2871,16 @@ The MCP integration supports:
 
 - Optional upstream prompt screening from host context
 - MCP `tools/call` authorization through `mcp_guardrail_validate()`
+- Authorization for `tools/list`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, and `sampling/createMessage`
+- `tools/list` response filtering so low-privilege agents do not see tools they cannot use
+- Resource, prompt, sampling, tool, and streaming-output sanitization
 - Delegated decision-token verification when handoff metadata is present
+- Manager-to-MCP handoff authorization with in-memory or Redis-backed decision token storage
+- Per-MCP-server policy context such as server ID, URL, vendor, and trust level
+- Sanitized tool argument forwarding when AgenticDome returns safe replacement arguments
+- Local output/argument size limits, rate limiting, and audit logging
 - Internal `_AgenticDome_*` metadata stripping before forwarding to third-party MCP servers
-- Mesh output sanitization for common MCP result shapes such as `content[].text`, top-level `text`, lists, and serialized structured results
+- Mesh output sanitization for common MCP result shapes such as `content[].text`, prompt messages, top-level `text`, lists, and serialized structured results
 - Fail-closed or fail-open behavior controlled by `AGENTICDOME_FAIL_CLOSED`
 
 ### Install MCP Host Support
@@ -2190,7 +2916,7 @@ async def handle_mcp_request(request: dict, user_prompt: str, session_id: str) -
 `forward_with_firewall()` performs the full host-boundary flow:
 
 ```text
-JSON-RPC request -> upstream prompt screen -> delegation token verification -> tools/call authorization -> third-party MCP server -> result sanitization -> client
+JSON-RPC request -> rate limit / upstream prompt screen -> method authorization -> optional delegation-token verification -> third-party MCP server -> list filtering / result sanitization -> client
 ```
 
 ### MCP Quickstart: Preflight Only
@@ -2221,7 +2947,7 @@ return response
 
 ### MCP Delegated Execution
 
-If a manager agent authorizes a delegated MCP tool call, pass the decision token and source agent ID as private MCP arguments or in host context. The adapter verifies the token and removes private metadata before forwarding the request downstream.
+If another framework or orchestrator already issued a decision token, pass the token and source agent ID as private MCP arguments or in host context. The adapter verifies the token and removes private metadata before forwarding the request downstream.
 
 ```python
 request = {
@@ -2246,29 +2972,62 @@ The third-party MCP server receives only the business arguments after preflight 
 {"customer_id": "cust_123", "amount": 250}
 ```
 
+If the MCP gateway itself owns manager-to-specialist delegation, authorize the handoff first. The issued token is stored in the configured token store and consumed when the specialist MCP execution reaches the gateway.
+
+```python
+await firewall.authorize_manager_handoff(
+    manager_agent_id="support_manager",
+    target_agent_id="payments_mcp_worker",
+    tool_name="payments.refund.create",
+    tool_args={"customer_id": "cust_123", "amount": 250},
+    context={"session_id": "sess_prod_01J4X"},
+    tool_platform="payments_mcp_server",
+)
+```
+
 ### MCP Runtime Configuration
 
 ```bash
 export AGENTICDOME_PLATFORM="mcp"
 export AGENTICDOME_MCP_HOST_ID="enterprise_mcp_gateway"
 export AGENTICDOME_MCP_TOOL_PLATFORM="third_party_mcp_server"
+export AGENTICDOME_MCP_SERVER_ID="github-mcp"
+export AGENTICDOME_MCP_SERVER_URL="https://mcp.github.internal"
+export AGENTICDOME_MCP_SERVER_TRUST_LEVEL="internal"
 export AGENTICDOME_SANITIZE_TOOL_OUTPUT="true"
+export AGENTICDOME_SANITIZE_RESOURCE_OUTPUT="true"
+export AGENTICDOME_SANITIZE_PROMPT_OUTPUT="true"
+export AGENTICDOME_SANITIZE_STREAMING_OUTPUT="true"
 export AGENTICDOME_VERIFY_DECISION_TOKENS="true"
+export AGENTICDOME_HANDOFF_TOKEN_TTL_S="900"
 export AGENTICDOME_SCREEN_UPSTREAM_PROMPT="true"
+export AGENTICDOME_MCP_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_MCP_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_MCP_RATE_LIMIT_PER_MINUTE="0"
+# Optional for multi-worker gateways:
+# export AGENTICDOME_REDIS_URL="redis://localhost:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:mcp:handoff"
 ```
 
 ### MCP Accuracy and Interception Notes
 
 - Environment configuration alone does not intercept MCP traffic. You must call `preflight_request()` or `forward_with_firewall()` in the host, gateway, proxy, or router that forwards JSON-RPC requests.
-- The adapter protects `tools/call`. Non-tool JSON-RPC methods pass through unchanged by default.
-- AgenticDome can protect the local host boundary and returned result, but it cannot inspect code running inside a remote third-party MCP server you do not control.
+- The adapter protects `tools/call` and can also guard `tools/list`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, and `sampling/createMessage`. Disable individual enterprise protections with the corresponding `AGENTICDOME_MCP_PROTECT_*` setting when a simple host needs passthrough behavior.
+- AgenticDome can protect the local host boundary and returned result, but it cannot inspect code running inside a remote third-party MCP server you do not control. Pass `mcp_server_id`, `mcp_server_url`, `mcp_server_vendor`, and trust metadata in `context` for per-server policy decisions.
 - Use stable `session_id` values for auditability. Set `AGENTICDOME_REQUIRE_SESSION_ID=true` when every host request should be traceable.
 - For delegated MCP execution, include both `_AgenticDome_decision_token` and `_AgenticDome_source_agent_id`; partial handoff metadata is blocked.
 
 ### MCP Import Reference
 
 ```python
-from agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall, FirewallConfig
+from agenticdome_sdk.mcp_host import (
+    AgenticDomeMCPHostFirewall,
+    DecisionTokenRecord,
+    DecisionTokenStore,
+    FirewallConfig,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+)
 ```
 
 ---
@@ -2548,7 +3307,13 @@ from agenticdome_sdk.microsoft_agent_framework import AgenticDomeMicrosoftAgentF
 Microsoft AI Foundry firewall:
 
 ```python
-from agenticdome_sdk.microsoft_ai_foundry import AgenticDomeMicrosoftAIFoundryFirewall, FirewallConfig
+from agenticdome_sdk.microsoft_ai_foundry import (
+    AgenticDomeMicrosoftAIFoundryFirewall,
+    FirewallConfig,
+    DecisionTokenStore,
+    InMemoryDecisionTokenStore,
+    RedisDecisionTokenStore,
+)
 ```
 
 Agno firewall:

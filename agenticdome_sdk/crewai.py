@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tuple
 
 try:
     from crewai.hooks import (
@@ -51,6 +54,9 @@ class FirewallConfig:
     platform: str = "crewai"
     timeout_s: int = 20
     fail_closed: bool = True
+    production_mode: bool = False
+    require_explicit_session_id: bool = False
+    require_stable_session_id_in_prod: bool = True
 
     redact_pii: bool = True
     redact_secrets: bool = True
@@ -62,6 +68,21 @@ class FirewallConfig:
 
     redis_url: str = ""
     redis_key_prefix: str = "AgenticDome:crewai:handoff"
+    token_hmac_secret: str = ""
+
+    max_input_chars: int = 50_000
+    max_output_chars: int = 100_000
+    max_tool_arg_chars: int = 20_000
+    streaming_buffer_chars: int = 4_000
+    rate_limit_per_minute: int = 0
+    retry_attempts: int = 2
+    retry_backoff_s: float = 0.25
+    circuit_breaker_failures: int = 5
+    circuit_breaker_reset_s: int = 60
+    audit_logging: bool = True
+    otel_enabled: bool = True
+    emergency_block_tools: str = ""
+    emergency_block_agents: str = ""
 
     report_incidents: bool = True
     blocked_incident_severity: str = "medium"
@@ -84,6 +105,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 CONFIG = FirewallConfig(
     api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io").rstrip("/"),
     api_key=os.getenv("AGENTICDOME_API_KEY", ""),
@@ -91,6 +122,9 @@ CONFIG = FirewallConfig(
     platform=os.getenv("AGENTICDOME_PLATFORM", "crewai"),
     timeout_s=_env_int("AGENTICDOME_TIMEOUT_S", 20),
     fail_closed=_env_bool("AGENTICDOME_FAIL_CLOSED", True),
+    production_mode=_env_bool("AGENTICDOME_PRODUCTION_MODE", False),
+    require_explicit_session_id=_env_bool("AGENTICDOME_REQUIRE_SESSION_ID", False),
+    require_stable_session_id_in_prod=_env_bool("AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD", True),
     redact_pii=_env_bool("AGENTICDOME_REDACT_PII", True),
     redact_secrets=_env_bool("AGENTICDOME_REDACT_SECRETS", True),
     block_on_sensitive_output=_env_bool("AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT", False),
@@ -102,6 +136,20 @@ CONFIG = FirewallConfig(
         "AGENTICDOME_REDIS_KEY_PREFIX",
         "AgenticDome:crewai:handoff",
     ),
+    token_hmac_secret=os.getenv("AGENTICDOME_TOKEN_HMAC_SECRET", ""),
+    max_input_chars=_env_int("AGENTICDOME_CREWAI_MAX_INPUT_CHARS", 50_000),
+    max_output_chars=_env_int("AGENTICDOME_CREWAI_MAX_OUTPUT_CHARS", 100_000),
+    max_tool_arg_chars=_env_int("AGENTICDOME_CREWAI_MAX_TOOL_ARG_CHARS", 20_000),
+    streaming_buffer_chars=_env_int("AGENTICDOME_CREWAI_STREAMING_BUFFER_CHARS", 4_000),
+    rate_limit_per_minute=_env_int("AGENTICDOME_CREWAI_RATE_LIMIT_PER_MINUTE", 0),
+    retry_attempts=_env_int("AGENTICDOME_CREWAI_RETRY_ATTEMPTS", 2),
+    retry_backoff_s=_env_float("AGENTICDOME_CREWAI_RETRY_BACKOFF_S", 0.25),
+    circuit_breaker_failures=_env_int("AGENTICDOME_CREWAI_CIRCUIT_BREAKER_FAILURES", 5),
+    circuit_breaker_reset_s=_env_int("AGENTICDOME_CREWAI_CIRCUIT_BREAKER_RESET_S", 60),
+    audit_logging=_env_bool("AGENTICDOME_CREWAI_AUDIT_LOGGING", True),
+    otel_enabled=_env_bool("AGENTICDOME_CREWAI_OTEL_ENABLED", True),
+    emergency_block_tools=os.getenv("AGENTICDOME_CREWAI_EMERGENCY_BLOCK_TOOLS", ""),
+    emergency_block_agents=os.getenv("AGENTICDOME_CREWAI_EMERGENCY_BLOCK_AGENTS", ""),
     report_incidents=_env_bool("AGENTICDOME_REPORT_INCIDENTS", True),
     blocked_incident_severity=os.getenv("AGENTICDOME_BLOCKED_INCIDENT_SEVERITY", "medium"),
 )
@@ -143,6 +191,7 @@ class DecisionTokenRecord:
     decision_token: str
     source_agent_id: str
     created_at: float
+    token_hmac: str = ""
 
 
 class DecisionTokenStore:
@@ -177,6 +226,19 @@ class DecisionTokenStore:
         tool_args: Dict[str, Any],
     ) -> None:
         raise NotImplementedError
+
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        record = self.get(session_id=session_id, target_agent_id=target_agent_id, tool_name=tool_name, tool_args=tool_args)
+        if record is not None:
+            self.delete(session_id=session_id, target_agent_id=target_agent_id, tool_name=tool_name, tool_args=tool_args)
+        return record
 
 
 def _stable_json(value: Any) -> str:
@@ -293,6 +355,7 @@ class RedisDecisionTokenStore(DecisionTokenStore):
             "decision_token": record.decision_token,
             "source_agent_id": record.source_agent_id,
             "created_at": record.created_at,
+            "token_hmac": record.token_hmac,
         }
         self.r.setex(key, ttl_s, json.dumps(payload))
 
@@ -315,6 +378,7 @@ class RedisDecisionTokenStore(DecisionTokenStore):
                 decision_token=str(payload["decision_token"]),
                 source_agent_id=str(payload["source_agent_id"]),
                 created_at=float(payload.get("created_at", time.time())),
+                token_hmac=str(payload.get("token_hmac", "")),
             )
         except Exception:
             try:
@@ -333,6 +397,36 @@ class RedisDecisionTokenStore(DecisionTokenStore):
     ) -> None:
         key = self._key(session_id, target_agent_id, tool_name, tool_args)
         self.r.delete(key)
+
+    def consume(
+        self,
+        *,
+        session_id: str,
+        target_agent_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DecisionTokenRecord]:
+        key = self._key(session_id, target_agent_id, tool_name, tool_args)
+        try:
+            raw = self.r.execute_command("GETDEL", key)
+        except Exception:
+            pipe = self.r.pipeline()
+            pipe.get(key)
+            pipe.delete(key)
+            values = pipe.execute()
+            raw = values[0] if values else None
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            return DecisionTokenRecord(
+                decision_token=str(payload["decision_token"]),
+                source_agent_id=str(payload["source_agent_id"]),
+                created_at=float(payload.get("created_at", time.time())),
+                token_hmac=str(payload.get("token_hmac", "")),
+            )
+        except Exception:
+            return None
 
 
 def _build_token_store() -> DecisionTokenStore:
@@ -355,6 +449,12 @@ def _build_token_store() -> DecisionTokenStore:
 
 
 TOKEN_STORE: DecisionTokenStore = _build_token_store()
+_RATE_LOCK = Lock()
+_RATE_EVENTS: Dict[str, Deque[float]] = defaultdict(deque)
+_CIRCUIT_LOCK = Lock()
+_CIRCUIT_FAILURES = 0
+_CIRCUIT_OPEN_UNTIL = 0.0
+_ATTACHED_SCOPES: Dict[int, Dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------
@@ -392,8 +492,13 @@ def _ctx_session_id(ctx: Any) -> str:
         or _safe_getattr(ctx, "task_id")
         or _safe_getattr(ctx, "trace_id")
         or _safe_getattr(ctx, "crew_id")
+        or _safe_getattr(ctx, "request_id")
     )
-    return str(sid) if sid else f"crewai-fallback-{uuid.uuid4().hex[:8]}"
+    if sid:
+        return str(sid)
+    if CONFIG.require_explicit_session_id or (CONFIG.production_mode and CONFIG.require_stable_session_id_in_prod):
+        raise ValueError("Missing stable CrewAI session_id/run_id/trace_id in hook context.")
+    return f"crewai-fallback-{uuid.uuid4().hex[:8]}"
 
 
 def _ctx_agent_id(ctx: Any) -> str:
@@ -412,6 +517,8 @@ def _ctx_source_agent_id(ctx: Any, tool_args: Dict[str, Any]) -> Optional[str]:
     value = (
         tool_args.get("_AgenticDome_source_agent_id")
         or tool_args.get("_source_agent_id")
+        or tool_args.get("source_agent_id")
+        or tool_args.get("AgenticDome_source_agent_id")
         or _safe_getattr(ctx, "source_agent_id")
     )
     return str(value) if value else None
@@ -421,6 +528,8 @@ def _ctx_decision_token(tool_args: Dict[str, Any]) -> Optional[str]:
     value = (
         tool_args.get("_AgenticDome_decision_token")
         or tool_args.get("_decision_token")
+        or tool_args.get("decision_token")
+        or tool_args.get("AgenticDome_decision_token")
     )
     return str(value) if value else None
 
@@ -451,6 +560,10 @@ def _without_agenticdome_private_keys(args: Dict[str, Any]) -> Dict[str, Any]:
         "_source_agent_id",
         "_AgenticDome_decision_token",
         "_AgenticDome_source_agent_id",
+        "decision_token",
+        "source_agent_id",
+        "AgenticDome_decision_token",
+        "AgenticDome_source_agent_id",
     }
 
     return {
@@ -462,30 +575,172 @@ def _without_agenticdome_private_keys(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _circuit_allows_call() -> bool:
+    with _CIRCUIT_LOCK:
+        return time.time() >= _CIRCUIT_OPEN_UNTIL
+
+
+def _record_client_success() -> None:
+    global _CIRCUIT_FAILURES, _CIRCUIT_OPEN_UNTIL
+    with _CIRCUIT_LOCK:
+        _CIRCUIT_FAILURES = 0
+        _CIRCUIT_OPEN_UNTIL = 0.0
+
+
+def _record_client_failure() -> None:
+    global _CIRCUIT_FAILURES, _CIRCUIT_OPEN_UNTIL
+    with _CIRCUIT_LOCK:
+        _CIRCUIT_FAILURES += 1
+        if CONFIG.circuit_breaker_failures > 0 and _CIRCUIT_FAILURES >= CONFIG.circuit_breaker_failures:
+            _CIRCUIT_OPEN_UNTIL = time.time() + max(1, CONFIG.circuit_breaker_reset_s)
+
+
 def _client_call(method_names: Tuple[str, ...], *args: Any, **kwargs: Any) -> Any:
     if CLIENT is None:
         return None
+    if not _circuit_allows_call():
+        raise RuntimeError("AgenticDome CrewAI circuit breaker is open.")
 
     last_error: Optional[Exception] = None
-
-    for method_name in method_names:
-        method = getattr(CLIENT, method_name, None)
-        if method is None:
-            continue
-
-        try:
-            return method(*args, **kwargs)
-        except TypeError as exc:
-            last_error = exc
-            continue
+    attempts = max(1, CONFIG.retry_attempts)
+    for attempt in range(attempts):
+        for method_name in method_names:
+            method = getattr(CLIENT, method_name, None)
+            if method is None:
+                continue
+            try:
+                result = method(*args, **kwargs)
+                _record_client_success()
+                return result
+            except TypeError as exc:
+                last_error = exc
+                continue
+            except Exception as exc:
+                last_error = exc
+                _record_client_failure()
+                break
+        if attempt + 1 < attempts:
+            time.sleep(max(0.0, CONFIG.retry_backoff_s) * (2 ** attempt))
 
     if last_error:
         raise last_error
+    raise AttributeError(f"AgenticDome client does not implement any of: {', '.join(method_names)}")
 
-    raise AttributeError(
-        f"AgenticDome client does not implement any of: {', '.join(method_names)}"
-    )
 
+
+def _bounded_text(text: str, *, limit: int, label: str) -> str:
+    if limit > 0 and len(text) > limit:
+        return text[:limit] + f"\n[TRUNCATED BY AgenticDome {label}]"
+    return text
+
+
+def _check_rate_limit(*, agent_id: str, session_id: str, purpose: str) -> None:
+    limit = CONFIG.rate_limit_per_minute
+    if limit <= 0:
+        return
+    key = f"{agent_id}:{session_id}:{purpose}"
+    now = time.time()
+    cutoff = now - 60
+    with _RATE_LOCK:
+        events = _RATE_EVENTS[key]
+        while events and events[0] < cutoff:
+            events.popleft()
+        if len(events) >= limit:
+            raise PermissionError(f"CrewAI rate limit exceeded for {purpose}.")
+        events.append(now)
+
+
+def _enforce_tool_arg_size(tool_name: str, tool_args: Dict[str, Any]) -> None:
+    if CONFIG.max_tool_arg_chars > 0 and len(_serialize_result_for_review(tool_args or {})) > CONFIG.max_tool_arg_chars:
+        raise PermissionError(f"CrewAI tool arguments exceed max size for {tool_name}.")
+
+
+def _emergency_policy_check(agent_id: str, tool_name: Optional[str] = None) -> None:
+    agents = {item.strip() for item in (CONFIG.emergency_block_agents or "").split(",") if item.strip()}
+    tools = {item.strip() for item in (CONFIG.emergency_block_tools or "").split(",") if item.strip()}
+    if agent_id in agents:
+        raise PermissionError(f"Emergency local policy blocked CrewAI agent: {agent_id}")
+    if tool_name and tool_name in tools:
+        raise PermissionError(f"Emergency local policy blocked CrewAI tool: {tool_name}")
+
+
+def _audit(event: str, *, agent_id: str, session_id: str, details: Optional[Dict[str, Any]] = None) -> None:
+    if not CONFIG.audit_logging:
+        return
+    payload = {"event": event, "agent_id": agent_id, "session_id": session_id, "platform": CONFIG.platform}
+    if details:
+        payload.update(details)
+    logger.info("AgenticDome CrewAI audit: %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def _otel_event(name: str, attributes: Dict[str, Any]) -> None:
+    if not CONFIG.otel_enabled:
+        return
+    try:
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            span.add_event(name, attributes={k: str(v) for k, v in attributes.items()})
+    except Exception:
+        pass
+
+
+def _token_hmac(token: str) -> str:
+    if not CONFIG.token_hmac_secret or not token:
+        return ""
+    digest = hmac.new(CONFIG.token_hmac_secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _verify_record_hmac(record: DecisionTokenRecord) -> bool:
+    if not CONFIG.token_hmac_secret:
+        return True
+    return bool(record.token_hmac) and hmac.compare_digest(record.token_hmac, _token_hmac(record.decision_token))
+
+
+def _sanitized_tool_args(response: Any) -> Optional[Dict[str, Any]]:
+    payload = _result_payload(response)
+    for key in ("sanitized_tool_args", "sanitized_args", "tool_args"):
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, dict):
+            return _without_agenticdome_private_keys(value)
+    return None
+
+
+def _validate_tool_schema(tool_name: str, tool_args: Dict[str, Any], schema: Optional[Any]) -> None:
+    if schema is None:
+        return
+    if hasattr(schema, "model_validate"):
+        schema.model_validate(tool_args)
+        return
+    if hasattr(schema, "parse_obj"):
+        schema.parse_obj(tool_args)
+        return
+    if not isinstance(schema, dict):
+        return
+    required = schema.get("required")
+    if isinstance(required, list):
+        missing = [key for key in required if key not in tool_args]
+        if missing:
+            raise PermissionError(f"CrewAI tool {tool_name} missing required args: {', '.join(missing)}")
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for key, spec in properties.items():
+            if key not in tool_args or not isinstance(spec, dict):
+                continue
+            expected = spec.get("type")
+            value = tool_args[key]
+            ok = (
+                expected is None
+                or expected == "string" and isinstance(value, str)
+                or expected == "integer" and isinstance(value, int) and not isinstance(value, bool)
+                or expected == "number" and isinstance(value, (int, float)) and not isinstance(value, bool)
+                or expected == "boolean" and isinstance(value, bool)
+                or expected == "object" and isinstance(value, dict)
+                or expected == "array" and isinstance(value, list)
+            )
+            if not ok:
+                raise PermissionError(f"CrewAI tool {tool_name} arg {key} failed schema validation.")
 
 def _result_payload(response: Any) -> Dict[str, Any]:
     if isinstance(response, dict):
@@ -599,6 +854,7 @@ def _target_tool_name(tool_name: str, tool_args: Dict[str, Any]) -> str:
 def _target_tool_args(tool_args: Dict[str, Any]) -> Dict[str, Any]:
     raw = (
         tool_args.get("target_tool_args")
+        or tool_args.get("delegated_tool_args")
         or tool_args.get("skill_args")
         or tool_args.get("arguments")
         or {}
@@ -662,6 +918,8 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
         agent_id = _ctx_agent_id(context)
         tool_name, tool_args = _ctx_tool_name_args(context)
         tool_platform = _ctx_tool_platform(context, tool_args)
+        _emergency_policy_check(agent_id, tool_name)
+        _check_rate_limit(agent_id=agent_id, session_id=session_id, purpose=f"tool:{tool_name}")
 
         decision_token = _ctx_decision_token(tool_args)
         source_agent_id = _ctx_source_agent_id(context, tool_args)
@@ -671,7 +929,7 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
         # If a manager stored a token but CrewAI did not pass it directly,
         # retrieve it by session, target agent, tool, and clean args.
         if not decision_token:
-            pending = TOKEN_STORE.get(
+            pending = TOKEN_STORE.consume(
                 session_id=session_id,
                 target_agent_id=agent_id,
                 tool_name=tool_name,
@@ -679,6 +937,8 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
             )
 
             if pending:
+                if not _verify_record_hmac(pending):
+                    raise PermissionError("Invalid AgenticDome decision token HMAC for delegated CrewAI execution.")
                 decision_token = pending.decision_token
                 source_agent_id = pending.source_agent_id
 
@@ -711,7 +971,7 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
 
             payload = _result_payload(response)
 
-            if bool(payload.get("valid")) is not True:
+            if not bool(payload.get("valid") or payload.get("allowed")):
                 raise PermissionError(
                     f"AgenticDome blocked delegated CrewAI execution: {_reason(response)}"
                 )
@@ -722,7 +982,7 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
                 tool_name=tool_name,
                 tool_args=clean_tool_args,
             )
-
+            _audit("crewai_delegated_execution_allowed", agent_id=agent_id, session_id=session_id, details={"tool_name": tool_name})
             return True
 
         # Case B: Manager handoff routing
@@ -731,6 +991,7 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
             target_tool_name = _target_tool_name(tool_name, tool_args)
             target_args = _target_tool_args(tool_args)
             clean_target_args = _without_agenticdome_private_keys(target_args)
+            _enforce_tool_arg_size(target_tool_name, clean_target_args)
 
             response = _client_call(
                 ("a2a_authorize_tool", "a2aAuthorizeTool"),
@@ -770,6 +1031,7 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
                         decision_token=decision_token,
                         source_agent_id=agent_id,
                         created_at=time.time(),
+                        token_hmac=_token_hmac(decision_token),
                     ),
                     ttl_s=CONFIG.handoff_token_ttl_s,
                 )
@@ -789,12 +1051,15 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
 
                 _write_back_tool_args(context, tool_args)
 
+            _audit("crewai_handoff_allowed", agent_id=agent_id, session_id=session_id, details={"target_agent_id": target_agent_id, "tool_name": target_tool_name})
             return True
 
         # Case C: Direct tool authorization
+        _enforce_tool_arg_size(tool_name, clean_tool_args)
+        _validate_tool_schema(tool_name, clean_tool_args, _safe_getattr(context, "tool_schema") or _safe_getattr(context, "args_schema"))
         response = _client_call(
             ("guardrail_validate", "guardrailValidate"),
-            text=f"CrewAI agent {agent_id} executing tool {tool_name}",
+            text=_bounded_text(f"CrewAI agent {agent_id} executing tool {tool_name}", limit=CONFIG.max_input_chars, label="CREWAI TOOL"),
             agent_id=agent_id,
             direction="outbound",
             session_id=session_id,
@@ -816,6 +1081,12 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
                 f"AgenticDome blocked CrewAI tool execution: {_reason(response)}"
             )
 
+        sanitized = _sanitized_tool_args(response)
+        if sanitized is not None:
+            _validate_tool_schema(tool_name, sanitized, _safe_getattr(context, "tool_schema") or _safe_getattr(context, "args_schema"))
+            _write_back_tool_args(context, sanitized)
+        _audit("crewai_tool_allowed", agent_id=agent_id, session_id=session_id, details={"tool_name": tool_name})
+        _otel_event("agenticdome.crewai.tool_allowed", {"agent_id": agent_id, "session_id": session_id, "tool_name": tool_name})
         return True
 
     except Exception as exc:
@@ -848,12 +1119,13 @@ def AgenticDome_after_tool_call(context: Any) -> Any:
 
         review_text = _serialize_result_for_review(tool_result)
 
+        _check_rate_limit(agent_id=agent_id, session_id=session_id, purpose="output")
         response = _client_call(
             ("mesh_validate", "meshValidate"),
             agent_id=agent_id,
             session_id=session_id,
             direction="output",
-            text=review_text,
+            text=_bounded_text(review_text, limit=CONFIG.max_output_chars, label="CREWAI OUTPUT"),
             platform=CONFIG.platform,
             redact_pii=CONFIG.redact_pii,
             redact_secrets=CONFIG.redact_secrets,
@@ -891,8 +1163,16 @@ def AgenticDome_after_tool_call(context: Any) -> Any:
 
         if sanitized is not None:
             sanitized_text = str(sanitized)
-            if isinstance(tool_result, (dict, list, tuple)) and sanitized_text == review_text:
-                return tool_result
+            if isinstance(tool_result, (dict, list, tuple)):
+                if sanitized_text == review_text:
+                    return tool_result
+                try:
+                    parsed = json.loads(sanitized_text)
+                    if isinstance(parsed, (dict, list)):
+                        _safe_setattr_or_dict(context, "tool_result", parsed)
+                        return parsed
+                except Exception:
+                    pass
             _safe_setattr_or_dict(context, "tool_result", sanitized_text)
             return sanitized_text
 
@@ -929,6 +1209,8 @@ def AgenticDome_before_llm_call(context: Any) -> bool:
 
         session_id = _ctx_session_id(context)
         agent_id = _ctx_agent_id(context)
+        _emergency_policy_check(agent_id)
+        _check_rate_limit(agent_id=agent_id, session_id=session_id, purpose="input")
         prompt = _extract_prompt(context)
 
         if not prompt.strip():
@@ -936,7 +1218,7 @@ def AgenticDome_before_llm_call(context: Any) -> bool:
 
         response = _client_call(
             ("guardrail_validate", "guardrailValidate"),
-            text=prompt,
+            text=_bounded_text(prompt, limit=CONFIG.max_input_chars, label="CREWAI INPUT"),
             agent_id=agent_id,
             direction="input",
             session_id=session_id,
@@ -953,7 +1235,8 @@ def AgenticDome_before_llm_call(context: Any) -> bool:
             raise PermissionError(
                 f"AgenticDome blocked CrewAI prompt: {_reason(response)}"
             )
-
+        _audit("crewai_prompt_allowed", agent_id=agent_id, session_id=session_id)
+        _otel_event("agenticdome.crewai.prompt_allowed", {"agent_id": agent_id, "session_id": session_id})
         return True
 
     except Exception as exc:
@@ -966,6 +1249,173 @@ def AgenticDome_before_llm_call(context: Any) -> bool:
         return _block_or_allow_on_error("before_llm_call", exc, agent_id)
 
 
+async def sanitize_streaming_response(
+    chunks: AsyncIterator[Any],
+    *,
+    agent_id: str,
+    session_id: str,
+    policy_context: Optional[Dict[str, Any]] = None,
+) -> AsyncIterator[str]:
+    tail = ""
+    async for chunk in chunks:
+        text = str(chunk)
+        review_text = (tail + text)[-max(1, CONFIG.streaming_buffer_chars):]
+        response = _client_call(
+            ("mesh_validate", "meshValidate"),
+            agent_id=agent_id,
+            session_id=session_id,
+            direction="output",
+            text=_bounded_text(review_text, limit=CONFIG.max_output_chars, label="CREWAI STREAM"),
+            platform=CONFIG.platform,
+            redact_pii=CONFIG.redact_pii,
+            redact_secrets=CONFIG.redact_secrets,
+            block_on_sensitive_output=CONFIG.block_on_sensitive_output,
+            policy_context={
+                "source_agent_id": agent_id,
+                "request_purpose": "crewai_streaming_output_review",
+                "platform": CONFIG.platform,
+                **(policy_context or {}),
+            },
+        )
+        if _verdict(response) == "BLOCKED":
+            yield "[OUTPUT BLOCKED BY AGENTICDOME SECURITY POLICY]"
+            return
+        payload = _result_payload(response)
+        sanitized = payload.get("sanitized_text") or payload.get("text") or payload.get("output")
+        sanitized_text = str(sanitized) if sanitized is not None else review_text
+        if len(sanitized_text) >= len(text) and sanitized_text.endswith(text):
+            yield text
+        else:
+            single = _client_call(
+                ("mesh_validate", "meshValidate"),
+                agent_id=agent_id,
+                session_id=session_id,
+                direction="output",
+                text=text,
+                platform=CONFIG.platform,
+                redact_pii=CONFIG.redact_pii,
+                redact_secrets=CONFIG.redact_secrets,
+                block_on_sensitive_output=CONFIG.block_on_sensitive_output,
+                policy_context={"request_purpose": "crewai_streaming_output_review", **(policy_context or {})},
+            )
+            payload = _result_payload(single)
+            yield str(payload.get("sanitized_text") or payload.get("text") or payload.get("output") or text)
+        tail = review_text
+
+
+def _append_hook(existing: Any, hook: Callable[..., Any]) -> List[Any]:
+    hooks = list(existing) if isinstance(existing, (list, tuple)) else ([] if existing is None else [existing])
+    if hook not in hooks:
+        hooks.append(hook)
+    return hooks
+
+
+class AgenticDomeCrewAIFirewall:
+    """Class facade for scoped CrewAI integration and tests.
+
+    The module import still registers CrewAI global hooks. This class provides a
+    non-global facade for callers that want explicit hook functions or scoped
+    attach/unregister behavior on objects that expose hook lists.
+    """
+
+    def __init__(
+        self,
+        *,
+        config: Optional[FirewallConfig] = None,
+        client: Optional[AgentGuardClient] = None,
+        token_store: Optional[DecisionTokenStore] = None,
+    ) -> None:
+        self.config = config or CONFIG
+        self.client = client or CLIENT
+        self.token_store = token_store or TOKEN_STORE
+        self._attached: Dict[int, Dict[str, Any]] = {}
+
+    def _with_scope(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        global CONFIG, CLIENT, TOKEN_STORE
+        old = (CONFIG, CLIENT, TOKEN_STORE)
+        CONFIG, CLIENT, TOKEN_STORE = self.config, self.client, self.token_store
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            CONFIG, CLIENT, TOKEN_STORE = old
+
+    def before_tool_call(self, context: Any) -> bool:
+        return self._with_scope(AgenticDome_before_tool_call, context)
+
+    def after_tool_call(self, context: Any) -> Any:
+        return self._with_scope(AgenticDome_after_tool_call, context)
+
+    def before_llm_call(self, context: Any) -> bool:
+        return self._with_scope(AgenticDome_before_llm_call, context)
+
+    def attach(self, crew_or_agent: Any) -> Any:
+        ident = id(crew_or_agent)
+        if ident not in self._attached:
+            self._attached[ident] = {
+                "before_tool_call_hooks": _safe_getattr(crew_or_agent, "before_tool_call_hooks"),
+                "after_tool_call_hooks": _safe_getattr(crew_or_agent, "after_tool_call_hooks"),
+                "before_llm_call_hooks": _safe_getattr(crew_or_agent, "before_llm_call_hooks"),
+            }
+        _safe_setattr_or_dict(crew_or_agent, "before_tool_call_hooks", _append_hook(_safe_getattr(crew_or_agent, "before_tool_call_hooks"), self.before_tool_call))
+        _safe_setattr_or_dict(crew_or_agent, "after_tool_call_hooks", _append_hook(_safe_getattr(crew_or_agent, "after_tool_call_hooks"), self.after_tool_call))
+        _safe_setattr_or_dict(crew_or_agent, "before_llm_call_hooks", _append_hook(_safe_getattr(crew_or_agent, "before_llm_call_hooks"), self.before_llm_call))
+        return crew_or_agent
+
+    def unregister(self, crew_or_agent: Any) -> Any:
+        previous = self._attached.pop(id(crew_or_agent), None)
+        if not previous:
+            return crew_or_agent
+        for name, value in previous.items():
+            _safe_setattr_or_dict(crew_or_agent, name, value)
+        return crew_or_agent
+
+    def secure_tool(
+        self,
+        *,
+        tool_name: str,
+        tool_platform: Optional[str] = None,
+        tool_schema: Optional[Any] = None,
+        sanitize_output: bool = True,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                ctx = kwargs.pop("context", None) or (args[0] if args else {})
+                tool_args = {k: v for k, v in kwargs.items() if k not in {"session_id", "agent_id", "policy_context"}}
+                context = ctx if hasattr(ctx, "__dict__") else type("CrewAIContext", (), {})()
+                _safe_setattr_or_dict(context, "tool_name", tool_name)
+                _safe_setattr_or_dict(context, "tool_input", dict(tool_args))
+                _safe_setattr_or_dict(context, "tool_platform", tool_platform or self.config.default_tool_platform)
+                if tool_schema is not None:
+                    _safe_setattr_or_dict(context, "tool_schema", tool_schema)
+                for key in ("session_id", "agent_id", "policy_context"):
+                    if key in kwargs:
+                        _safe_setattr_or_dict(context, key, kwargs[key])
+                self.before_tool_call(context)
+                effective_args = _ctx_tool_name_args(context)[1]
+                result = fn(*args, **{**kwargs, **effective_args})
+                if not sanitize_output:
+                    return result
+                out_ctx = type("CrewAIToolOutput", (), {})()
+                _safe_setattr_or_dict(out_ctx, "tool_result", result)
+                _safe_setattr_or_dict(out_ctx, "session_id", _ctx_session_id(context))
+                _safe_setattr_or_dict(out_ctx, "agent_id", _ctx_agent_id(context))
+                return self.after_tool_call(out_ctx)
+            wrapper.__name__ = getattr(fn, "__name__", "secured_crewai_tool")
+            wrapper.__doc__ = getattr(fn, "__doc__", None)
+            return wrapper
+        return decorator
+
+
+def attach_firewall(crew_or_agent: Any, *, firewall: Optional[AgenticDomeCrewAIFirewall] = None) -> Any:
+    fw = firewall or AgenticDomeCrewAIFirewall()
+    return fw.attach(crew_or_agent)
+
+
+def unregister_firewall(crew_or_agent: Any, *, firewall: Optional[AgenticDomeCrewAIFirewall] = None) -> Any:
+    fw = firewall or AgenticDomeCrewAIFirewall()
+    return fw.unregister(crew_or_agent)
+
+
 __all__ = [
     "CONFIG",
     "CLIENT",
@@ -973,6 +1423,10 @@ __all__ = [
     "DecisionTokenStore",
     "InMemoryDecisionTokenStore",
     "RedisDecisionTokenStore",
+    "AgenticDomeCrewAIFirewall",
+    "sanitize_streaming_response",
+    "attach_firewall",
+    "unregister_firewall",
     "AgenticDome_before_tool_call",
     "AgenticDome_after_tool_call",
     "AgenticDome_before_llm_call",
