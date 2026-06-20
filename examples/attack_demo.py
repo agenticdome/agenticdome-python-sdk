@@ -195,9 +195,9 @@ def live_agenticdome_decision(framework: Dict[str, str], scenario: Dict[str, Any
     from agenticdome_sdk import AgentGuardClient
 
     client = AgentGuardClient(
-        api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io"),
-        api_key=os.getenv("AGENTICDOME_API_KEY", ""),
-        tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
+        api_base=os.environ["AGENTICDOME_API_BASE"],
+        api_key=os.environ["AGENTICDOME_API_KEY"],
+        tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
     )
 
     return client.guardrail_validate(

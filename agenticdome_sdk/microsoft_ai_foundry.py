@@ -110,12 +110,8 @@ class FirewallConfig:
 
 def load_config() -> FirewallConfig:
     return FirewallConfig(
-        api_base=_env("AGENTICDOME_API_BASE", "https://au.agenticdome.io").rstrip("/"),
-        bearer_token=(
-            _env("AGENTICDOME_BEARER_TOKEN", "")
-            or _env("AGENTGUARD_BEARER_TOKEN", "")
-            or _env("AZURE_AI_FOUNDRY_AGENTICDOME_BEARER_TOKEN", "")
-        ),
+        api_base=_env("AGENTICDOME_API_BASE", "").rstrip("/"),
+        bearer_token=_env("AGENTICDOME_BEARER_TOKEN", ""),
         api_key=_env("AGENTICDOME_API_KEY", ""),
         tenant_id=_env("AGENTICDOME_TENANT_ID", ""),
         platform=_env("AGENTICDOME_PLATFORM", "microsoft_ai_foundry"),
@@ -304,10 +300,16 @@ class AgenticDomeMicrosoftAIFoundryFirewall:
 
     def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
         self.config = config or load_config()
-        if not self.config.api_base or not self.config.bearer_token:
+        if not (
+            self.config.api_base
+            and self.config.api_key
+            and self.config.tenant_id
+            and self.config.bearer_token
+        ):
             raise MicrosoftAIFoundryConfigurationError(
                 "AgenticDome Microsoft AI Foundry firewall misconfigured. "
-                "Set AGENTICDOME_API_BASE and AGENTICDOME_BEARER_TOKEN."
+                "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, "
+                "AGENTICDOME_TENANT_ID, and AGENTICDOME_BEARER_TOKEN."
             )
 
         self.client = client or AgentGuardClient(
@@ -317,10 +319,6 @@ class AgenticDomeMicrosoftAIFoundryFirewall:
             bearer_token=self.config.bearer_token,
             timeout=self.config.timeout_s,
         )
-        if self.config.production_mode and self.config.require_output_sanitization_in_prod and not self.config.api_key:
-            raise MicrosoftAIFoundryConfigurationError(
-                "Microsoft AI Foundry production mode requires AGENTICDOME_API_KEY for output sanitization."
-            )
         self.token_store = _build_token_store(self.config)
         self._rate_lock = Lock()
         self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
@@ -794,11 +792,6 @@ class AgenticDomeMicrosoftAIFoundryFirewall:
         session_id: str,
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        if not self.config.api_key:
-            if self.config.production_mode and self.config.require_output_sanitization_in_prod:
-                raise MicrosoftAIFoundryDenied("Microsoft AI Foundry production mode requires AGENTICDOME_API_KEY for output sanitization.")
-            logger.info("AgenticDome Mesh skipped for Microsoft AI Foundry: no AGENTICDOME_API_KEY configured.")
-            return text
         try:
             self._check_rate_limit(agent_id=agent_id, session_id=session_id, purpose="output")
             bounded_text = self._bounded_text(text, limit=self.config.max_output_chars, label="FOUNDRY OUTPUT")

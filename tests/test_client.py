@@ -33,6 +33,19 @@ def make_response(status_code=200, payload=None, text=None):
     return FakeResponse(status_code=status_code, payload=payload, text=text)
 
 
+@pytest.mark.parametrize(
+    ("field", "kwargs"),
+    [
+        ("api_base", {"api_base": "", "api_key": "test-api-key", "tenant_id": "tenant-1"}),
+        ("api_key", {"api_base": "https://api.example.test", "api_key": "", "tenant_id": "tenant-1"}),
+        ("tenant_id", {"api_base": "https://api.example.test", "api_key": "test-api-key", "tenant_id": ""}),
+    ],
+)
+def test_client_requires_api_base_key_and_tenant(field, kwargs):
+    with pytest.raises(ValueError, match=field):
+        AgentGuardClient(**kwargs)
+
+
 @pytest.fixture
 def client():
     return AgentGuardClient(

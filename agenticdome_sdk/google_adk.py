@@ -97,7 +97,7 @@ class FirewallConfig:
 
 def load_config() -> FirewallConfig:
     return FirewallConfig(
-        api_base=_env("AGENTICDOME_API_BASE", "https://au.agenticdome.io").rstrip("/"),
+        api_base=_env("AGENTICDOME_API_BASE", "").rstrip("/"),
         api_key=_env("AGENTICDOME_API_KEY", ""),
         tenant_id=_env("AGENTICDOME_TENANT_ID", ""),
         platform=_env("AGENTICDOME_PLATFORM", "google_adk"),
@@ -272,7 +272,7 @@ class AgenticDomeGoogleADKFirewall:
 
     def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
         self.config = config or load_config()
-        if client is None and not (self.config.api_base and self.config.api_key and self.config.tenant_id):
+        if not (self.config.api_base and self.config.api_key and self.config.tenant_id):
             raise GoogleADKConfigurationError(
                 "AgenticDome Google ADK firewall misconfigured. Set AGENTICDOME_API_BASE, "
                 "AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."

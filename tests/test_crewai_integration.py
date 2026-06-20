@@ -61,7 +61,17 @@ def load_module():
     sys.modules.pop("agenticdome_sdk.crewai", None)
     module = importlib.import_module("agenticdome_sdk.crewai")
     module.CLIENT = FakeCrewAIClient()
-    module.CONFIG = replace(module.CONFIG, fail_closed=True, report_incidents=False, tenant_id="test-tenant", retry_backoff_s=0, audit_logging=False, otel_enabled=False)
+    module.CONFIG = replace(
+        module.CONFIG,
+        api_base="https://au.agenticdome.io",
+        api_key="test-key",
+        tenant_id="test-tenant",
+        fail_closed=True,
+        report_incidents=False,
+        retry_backoff_s=0,
+        audit_logging=False,
+        otel_enabled=False,
+    )
     module.TOKEN_STORE = module.InMemoryDecisionTokenStore()
     return module
 

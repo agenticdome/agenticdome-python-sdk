@@ -345,7 +345,7 @@ class AgenticDomeMCPHostFirewall:
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or load_config()
-        if client is None and not (self.config.api_base and self.config.api_key and self.config.tenant_id):
+        if not (self.config.api_base and self.config.api_key and self.config.tenant_id):
             raise MCPConfigurationError(
                 "AgenticDome MCP host firewall is misconfigured. "
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."

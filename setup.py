@@ -8,12 +8,12 @@ README = ROOT / "README.md"
 
 setup(
     name="agenticdome-python-sdk",
-    version="1.0.7",
+    version="1.1.0",
     description="Python SDK for AgenticDome AI security, guardrails, A2A, MCP, CrewAI, and enterprise agent governance APIs.",
     long_description=README.read_text(encoding="utf-8") if README.exists() else "",
     long_description_content_type="text/markdown",
     author="AgenticDome",
-    license="MIT",
+    license="Proprietary",
     url="https://github.com/agenticdome/agenticdome-python-sdk-python",
     project_urls={
         "Homepage": "https://github.com/agenticdome/agenticdome-python-sdk-python",
@@ -108,7 +108,7 @@ setup(
         "Topic :: Security",
         "Topic :: Software Development :: Libraries :: Python Modules",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
-        "License :: OSI Approved :: MIT License",
+        "License :: Other/Proprietary License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",

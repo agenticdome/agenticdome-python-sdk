@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: agenticdome-python-sdk
-Version: 1.0.7
+Version: 1.1.0
 Summary: Official Python SDK for AgentGuard Intelligence Engine and Action Firewall.
 Home-page: https://github.com/agenticdome/agenticdome-python-sdk-python
 Author: AgenticDome
@@ -24,6 +24,7 @@ Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: requests>=2.31.0
 Requires-Dist: urllib3>=2.0.0
 Provides-Extra: crewai
@@ -84,13 +85,14 @@ Requires-Dist: mypy>=1.8.0; extra == "dev"
 Requires-Dist: build>=1.0.0; extra == "dev"
 Requires-Dist: twine>=5.0.0; extra == "dev"
 Dynamic: home-page
+Dynamic: license-file
 Dynamic: requires-python
 
 # AgenticDome Python SDK
 
 [![PyPI version](https://img.shields.io/pypi/v/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-blue.svg)](#license)
 
 > **Production-grade security guardrails, DLP, tool authorization, and multi-agent delegation enforcement for Python autonomous AI runtimes.**
 
@@ -115,21 +117,32 @@ The package includes:
 - Optional Redis-backed distributed token storage
 - Enterprise-ready fail-open / fail-closed runtime behavior
 
-Supported runtime integrations include:
+## Quick Navigation
 
-- **CrewAI Open Source / Enterprise**
-- **PydanticAI**
-- **LangGraph / LangChain graph runtimes**
-- **Microsoft Agent Framework for Python**
-- **Microsoft AI Foundry / Azure AI Foundry**
-- **Agno**
-- **OpenAI Agents SDK**
-- **MCP hosts, gateways, and third-party MCP server proxies**
-- **AWS Bedrock Runtime / Bedrock Agents local tool handlers**
-- **Google ADK**
-- **LlamaIndex**
-- **Custom Python agent runtimes**
-- **Multi-agent routers and tool gateways**
+Start with onboarding and configuration, then jump to the framework guide that matches where your agents and tools run.
+
+| Start here | Link |
+| :--- | :--- |
+| Create tenant, tenant ID, and API key | [Getting Started and Onboarding](#getting-started-and-onboarding) |
+| Install the SDK or a framework extra | [Installation](#installation) |
+| Set required environment variables | [Configuration](#configuration) |
+| Decide where to attach AgenticDome in code | [Framework-by-Framework Global Application Map](#framework-by-framework-global-application-map) |
+| Low-level SDK calls for custom runtimes | [Core Python SDK Client Usage](#core-python-sdk-client-usage) |
+
+| Framework / Runtime | Install extra | Framework guide |
+| :--- | :--- | :--- |
+| CrewAI Open Source / Enterprise | `crewai` | [CrewAI Integration](#crewai-integration) |
+| PydanticAI | `pydanticai` | [PydanticAI Integration](#pydanticai-integration) |
+| LangGraph / LangChain graph runtimes | `langgraph` | [LangGraph Integration](#langgraph-integration) |
+| Microsoft Agent Framework for Python | `microsoft` | [Microsoft Agent Framework Integration](#microsoft-agent-framework-integration) |
+| Microsoft AI Foundry / Azure AI Foundry | `foundry` | [Microsoft AI Foundry Integration](#microsoft-ai-foundry-integration) |
+| OpenAI Agents SDK | `openai-agents` | [OpenAI Agents SDK Integration](#openai-agents-sdk-integration) |
+| Agno | `agno` | [Agno Integration](#agno-integration) |
+| Google ADK | `google-adk` | [Google ADK Integration](#google-adk-integration) |
+| LlamaIndex | `llamaindex` | [LlamaIndex Integration](#llamaindex-integration) |
+| AWS Bedrock Runtime / Bedrock Agents | `bedrock` | [AWS Bedrock Integration](#aws-bedrock-integration) |
+| MCP host / gateway / proxy | `mcp` | [MCP Host Gateway Integration](#mcp-host-gateway-integration) |
+| Custom Python agent runtimes | none | [Core Python SDK Client Usage](#core-python-sdk-client-usage) |
 
 ---
 
@@ -258,123 +271,63 @@ Delegation token storage can run in:
 
 ## Getting Started and Onboarding
 
-Before integrating the SDK, create an AgenticDome tenant and API key.
+If you are an Enterprise Administrator securing your OpenClaw stack or another Python agent runtime:
 
-1. Visit the [AgenticDome Management Console, AU Region](https://au.agenticdome.io).
-2. Create or select your organization.
-3. Copy your **Tenant ID**.
-4. Generate an **API Key** from the access-control or API-key section.
-5. Configure your runtime environment variables.
+1. Create an account in the AgenticDome Management Console for the AU region.
+2. Log in and copy your unique workspace or organization tenant identifier from organization settings.
+3. Navigate to the access-control or API-key section and generate a production API key.
+4. Configure your local OpenClaw runtime, server, worker, or hosting container with the required environment variables before attaching any SDK framework integration.
 
 ---
 
 ## Installation
 
-Install the core SDK:
+Install the core SDK when you call AgenticDome from a custom runtime or want only the low-level client:
 
 ```bash
 pip install agenticdome-python-sdk
 ```
 
-Install with CrewAI support:
+Install the extra for the framework you use:
 
-```bash
-pip install "agenticdome-python-sdk[crewai]"
-```
+| Target runtime | Command |
+| :--- | :--- |
+| CrewAI | `pip install "agenticdome-python-sdk[crewai]"` |
+| PydanticAI | `pip install "agenticdome-python-sdk[pydanticai]"` |
+| LangGraph / LangChain | `pip install "agenticdome-python-sdk[langgraph]"` |
+| Microsoft Agent Framework helpers | `pip install "agenticdome-python-sdk[microsoft]"` |
+| Microsoft AI Foundry helpers | `pip install "agenticdome-python-sdk[foundry]"` |
+| OpenAI Agents SDK | `pip install "agenticdome-python-sdk[openai-agents]"` |
+| Agno | `pip install "agenticdome-python-sdk[agno]"` |
+| Google ADK | `pip install "agenticdome-python-sdk[google-adk]"` |
+| LlamaIndex | `pip install "agenticdome-python-sdk[llamaindex]"` |
+| AWS Bedrock / Bedrock Agents | `pip install "agenticdome-python-sdk[bedrock]"` |
+| MCP host / gateway | `pip install "agenticdome-python-sdk[mcp]"` |
+| Redis token storage | `pip install "agenticdome-python-sdk[redis]"` |
+| All optional integrations | `pip install "agenticdome-python-sdk[all]"` |
 
-Install with PydanticAI support:
-
-```bash
-pip install "agenticdome-python-sdk[pydanticai]"
-```
-
-Install with LangGraph support:
-
-```bash
-pip install "agenticdome-python-sdk[langgraph]"
-```
-
-Install with Microsoft Agent Framework helper support:
-
-```bash
-pip install "agenticdome-python-sdk[microsoft]"
-```
-
-Install with Agno support:
-
-```bash
-pip install "agenticdome-python-sdk[agno]"
-```
-
-Install with Azure AI Foundry helper support:
-
-```bash
-pip install "agenticdome-python-sdk[foundry]"
-```
-
-Install with OpenAI Agents SDK helper support:
-
-```bash
-pip install "agenticdome-python-sdk[openai-agents]"
-```
-
-Install with MCP host / gateway helper support:
-
-```bash
-pip install "agenticdome-python-sdk[mcp]"
-```
-
-Install with AWS Bedrock helper support:
-
-```bash
-pip install "agenticdome-python-sdk[bedrock]"
-```
-
-Install with Google ADK helper support:
-
-```bash
-pip install "agenticdome-python-sdk[google-adk]"
-```
-
-Install with LlamaIndex helper support:
-
-```bash
-pip install "agenticdome-python-sdk[llamaindex]"
-```
-
-The Google ADK and LlamaIndex adapters are dependency-light at import time. Their extras install the framework packages for applications that want the SDK and framework in the same environment.
-
-The Bedrock firewall adapter itself is dependency-light and can wrap any boto3-compatible client object. The `bedrock` extra installs `boto3` for teams that want the AWS SDK in the same environment.
-
-The MCP firewall adapter itself protects JSON-RPC dictionaries and does not require the Python MCP package at runtime. The `mcp` extra is provided for teams building hosts or gateways with the standard Python MCP library.
-
-The Microsoft integration does not require a hard SDK dependency because teams may use Azure OpenAI, Foundry, Copilot Studio, local function tools, hosted tools, or workflow executors differently. Install the Microsoft Agent Framework packages required by your application separately.
-
-Install with Redis support for distributed token storage:
-
-```bash
-pip install "agenticdome-python-sdk[redis]"
-```
-
-Install all optional integrations:
-
-```bash
-pip install "agenticdome-python-sdk[all]"
-```
+Some adapters are dependency-light at import time. Google ADK, LlamaIndex, Bedrock, MCP, and Microsoft helpers can wrap local boundaries without forcing one exact runtime stack; install the framework packages your application actually uses.
 
 ---
 
 ## Configuration
 
-Set these environment variables in your local shell, container, CI/CD environment, or orchestrator secrets manager.
+Set these environment variables in your local shell, container, CI/CD environment, or orchestrator secrets manager before using any AgenticDome SDK client or framework integration.
 
 ### Required Variables
 
 ```bash
+# Regional gateway base URL.
 export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+
+# Secure access token generated in the AgenticDome console.
 export AGENTICDOME_API_KEY="your_api_key_abc123..."
+
+# Unique workspace or organization tenant identifier.
 export AGENTICDOME_TENANT_ID="your_tenant_id_xyz789..."
 ```
+
+All SDK clients and framework integrations require these three values before use. Missing values raise a configuration error instead of silently running without AgenticDome protection.
 
 ### Optional Runtime Controls
 
@@ -618,7 +571,7 @@ secure_refund = firewall.wrap_delegated_tool_handler(
 
 | Environment Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `AGENTICDOME_API_BASE` | string | `https://au.agenticdome.io` | AgenticDome regional API and console endpoint. |
+| `AGENTICDOME_API_BASE` | string | required | AgenticDome regional API and console endpoint, for example `https://au.agenticdome.io`. |
 | `AGENTICDOME_API_KEY` | string | required | API key generated in the AgenticDome console. |
 | `AGENTICDOME_TENANT_ID` | string | required | Tenant or organization isolation namespace. |
 | `AGENTICDOME_PLATFORM` | string | framework-specific | Runtime platform label included in policy context. |
@@ -1214,9 +1167,9 @@ from agenticdome_sdk.pydantic import CyberSecFirewall, FirewallConfig
 # 1. Instantiate the enterprise firewall capability.
 firewall = CyberSecFirewall(
     config=FirewallConfig(
-        api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io"),
-        api_key=os.getenv("AGENTICDOME_API_KEY", ""),
-        tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
+        api_base=os.environ["AGENTICDOME_API_BASE"],
+        api_key=os.environ["AGENTICDOME_API_KEY"],
+        tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
         fail_closed=True,
         block_on_sensitive_output=True,
     )
@@ -1271,9 +1224,9 @@ from agenticdome_sdk.pydantic import CyberSecFirewall, FirewallConfig
 
 firewall = CyberSecFirewall(
     FirewallConfig(
-        api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io"),
-        api_key=os.getenv("AGENTICDOME_API_KEY", ""),
-        tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
+        api_base=os.environ["AGENTICDOME_API_BASE"],
+        api_key=os.environ["AGENTICDOME_API_KEY"],
+        tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
         fail_closed=True,
         production_mode=True,
     )
@@ -1383,9 +1336,9 @@ from agenticdome_sdk.langgraph import AgentState, AgenticDomeLangGraphFirewall, 
 
 firewall = AgenticDomeLangGraphFirewall(
     config=FirewallConfig(
-        api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io"),
-        api_key=os.getenv("AGENTICDOME_API_KEY", ""),
-        tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
+        api_base=os.environ["AGENTICDOME_API_BASE"],
+        api_key=os.environ["AGENTICDOME_API_KEY"],
+        tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
         fail_closed=True,
         production_mode=True,
         require_explicit_session_id=True,
@@ -1758,7 +1711,7 @@ The Foundry integration supports:
 - Direct tool-argument stripping, lightweight JSON-schema validation, and sanitized-argument execution when AgenticDome returns safer arguments
 - Enterprise identity context propagation for Entra IDs, roles/scopes, Foundry project IDs, and Purview or sensitivity labels
 - Production-mode stable session ID enforcement and output-sanitization requirements
-- Output DLP through Mesh when `AGENTICDOME_API_KEY` and `AGENTICDOME_TENANT_ID` are configured
+- Output DLP through Mesh using the required AgenticDome API base URL, API key, and tenant ID
 - Structured-output preservation by parsing sanitized JSON back to dictionaries/lists where possible
 - Local rate limits, input/output/tool-argument size limits, retries, circuit breaker behavior, audit logging, and OpenTelemetry span events
 - Streaming response sanitization through `sanitize_streaming_response()`
@@ -1943,7 +1896,7 @@ from agenticdome_sdk.microsoft_ai_foundry import (
 - Production deployments should pass a stable `session_id`, `run_id`, `trace_id`, `conversation_id`, or `thread_id`; generated fallback IDs are intended for local development only.
 - Pass Entra identity, roles/scopes, Foundry project IDs, and Purview/sensitivity labels on `ctx` or `policy_context` so server-side policy can make identity-aware decisions.
 - If a Foundry hosted tool executes entirely inside a remote provider runtime, this local Python SDK can protect the local request/response boundary but cannot inspect inside the remote execution environment.
-- Mesh output DLP is skipped when `AGENTICDOME_API_KEY` is not configured unless production mode requires output sanitization. Threat-contract prompt and tool analysis still use bearer auth.
+- Microsoft AI Foundry requires the standard AgenticDome API base URL, API key, and tenant ID. Threat-contract prompt and tool analysis also require `AGENTICDOME_BEARER_TOKEN`.
 
 Official references:
 
@@ -2863,7 +2816,7 @@ from agenticdome_sdk.aws_bedrock import (
 
 ---
 
-## MCP Host / Gateway Integration
+## MCP Host Gateway Integration
 
 AgenticDome provides a production MCP host adapter for the process that controls JSON-RPC forwarding to third-party MCP servers. This is the right place to protect MCP because the host can inspect `tools/call` requests before side effects happen and can sanitize tool results before they return to the planner, agent, or client.
 
@@ -3377,7 +3330,11 @@ python -m twine check dist/*
 
 ## License
 
-Distributed under the MIT License.
+Copyright (c) AgenticDome. All rights reserved.
+
+This SDK is distributed under a proprietary license. Use, copying, modification,
+and redistribution are permitted only under a written agreement with AgenticDome
+or terms published by AgenticDome for this package.
 
 For enterprise deployments, advanced governance workflows, dedicated regional control planes, or priority integration support, visit:
 

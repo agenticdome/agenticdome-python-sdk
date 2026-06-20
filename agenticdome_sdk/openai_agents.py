@@ -102,7 +102,7 @@ class FirewallConfig:
 
 def load_config() -> FirewallConfig:
     return FirewallConfig(
-        api_base=_env("AGENTICDOME_API_BASE", "https://au.agenticdome.io").rstrip("/"),
+        api_base=_env("AGENTICDOME_API_BASE", "").rstrip("/"),
         api_key=_env("AGENTICDOME_API_KEY", ""),
         tenant_id=_env("AGENTICDOME_TENANT_ID", ""),
         platform=_env("AGENTICDOME_PLATFORM", "openai_agents_sdk"),

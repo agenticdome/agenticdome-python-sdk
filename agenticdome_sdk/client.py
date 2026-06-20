@@ -45,17 +45,26 @@ class AgentGuardClient:
     def __init__(
         self,
         api_base: str,
-        api_key: str = "",
+        api_key: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 20,
         user_agent: str = "agenticdome-python-sdk/0.4.0",
         max_retries: int = 3,
     ):
-        self.api_base = api_base.rstrip("/")
-        self.api_key = api_key or os.getenv("AGENTGUARD_API_KEY", "")
-        self.tenant_id = str(tenant_id) if tenant_id is not None else os.getenv("AGENTGUARD_TENANT_ID")
-        self.bearer_token = bearer_token or os.getenv("AGENTGUARD_BEARER_TOKEN")
+        self.api_base = self._require_nonempty("api_base", api_base).rstrip("/")
+        self.api_key = self._require_nonempty(
+            "api_key",
+            api_key or os.getenv("AGENTICDOME_API_KEY", ""),
+        )
+        self.tenant_id = self._require_nonempty(
+            "tenant_id",
+            str(tenant_id) if tenant_id is not None else os.getenv("AGENTICDOME_TENANT_ID", ""),
+        )
+        self.bearer_token = (
+            bearer_token
+            or os.getenv("AGENTICDOME_BEARER_TOKEN")
+        )
         self.timeout = timeout
         self.user_agent = user_agent
 
@@ -91,13 +100,11 @@ class AgentGuardClient:
         if content_type:
             headers["Content-Type"] = content_type
 
-        effective_tenant = str(tenant_id) if tenant_id is not None else self.tenant_id
-        if effective_tenant:
-            headers["X-Tenant-Id"] = effective_tenant
+        headers["X-Tenant-Id"] = self._effective_tenant_id(tenant_id)
 
         if use_bearer and self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
-        elif self.api_key:
+        else:
             headers["X-API-Key"] = self.api_key
 
         if extra_headers:
@@ -113,6 +120,12 @@ class AgentGuardClient:
         if not s:
             raise ValueError(f"'{name}' is required and cannot be blank")
         return s
+
+    def _effective_tenant_id(self, tenant_id: Optional[Union[str, int]] = None) -> str:
+        return self._require_nonempty(
+            "tenant_id",
+            str(tenant_id) if tenant_id is not None else self.tenant_id,
+        )
 
     def _normalize_optional_string(self, value: Optional[str]) -> Optional[str]:
         """
@@ -265,47 +278,50 @@ class AgentGuardClient:
     def scan_salesforce(
         self,
         credentials: Dict[str, Any],
-        tenant_id: Union[str, int] = "1",
+        tenant_id: Optional[Union[str, int]] = None,
         target_object: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        effective_tenant = self._effective_tenant_id(tenant_id)
         payload = {
-            "tenant_id": str(tenant_id),
+            "tenant_id": effective_tenant,
             "credentials": credentials,
             "target_object": target_object,
             "policy_context": policy_context or {},
         }
-        return self._request("POST", "/scan/salesforce", json_body=payload, tenant_id=tenant_id)
+        return self._request("POST", "/scan/salesforce", json_body=payload, tenant_id=effective_tenant)
 
     def scan_microsoft(
         self,
         credentials: Dict[str, Any],
-        tenant_id: Union[str, int] = "1",
+        tenant_id: Optional[Union[str, int]] = None,
         target_object: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        effective_tenant = self._effective_tenant_id(tenant_id)
         payload = {
-            "tenant_id": str(tenant_id),
+            "tenant_id": effective_tenant,
             "credentials": credentials,
             "target_object": target_object,
             "policy_context": policy_context or {},
         }
-        return self._request("POST", "/scan/microsoft", json_body=payload, tenant_id=tenant_id)
+        return self._request("POST", "/scan/microsoft", json_body=payload, tenant_id=effective_tenant)
 
     def scan_servicenow(
         self,
         credentials: Dict[str, Any],
-        tenant_id: Union[str, int] = "1",
+        tenant_id: Optional[Union[str, int]] = None,
         target_object: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        effective_tenant = self._effective_tenant_id(tenant_id)
         payload = {
-            "tenant_id": str(tenant_id),
+            "tenant_id": effective_tenant,
             "credentials": credentials,
             "target_object": target_object,
             "policy_context": policy_context or {},
         }
-        return self._request("POST", "/scan/servicenow", json_body=payload, tenant_id=tenant_id)
+        return self._request("POST", "/scan/servicenow", json_body=payload, tenant_id=effective_tenant)
 
     # ------------------------------------------------------------------
     # Async Jobs
@@ -319,7 +335,7 @@ class AgentGuardClient:
         solution_type: str = "opensource",
         policy_context: Optional[Dict[str, Any]] = None,
         callback_url: Optional[str] = None,
-        tenant_id: Union[str, int] = "1",
+        tenant_id: Optional[Union[str, int]] = None,
     ) -> Dict[str, Any]:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -327,9 +343,10 @@ class AgentGuardClient:
         with open(file_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
 
+        effective_tenant = self._effective_tenant_id(tenant_id)
         payload = {
             "job_id": f"{name}_{os.urandom(4).hex()}",
-            "tenant_id": str(tenant_id),
+            "tenant_id": effective_tenant,
             "name": name,
             "platform": platform,
             "solution_type": solution_type,
@@ -339,7 +356,7 @@ class AgentGuardClient:
             "callback_url": callback_url or "http://localhost/callback_sink",
         }
 
-        return self._request("POST", "/jobs", json_body=payload, tenant_id=tenant_id)
+        return self._request("POST", "/jobs", json_body=payload, tenant_id=effective_tenant)
 
     def submit_fetch_job(
         self,
@@ -347,12 +364,13 @@ class AgentGuardClient:
         platform: str,
         fetch_config: Dict[str, Any],
         credential_ref: Union[str, Dict[str, Any]],
-        tenant_id: Union[str, int] = "1",
+        tenant_id: Optional[Union[str, int]] = None,
         callback_url: Optional[str] = None,
     ) -> Dict[str, Any]:
+        effective_tenant = self._effective_tenant_id(tenant_id)
         payload = {
             "job_id": f"{name}_{os.urandom(4).hex()}",
-            "tenant_id": str(tenant_id),
+            "tenant_id": effective_tenant,
             "name": name,
             "platform": platform,
             "solution_type": "enterprise",
@@ -361,7 +379,7 @@ class AgentGuardClient:
             "credential_ref": credential_ref,
             "callback_url": callback_url or "http://localhost/callback_sink",
         }
-        return self._request("POST", "/jobs", json_body=payload, tenant_id=tenant_id)
+        return self._request("POST", "/jobs", json_body=payload, tenant_id=effective_tenant)
 
     # ------------------------------------------------------------------
     # REST Guardrail / Runtime

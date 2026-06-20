@@ -114,9 +114,9 @@ def test_pydanticai_firewall_imports():
     assert hasattr(firewall, "create_hooks")
 
 
-def test_production_requires_config():
+def test_requires_config():
     with pytest.raises(PydanticAIFirewallConfigurationError):
-        CyberSecFirewall(config=FirewallConfig(api_base="", api_key="", tenant_id="", production_mode=True))
+        CyberSecFirewall(config=FirewallConfig(api_base="", api_key="", tenant_id=""))
 
 
 def test_production_requires_stable_session_id():

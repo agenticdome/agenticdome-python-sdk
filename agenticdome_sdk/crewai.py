@@ -88,6 +88,10 @@ class FirewallConfig:
     blocked_incident_severity: str = "medium"
 
 
+class AgenticDomeCrewAIConfigurationError(RuntimeError):
+    """Raised when required AgenticDome CrewAI credentials are missing."""
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -116,7 +120,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 CONFIG = FirewallConfig(
-    api_base=os.getenv("AGENTICDOME_API_BASE", "https://au.agenticdome.io").rstrip("/"),
+    api_base=os.getenv("AGENTICDOME_API_BASE", "").rstrip("/"),
     api_key=os.getenv("AGENTICDOME_API_KEY", ""),
     tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
     platform=os.getenv("AGENTICDOME_PLATFORM", "crewai"),
@@ -180,6 +184,17 @@ else:
         "AgenticDome CrewAI firewall is unconfigured. "
         "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
     )
+
+
+def _configuration_error() -> AgenticDomeCrewAIConfigurationError:
+    return AgenticDomeCrewAIConfigurationError(
+        "AgenticDome CrewAI firewall requires AGENTICDOME_API_BASE, "
+        "AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
+    )
+
+
+def _config_is_complete(config: FirewallConfig) -> bool:
+    return bool(config.api_base and config.api_key and config.tenant_id)
 
 
 # ---------------------------------------------------------------------
@@ -596,8 +611,8 @@ def _record_client_failure() -> None:
 
 
 def _client_call(method_names: Tuple[str, ...], *args: Any, **kwargs: Any) -> Any:
-    if CLIENT is None:
-        return None
+    if CLIENT is None or not _config_is_complete(CONFIG):
+        raise _configuration_error()
     if not _circuit_allows_call():
         raise RuntimeError("AgenticDome CrewAI circuit breaker is open.")
 
@@ -910,9 +925,8 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
     agent_id = "unknown"
 
     try:
-        if CLIENT is None:
-            logger.warning("AgenticDome CrewAI firewall unconfigured. Allowing tool call.")
-            return True
+        if CLIENT is None or not _config_is_complete(CONFIG):
+            raise _configuration_error()
 
         session_id = _ctx_session_id(context)
         agent_id = _ctx_agent_id(context)
@@ -1111,8 +1125,8 @@ def AgenticDome_after_tool_call(context: Any) -> Any:
         if tool_result is None:
             return tool_result
 
-        if CLIENT is None:
-            return tool_result
+        if CLIENT is None or not _config_is_complete(CONFIG):
+            raise _configuration_error()
 
         session_id = _ctx_session_id(context)
         agent_id = _ctx_agent_id(context)
@@ -1204,8 +1218,8 @@ def AgenticDome_before_llm_call(context: Any) -> bool:
     agent_id = "unknown"
 
     try:
-        if CLIENT is None:
-            return True
+        if CLIENT is None or not _config_is_complete(CONFIG):
+            raise _configuration_error()
 
         session_id = _ctx_session_id(context)
         agent_id = _ctx_agent_id(context)
@@ -1328,6 +1342,8 @@ class AgenticDomeCrewAIFirewall:
         self.config = config or CONFIG
         self.client = client or CLIENT
         self.token_store = token_store or TOKEN_STORE
+        if self.client is None or not _config_is_complete(self.config):
+            raise _configuration_error()
         self._attached: Dict[int, Dict[str, Any]] = {}
 
     def _with_scope(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -1424,6 +1440,7 @@ __all__ = [
     "InMemoryDecisionTokenStore",
     "RedisDecisionTokenStore",
     "AgenticDomeCrewAIFirewall",
+    "AgenticDomeCrewAIConfigurationError",
     "sanitize_streaming_response",
     "attach_firewall",
     "unregister_firewall",

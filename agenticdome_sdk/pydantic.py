@@ -71,7 +71,7 @@ class FirewallConfig:
     api_base: str = field(
         default_factory=lambda: os.getenv(
             "AGENTICDOME_API_BASE",
-            "https://au.agenticdome.io",
+            "",
         ).rstrip("/")
     )
     api_key: str = field(default_factory=lambda: os.getenv("AGENTICDOME_API_KEY", ""))
@@ -552,21 +552,14 @@ class CyberSecFirewall:
         self.config = config or FirewallConfig()
 
         configured = bool(self.config.api_base and self.config.api_key and self.config.tenant_id)
-        if self.config.production_mode and not configured:
+        if not configured:
             raise PydanticAIFirewallConfigurationError(
-                "AgenticDome PydanticAI production mode requires AGENTICDOME_API_BASE, "
+                "AgenticDome PydanticAI firewall requires AGENTICDOME_API_BASE, "
                 "AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
             )
 
         if client is not None:
             self.client = client
-        elif not configured:
-            logger.warning(
-                "AgenticDome PydanticAI firewall unconfigured. "
-                "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID. "
-                "Runtime will operate in fail-open mode for SDK calls."
-            )
-            self.client: Optional[AgentGuardClient] = None
         else:
             self.client = AgentGuardClient(
                 api_base=self.config.api_base,

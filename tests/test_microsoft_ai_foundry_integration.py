@@ -128,13 +128,9 @@ def test_wrap_tool_executor_blocks_before_handler_runs():
     assert executed["value"] is False
 
 
-def test_sanitize_text_skips_mesh_without_api_key():
-    fw, client = make_firewall(api_key="")
-
-    result = asyncio.run(fw.sanitize_text(text="email alice@example.com", agent_id="agent-a", session_id="s1"))
-
-    assert result == "email alice@example.com"
-    assert client.calls == []
+def test_missing_api_key_raises_configuration_error():
+    with pytest.raises(MicrosoftAIFoundryConfigurationError):
+        make_firewall(api_key="")
 
 
 def test_sanitize_text_returns_redacted_output_with_api_key():
@@ -188,11 +184,6 @@ def test_secure_tool_decorator_wraps_handler():
 def test_missing_bearer_token_raises_configuration_error():
     with pytest.raises(MicrosoftAIFoundryConfigurationError):
         make_firewall(bearer_token="")
-
-
-def test_production_requires_api_key_for_output_sanitization():
-    with pytest.raises(MicrosoftAIFoundryConfigurationError):
-        make_firewall(api_key="", production_mode=True)
 
 
 def test_production_requires_stable_session_id():
