@@ -38,9 +38,11 @@ tests/test_client.py
 tests/test_crewai_integration.py
 tests/test_google_adk_integration.py
 tests/test_langgraph_integration.py
+tests/test_live_tenant.py
 tests/test_llamaindex_integration.py
 tests/test_mcp_host_integration.py
 tests/test_microsoft_agent_framework_integration.py
 tests/test_microsoft_ai_foundry_integration.py
 tests/test_openai_agents_integration.py
+tests/test_packaging_contract.py
 tests/test_pydanticai_integration.py

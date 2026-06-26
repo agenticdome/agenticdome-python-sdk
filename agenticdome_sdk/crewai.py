@@ -25,6 +25,19 @@ except Exception as exc:  # pragma: no cover
         "Install with: pip install 'agenticdome-python-sdk[crewai]'"
     ) from exc
 
+
+
+def _preserve_hook_function(register: Callable[[Callable[..., Any]], Any]) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        registered = register(fn)
+        return fn if registered is None else registered
+    return decorator
+
+
+register_after_tool_call_hook = _preserve_hook_function(register_after_tool_call_hook)
+register_before_llm_call_hook = _preserve_hook_function(register_before_llm_call_hook)
+register_before_tool_call_hook = _preserve_hook_function(register_before_tool_call_hook)
+
 from agenticdome_sdk.client import AgentGuardClient
 
 try:

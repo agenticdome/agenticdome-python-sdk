@@ -1,22 +1,6 @@
-from .client import AgentGuardClient
+from .client import AgentGuardClient, AgentGuardError, AgentGuardHTTPError
 
-try:
-    from .client import GuardrailClient
-except Exception:
-    GuardrailClient = AgentGuardClient
-
-try:
-    from .exceptions import AgentGuardError, AgentGuardHTTPError
-except Exception:
-    try:
-        from .client import AgentGuardError, AgentGuardHTTPError
-    except Exception:
-        class AgentGuardError(Exception):
-            pass
-
-        class AgentGuardHTTPError(AgentGuardError):
-            pass
-
+GuardrailClient = AgentGuardClient
 
 __all__ = [
     "AgentGuardClient",

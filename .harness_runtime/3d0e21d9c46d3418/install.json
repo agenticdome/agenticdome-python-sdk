@@ -1,0 +1,9 @@
+{
+  "fingerprint": "3d0e21d9c46d3418",
+  "install_target": "/home/cybersecai/htdocs/www.cybersecai.io/fastapi-services/python-agent-service/sdk/python[crewai,langgraph]",
+  "extras": [
+    "crewai",
+    "langgraph"
+  ],
+  "updated_at": 1782216314
+}

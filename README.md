@@ -2919,8 +2919,6 @@ client.report_incident(
 )
 ```
 
----
-
 ## Prompt Guardrail Example
 
 ```python
@@ -3218,24 +3216,122 @@ from agenticdome_sdk.llamaindex import AgenticDomeLlamaIndexFirewall, FirewallCo
 
 ---
 
-## Package Build
+## Package Build and Verification
 
-For maintainers:
+For maintainers, run the Python SDK release gate from the SDK root:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 
-python -m pip install --upgrade pip setuptools wheel build twine pytest
+python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
 python -m pip install -e ".[crewai,pydanticai,langgraph,microsoft,foundry,agno,openai-agents,mcp,bedrock,google-adk,llamaindex,redis]"
 
-pytest -q
-
+python -m pytest -q
 rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
 python -m build
 python -m twine check dist/*
 ```
+
+`python -m pytest -q` runs the core SDK tests, package metadata contract tests, and every dependency-light framework adapter test in one go. This is the normal offline full-suite command for all supported Python integrations.
+
+The adapter tests use fake framework/client boundaries where possible so normal CI can verify authorization, delegation-token handling, sanitized tool arguments, output DLP, streaming sanitization, rate limits, and fail-open/fail-closed behavior without requiring live third-party services.
+
+To run one framework at a time, execute the matching test file from the matrix below. For example, `python -m pytest -q tests/test_langgraph_integration.py` runs only the LangGraph/LangChain adapter tests.
+
+### Verification Command Details
+
+Use this focused verification command when you only want release/package checks plus the optional live tenant smoke tests:
+
+```bash
+python -m pytest -q tests/test_packaging_contract.py tests/test_live_tenant.py
+```
+
+What each part does:
+
+| Part | Meaning |
+| :--- | :--- |
+| `python -m pytest` | Runs `pytest` using the current Python environment. |
+| `-q` | Quiet mode. It prints compact test results instead of verbose test names. |
+| `tests/test_packaging_contract.py` | Runs packaging and release-quality checks: `pyproject.toml` metadata, the minimal `setup.py` shim, public imports, `.gitignore`, `MANIFEST.in`, and README verification coverage. |
+| `tests/test_live_tenant.py` | Runs live AgenticDome tenant smoke tests only when explicitly enabled. By default these tests are skipped. |
+
+By default, `tests/test_live_tenant.py` is skipped unless you set:
+
+```bash
+export AGENTICDOME_LIVE_TENANT_TEST=1
+```
+
+For strict live policy validation, also set:
+
+```bash
+export AGENTICDOME_LIVE_EXPECT_STRICT=1
+```
+
+### Framework Test Matrix
+
+| Runtime / integration | Test command | Coverage focus |
+| :--- | :--- | :--- |
+| Core SDK client | `python -m pytest -q tests/test_client.py` | Request validation, headers, guardrail calls, A2A/MCP JSON-RPC calls, Mesh DLP, HTTP errors, and JSON handling. |
+| Package contract | `python -m pytest -q tests/test_packaging_contract.py` | `pyproject.toml` metadata, legacy `setup.py` shim, public exports, manifest hygiene, ignored build artifacts, and documented extras. |
+| CrewAI | `python -m pytest -q tests/test_crewai_integration.py` | Prompt/tool hooks, manager handoff token injection, specialist verification, output redaction, schema checks, rate limits, retries, and streaming DLP. |
+| PydanticAI | `python -m pytest -q tests/test_pydanticai_integration.py` | Agent hooks, secure tools, sanitized arguments, token-store fallback, production session enforcement, rate limits, retries, and streaming output. |
+| LangGraph / LangChain | `python -m pytest -q tests/test_langgraph_integration.py` | Graph input, transition, tool, retrieval, middleware, security routing, token consumption, output DLP, and streaming events. |
+| Microsoft Agent Framework | `python -m pytest -q tests/test_microsoft_agent_framework_integration.py` | Tool/run boundaries, delegated tool verification, middleware install helpers, identity context, Copilot enforcement hooks, and streaming output. |
+| Microsoft AI Foundry | `python -m pytest -q tests/test_microsoft_ai_foundry_integration.py` | Prompt threat contracts, local tool executors, run boundaries, bearer/API-key configuration, delegated execution, circuit breaker, and stream DLP. |
+| OpenAI Agents SDK | `python -m pytest -q tests/test_openai_agents_integration.py` | Runner wrappers, guardrail helpers, function-tool wrappers, handoff/delegated tools, HMAC token storage, schema checks, retries, and streaming output. |
+| Agno | `python -m pytest -q tests/test_agno_integration.py` | Agent/team hooks, tool hooks, middleware/plugin helpers, delegated specialist execution, retrieved text sanitization, schema checks, and stream DLP. |
+| MCP host / gateway | `python -m pytest -q tests/test_mcp_host_integration.py` | JSON-RPC preflight, tool/resource/prompt authorization, private metadata stripping, delegated token verification, response filtering, and forwarder DLP. |
+| AWS Bedrock | `python -m pytest -q tests/test_aws_bedrock_integration.py` | Converse/InvokeModel wrappers, Bedrock Agents streams, action-group Lambda wrappers, retrieval DLP, tool authorization, handoff tokens, and retries. |
+| Google ADK | `python -m pytest -q tests/test_google_adk_integration.py` | Model/tool callbacks, plugin helpers, secure tools, delegated execution, sanitized args, production sessions, rate limits, retries, and stream DLP. |
+| LlamaIndex | `python -m pytest -q tests/test_llamaindex_integration.py` | FunctionTool/query/retrieval wrappers, callback handlers, secure tools, delegated execution, fail-open behavior, and output DLP. |
+
+For a single-framework development loop, install only the extra and run the matching test file, for example:
+
+```bash
+python -m pip install -e ".[langgraph]"
+python -m pytest -q tests/test_langgraph_integration.py
+```
+
+### Release Gates
+
+For metadata and artifact validation only:
+
+```bash
+python -m pytest -q tests/test_packaging_contract.py
+rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
+python -m build
+python -m twine check dist/*
+```
+
+For a full offline release gate across all supported Python integrations:
+
+```bash
+python -m pip install -e ".[dev,crewai,pydanticai,langgraph,microsoft,foundry,agno,openai-agents,mcp,bedrock,google-adk,llamaindex,redis]"
+python -m pytest -q
+rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
+python -m build
+python -m twine check dist/*
+```
+
+For a release gate against a real AgenticDome tenant:
+
+```bash
+export AGENTICDOME_API_BASE="https://www.agenticdome.io"
+export AGENTICDOME_TENANT_ID="<tenant_id>"
+export AGENTICDOME_API_KEY="<tenant_api_key>"
+export AGENTICDOME_LIVE_TENANT_TEST=1
+python -m pytest -q tests/test_live_tenant.py
+```
+
+For strict security-policy validation, add:
+
+```bash
+export AGENTICDOME_LIVE_EXPECT_STRICT=1
+```
+
+The live tenant test performs real `guardrail_validate()` and `mesh_validate()` calls through the core client. Framework-specific behavior remains covered by the offline adapter test matrix above, because those tests assert where each framework boundary calls the shared AgenticDome client and how it handles policy decisions.
 
 ---
 

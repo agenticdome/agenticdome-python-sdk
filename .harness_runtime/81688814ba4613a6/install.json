@@ -1,0 +1,16 @@
+{
+  "fingerprint": "81688814ba4613a6",
+  "install_target": "/home/cybersecai/htdocs/www.cybersecai.io/fastapi-services/python-agent-service/sdk/python[agno,bedrock,foundry,google-adk,llamaindex,mcp,microsoft,openai-agents,pydanticai]",
+  "extras": [
+    "agno",
+    "bedrock",
+    "foundry",
+    "google-adk",
+    "llamaindex",
+    "mcp",
+    "microsoft",
+    "openai-agents",
+    "pydanticai"
+  ],
+  "updated_at": 1782212237
+}

@@ -1,6 +1,6 @@
 import base64
 import os
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, List, Any, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -51,6 +51,10 @@ class AgentGuardClient:
         timeout: int = 20,
         user_agent: str = "agenticdome-python-sdk/0.4.0",
         max_retries: int = 3,
+        connect_timeout: Optional[float] = None,
+        pool_connections: int = 20,
+        pool_maxsize: int = 100,
+        pool_block: bool = False,
     ):
         self.api_base = self._require_nonempty("api_base", api_base).rstrip("/")
         self.api_key = self._require_nonempty(
@@ -66,6 +70,11 @@ class AgentGuardClient:
             or os.getenv("AGENTICDOME_BEARER_TOKEN")
         )
         self.timeout = timeout
+        self.connect_timeout = self._positive_float(
+            "connect_timeout",
+            connect_timeout if connect_timeout is not None else os.getenv("AGENTICDOME_CONNECT_TIMEOUT_S", "5"),
+            default=5.0,
+        )
         self.user_agent = user_agent
 
         self.session = requests.Session()
@@ -77,7 +86,12 @@ class AgentGuardClient:
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset(["GET", "POST", "PUT", "PATCH", "DELETE"]),
         )
-        adapter = HTTPAdapter(max_retries=retry)
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=max(1, int(pool_connections)),
+            pool_maxsize=max(1, int(pool_maxsize)),
+            pool_block=bool(pool_block),
+        )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
@@ -135,6 +149,22 @@ class AgentGuardClient:
             return None
         s = str(value).strip()
         return s or None
+
+    def _positive_float(self, name: str, value: Any, *, default: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = default
+        if parsed <= 0:
+            parsed = default
+        return parsed
+
+    def _timeout_tuple(self, timeout: Optional[Union[int, float, Tuple[float, float]]]) -> Union[float, Tuple[float, float]]:
+        if isinstance(timeout, tuple):
+            return timeout
+        read_timeout = self._positive_float("timeout", timeout if timeout is not None else self.timeout, default=float(self.timeout or 20))
+        connect_timeout = min(self.connect_timeout, read_timeout)
+        return (connect_timeout, read_timeout)
 
     def _normalize_direction(self, direction: Optional[str]) -> str:
         """
@@ -239,7 +269,7 @@ class AgentGuardClient:
         tenant_id: Optional[Union[str, int]] = None,
         use_bearer: bool = False,
         extra_headers: Optional[Dict[str, str]] = None,
-        timeout: Optional[int] = None,
+        timeout: Optional[Union[int, float, Tuple[float, float]]] = None,
     ) -> Dict[str, Any]:
         url = f"{self.api_base}{path}"
         headers = self._headers(
@@ -253,7 +283,7 @@ class AgentGuardClient:
             url=url,
             headers=headers,
             json=json_body,
-            timeout=timeout or self.timeout,
+            timeout=self._timeout_tuple(timeout),
         )
 
         if not response.ok:
@@ -647,16 +677,20 @@ class AgentGuardClient:
     def reset_trust_score(
         self,
         agent_id: str,
-        admin_secret: str,
+        admin_secret: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
         is_agent: bool = True,
+        service_token: Optional[str] = None,
     ) -> Dict[str, Any]:
+        token = service_token or admin_secret or os.getenv("AGENTICDOME_SERVICE_TOKEN") or os.getenv("SERVICE_SECRET")
+        if not token:
+            raise ValueError("reset_trust_score requires service_token or AGENTICDOME_SERVICE_TOKEN")
         path = f"/trust/reset/{agent_id}?is_agent={'true' if is_agent else 'false'}"
         return self._request(
             "POST",
             path,
             tenant_id=tenant_id,
-            extra_headers={"X-Admin-Secret": admin_secret},
+            extra_headers={"X-Service-Token": token},
         )
 
     # ------------------------------------------------------------------
@@ -1060,7 +1094,7 @@ class AgentGuardClient:
         payload: Dict[str, Any],
         *,
         api_version: str = "2025-09-01",
-        timeout: Optional[int] = None,
+        timeout: Optional[Union[int, float, Tuple[float, float]]] = None,
     ) -> Dict[str, Any]:
         return self._request(
             "POST",
@@ -1075,7 +1109,7 @@ class AgentGuardClient:
         payload: Dict[str, Any],
         *,
         api_version: str = "2025-09-01",
-        timeout: Optional[int] = None,
+        timeout: Optional[Union[int, float, Tuple[float, float]]] = None,
     ) -> Dict[str, Any]:
         return self._request(
             "POST",
