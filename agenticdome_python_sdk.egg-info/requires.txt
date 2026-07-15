@@ -2,35 +2,35 @@ requests>=2.31.0
 urllib3>=2.0.0
 
 [adk]
-google-adk
+google-adk>=2.4.0
 
 [agno]
-agno
+agno>=2.7.3
 
 [all]
-crewai
+crewai>=1.15.2
 redis>=4.5.0
-pydantic-ai
+pydantic-ai>=2.10.0
 anyio>=4.0.0
-langgraph
-langchain-core
-agno
-azure-ai-projects
-azure-identity
-openai-agents
-mcp
-boto3
-llama-index
-google-adk
+langgraph>=1.2.9
+langchain-core>=1.4.9
+agno>=2.7.3
+azure-ai-projects>=2.3.0
+azure-identity>=1.25.3
+openai-agents>=0.18.2
+mcp>=1.26.0
+boto3>=1.43.48
+llama-index>=0.14.23
+google-adk>=2.4.0
 
 [aws-bedrock]
-boto3
+boto3>=1.43.48
 
 [bedrock]
-boto3
+boto3>=1.43.48
 
 [crewai]
-crewai
+crewai>=1.15.2
 
 [dev]
 pytest>=8.0.0
@@ -40,37 +40,37 @@ build>=1.0.0
 twine>=5.0.0
 
 [foundry]
-azure-ai-projects
-azure-identity
+azure-ai-projects>=2.3.0
+azure-identity>=1.25.3
 
 [google-adk]
-google-adk
+google-adk>=2.4.0
 
 [langgraph]
-langgraph
-langchain-core
+langgraph>=1.2.9
+langchain-core>=1.4.9
 anyio>=4.0.0
 
 [llama-index]
-llama-index
+llama-index>=0.14.23
 
 [llamaindex]
-llama-index
+llama-index>=0.14.23
 
 [mcp]
-mcp
+mcp>=1.26.0
 
 [microsoft]
 
 [openai-agents]
-openai-agents
+openai-agents>=0.18.2
 
 [pydantic]
-pydantic-ai
+pydantic-ai>=2.10.0
 anyio>=4.0.0
 
 [pydanticai]
-pydantic-ai
+pydantic-ai>=2.10.0
 anyio>=4.0.0
 
 [redis]

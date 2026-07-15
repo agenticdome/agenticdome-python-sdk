@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.1.2"
+version = "1.1.3"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -48,71 +48,71 @@ dependencies = [
 
 [project.optional-dependencies]
 crewai = [
-    "crewai"
+    "crewai>=1.15.2"
 ]
 redis = [
     "redis>=4.5.0"
 ]
 pydanticai = [
-    "pydantic-ai",
+    "pydantic-ai>=2.10.0",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai",
+    "pydantic-ai>=2.10.0",
     "anyio>=4.0.0"
 ]
 langgraph = [
-    "langgraph",
-    "langchain-core",
+    "langgraph>=1.2.9",
+    "langchain-core>=1.4.9",
     "anyio>=4.0.0"
 ]
 microsoft = []
 foundry = [
-    "azure-ai-projects",
-    "azure-identity"
+    "azure-ai-projects>=2.3.0",
+    "azure-identity>=1.25.3"
 ]
 agno = [
-    "agno"
+    "agno>=2.7.3"
 ]
 openai-agents = [
-    "openai-agents"
+    "openai-agents>=0.18.2"
 ]
 mcp = [
-    "mcp"
+    "mcp>=1.26.0"
 ]
 bedrock = [
-    "boto3"
+    "boto3>=1.43.48"
 ]
 aws-bedrock = [
-    "boto3"
+    "boto3>=1.43.48"
 ]
 llamaindex = [
-    "llama-index"
+    "llama-index>=0.14.23"
 ]
 llama-index = [
-    "llama-index"
+    "llama-index>=0.14.23"
 ]
 google-adk = [
-    "google-adk"
+    "google-adk>=2.4.0"
 ]
 adk = [
-    "google-adk"
+    "google-adk>=2.4.0"
 ]
 all = [
-    "crewai",
+    "crewai>=1.15.2",
     "redis>=4.5.0",
-    "pydantic-ai",
+    "pydantic-ai>=2.10.0",
     "anyio>=4.0.0",
-    "langgraph",
-    "langchain-core",
-    "agno",
-    "azure-ai-projects",
-    "azure-identity",
-    "openai-agents",
-    "mcp",
-    "boto3",
-    "llama-index",
-    "google-adk"
+    "langgraph>=1.2.9",
+    "langchain-core>=1.4.9",
+    "agno>=2.7.3",
+    "azure-ai-projects>=2.3.0",
+    "azure-identity>=1.25.3",
+    "openai-agents>=0.18.2",
+    "mcp>=1.26.0",
+    "boto3>=1.43.48",
+    "llama-index>=0.14.23",
+    "google-adk>=2.4.0"
 ]
 dev = [
     "pytest>=8.0.0",
