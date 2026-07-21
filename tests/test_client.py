@@ -190,6 +190,69 @@ def test_a2a_verify_decision_token_rpc(mock_request, client):
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")
+def test_protocol_proof_and_management_endpoints(mock_request, client):
+    mock_request.return_value = make_response(200, {"ok": True})
+
+    client.a2a_verify_decision_token(
+        "decision-token-123",
+        proof_token="signed-dpop-proof",
+    )
+    _, verify_kwargs = mock_request.call_args
+    assert verify_kwargs["url"] == "https://api.example.test/a2a/decision/verify"
+    assert verify_kwargs["json"]["proof_token"] == "signed-dpop-proof"
+    assert verify_kwargs["json"]["consume"] is True
+
+    client.get_decision_token_status("decision-1")
+    _, status_kwargs = mock_request.call_args
+    assert status_kwargs["method"] == "GET"
+    assert status_kwargs["url"] == "https://api.example.test/a2a/decision/status/decision-1"
+
+    client.revoke_decision_token(user_id="human-1", reason="offboarded")
+    _, revoke_kwargs = mock_request.call_args
+    assert revoke_kwargs["url"] == "https://api.example.test/a2a/decision/revoke"
+    assert revoke_kwargs["json"] == {"user_id": "human-1", "reason": "offboarded"}
+
+    client.get_behavioral_attestation("agent-1")
+    _, behavior_kwargs = mock_request.call_args
+    assert behavior_kwargs["url"] == "https://api.example.test/trust/behavior/agent-1"
+
+    client.get_behavioral_summary(limit=75)
+    _, summary_kwargs = mock_request.call_args
+    assert summary_kwargs["url"] == "https://api.example.test/trust/behavior-summary?limit=75"
+
+    client.get_threat_signature_status()
+    _, signature_kwargs = mock_request.call_args
+    assert signature_kwargs["url"] == "https://api.example.test/security/threat-signatures/status"
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
+def test_protected_routes_prefer_service_token_and_fall_back_to_bearer(mock_request):
+    mock_request.return_value = make_response(200, {"ok": True})
+    service_client = AgentGuardClient(
+        api_base="https://api.example.test",
+        api_key="test-api-key",
+        tenant_id="tenant-1",
+        service_token="service-secret",
+    )
+
+    service_client.get_behavioral_attestation("agent-1")
+    _, service_kwargs = mock_request.call_args
+    assert service_kwargs["headers"]["X-Service-Token"] == "service-secret"
+
+    with patch.dict("os.environ", {"AGENTICDOME_SERVICE_TOKEN": "", "SERVICE_SECRET": ""}):
+        bearer_client = AgentGuardClient(
+            api_base="https://api.example.test",
+            api_key="test-api-key",
+            tenant_id="tenant-1",
+            bearer_token="bearer-token",
+        )
+    bearer_client.get_threat_signature_status()
+    _, bearer_kwargs = mock_request.call_args
+    assert bearer_kwargs["headers"]["Authorization"] == "Bearer bearer-token"
+    assert "X-Service-Token" not in bearer_kwargs["headers"]
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_mcp_guardrail_validate(mock_request, client):
     mock_request.return_value = make_response(
         200,

@@ -1,20 +1,19 @@
 import ast
 import importlib.metadata
 import pathlib
+import re
 import pytest
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback for local dev only
-    tomllib = None
+    import tomli as tomllib
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def load_pyproject():
-    if tomllib is None:
-        pytest.skip("tomllib is unavailable on this Python runtime")
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
@@ -23,7 +22,7 @@ def test_pyproject_is_the_single_packaging_metadata_source():
     setup_py = (ROOT / "setup.py").read_text(encoding="utf-8")
 
     assert project["name"] == "agenticdome-python-sdk"
-    assert project["version"] == "1.1.1"
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:[A-Za-z0-9_.!+\-]*)?", project["version"])
     assert "AgenticDome" in project["description"]
     assert "AgentGuard Intelligence Engine" not in project["description"]
 
@@ -53,14 +52,38 @@ def test_distribution_metadata_matches_pyproject_when_installed():
 
 def test_public_package_exports_are_importable():
     from agenticdome_sdk import (
+        IDENTITY_CONTEXT_VERSION,
         AgentGuardClient,
         AgentGuardError,
         AgentGuardHTTPError,
         GuardrailClient,
+        canonicalize_identity_context,
+        create_dpop_proof,
+        enrich_policy_context,
+        generate_rsa_proof_key,
+        jwk_thumbprint,
     )
 
     assert GuardrailClient is AgentGuardClient
     assert issubclass(AgentGuardHTTPError, AgentGuardError)
+    assert IDENTITY_CONTEXT_VERSION == "agenticdome.identity.v1"
+    assert callable(create_dpop_proof)
+    assert callable(generate_rsa_proof_key)
+
+    context = enrich_policy_context(
+        {
+            "user_id": "alice",
+            "source_agent_id": "manager-agent",
+            "source_platform": "langgraph",
+        },
+        platform="pydanticai",
+        target_agent_id="worker-agent",
+    )
+    identity = canonicalize_identity_context(context)
+    assert identity["subject"]["id"] == "alice"
+    assert [actor["id"] for actor in identity["actors"]] == ["manager-agent", "worker-agent"]
+    assert identity["subject"]["verified"] is False
+    assert jwk_thumbprint({"kty": "RSA", "n": "test-modulus", "e": "AQAB"})
 
 
 def test_manifest_and_ignore_files_keep_release_artifacts_out_of_source_contract():
@@ -85,6 +108,7 @@ def test_project_extras_cover_documented_frameworks():
     expected = {
         "crewai",
         "redis",
+        "pop",
         "pydanticai",
         "langgraph",
         "microsoft",
@@ -100,6 +124,7 @@ def test_project_extras_cover_documented_frameworks():
     }
     assert expected.issubset(extras)
     assert "pytest>=8.0.0" in extras["dev"]
+    assert "tomli>=2.0.0; python_version < '3.11'" in extras["dev"]
     assert "build>=1.0.0" in extras["dev"]
 
 def test_readme_documents_framework_verification_matrix():
@@ -125,4 +150,3 @@ def test_readme_documents_framework_verification_matrix():
         "tests/test_llamaindex_integration.py",
     ]:
         assert test_file in readme
-

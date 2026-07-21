@@ -52,7 +52,7 @@ class FakeLangGraphClient:
 def make_firewall():
     fw = AgenticDomeLangGraphFirewall(
         config=FirewallConfig(
-            api_base="https://au.agenticdome.io",
+            api_base="https://demo-sidecar.agenticdome.io",
             api_key="test-key",
             tenant_id="test-tenant",
             fail_closed=True,
@@ -175,7 +175,7 @@ def test_authorize_transition_applies_sanitized_tool_args():
 def test_rate_limit_blocks_excess_input():
     fw = make_firewall()
     fw.config = FirewallConfig(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="test-key",
         tenant_id="test-tenant",
         fail_closed=True,
@@ -198,7 +198,7 @@ def test_rate_limit_blocks_excess_input():
 def test_size_limit_blocks_large_tool_args():
     fw = make_firewall()
     fw.config = FirewallConfig(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="test-key",
         tenant_id="test-tenant",
         fail_closed=True,
@@ -223,7 +223,7 @@ def test_size_limit_blocks_large_tool_args():
 def test_production_mode_requires_stable_session_id():
     fw = make_firewall()
     fw.config = FirewallConfig(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="test-key",
         tenant_id="test-tenant",
         fail_closed=True,
@@ -245,7 +245,7 @@ def test_production_mode_requires_stable_session_id():
 def test_token_store_consumes_once_with_hmac():
     fw = make_firewall()
     fw.config = FirewallConfig(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="test-key",
         tenant_id="test-tenant",
         fail_closed=True,

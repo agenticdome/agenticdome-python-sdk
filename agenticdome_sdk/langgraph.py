@@ -1111,6 +1111,20 @@ class AgenticDomeLangGraphFirewall:
         ns = _state_ns(state)
         if isinstance(ns.get("policy_context"), dict):
             ctx.update(cast(Dict[str, Any], ns["policy_context"]))
+        lineage = ns.get("lineage_context")
+        if isinstance(lineage, dict):
+            for key in (
+                "user_id",
+                "actor_chain",
+                "root_jti",
+                "parent_jti",
+                "scopes",
+                "policy_id",
+                "policy_version",
+                "policy_hash",
+            ):
+                if lineage.get(key) is not None and key not in ctx:
+                    ctx[key] = lineage[key]
 
         ctx.setdefault("source_agent_id", agent_id)
         ctx.setdefault("request_purpose", default_request_purpose)
@@ -1135,6 +1149,23 @@ class AgenticDomeLangGraphFirewall:
             ctx.update(extra)
 
         return ctx
+
+    def _capture_verified_lineage(self, state: AgentState, verification: Dict[str, Any]) -> None:
+        claims = verification.get("claims") if isinstance(verification.get("claims"), dict) else {}
+        if not claims:
+            return
+        subject = claims.get("subject") if isinstance(claims.get("subject"), dict) else {}
+        policy = claims.get("policy") if isinstance(claims.get("policy"), dict) else {}
+        _state_ns(state)["lineage_context"] = {
+            "user_id": claims.get("user_id") or subject.get("id"),
+            "actor_chain": claims.get("actor_chain") or [],
+            "root_jti": claims.get("root_jti") or claims.get("jti"),
+            "parent_jti": claims.get("jti"),
+            "scopes": claims.get("scopes") or [],
+            "policy_id": policy.get("id"),
+            "policy_version": policy.get("version"),
+            "policy_hash": policy.get("hash"),
+        }
 
     def _extract_explicit_handoff(self, state: AgentState) -> Optional[Dict[str, Any]]:
         ns = _state_ns(state)
@@ -1261,6 +1292,7 @@ class AgenticDomeLangGraphFirewall:
             if not valid:
                 raise AgenticDomeDenied(f"AgenticDome blocked delegated execution: {_reason(verification)}")
 
+            self._capture_verified_lineage(state, verification)
             self._clear_delegation_state(state)
             return
 
@@ -1287,6 +1319,7 @@ class AgenticDomeLangGraphFirewall:
             )
             if not valid:
                 raise AgenticDomeDenied(f"AgenticDome blocked delegated execution: {_reason(verification)}")
+            self._capture_verified_lineage(state, verification)
             return
 
         pending = self.token_store.consume(
@@ -1312,6 +1345,7 @@ class AgenticDomeLangGraphFirewall:
             )
             if not valid:
                 raise AgenticDomeDenied(f"AgenticDome blocked delegated execution: {_reason(verification)}")
+            self._capture_verified_lineage(state, verification)
             self._audit("delegated_execution_allowed", agent_id=agent_id, source_agent_id=pending.source_agent_id, tool_name=tool_name)
             return
 

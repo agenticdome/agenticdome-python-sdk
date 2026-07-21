@@ -6,6 +6,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .identity import enrich_policy_context
+
 
 class AgentGuardError(Exception):
     """Base SDK exception."""
@@ -49,12 +51,13 @@ class AgentGuardClient:
         tenant_id: Optional[Union[str, int]] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 20,
-        user_agent: str = "agenticdome-python-sdk/0.4.0",
+        user_agent: str = "agenticdome-python-sdk/1.1.3",
         max_retries: int = 3,
         connect_timeout: Optional[float] = None,
         pool_connections: int = 20,
         pool_maxsize: int = 100,
         pool_block: bool = False,
+        service_token: Optional[str] = None,
     ):
         self.api_base = self._require_nonempty("api_base", api_base).rstrip("/")
         self.api_key = self._require_nonempty(
@@ -68,6 +71,11 @@ class AgentGuardClient:
         self.bearer_token = (
             bearer_token
             or os.getenv("AGENTICDOME_BEARER_TOKEN")
+        )
+        self.service_token = (
+            service_token
+            or os.getenv("AGENTICDOME_SERVICE_TOKEN")
+            or os.getenv("SERVICE_SECRET")
         )
         self.timeout = timeout
         self.connect_timeout = self._positive_float(
@@ -194,7 +202,11 @@ class AgentGuardClient:
         for key, value in top_level_values.items():
             if value is not None:
                 pc[key] = value
-        return pc
+        return enrich_policy_context(
+            pc,
+            platform=pc.get("platform"),
+            target_agent_id=pc.get("target_agent_id") or pc.get("agent_id"),
+        )
 
     def _validate_guardrail_args(
         self,
@@ -225,9 +237,6 @@ class AgentGuardClient:
         platform = self._normalize_optional_string(platform)
 
         normalized_direction = self._normalize_direction(direction)
-
-        if source_agent_id and user_id:
-            raise ValueError("Provide either 'source_agent_id' or 'user_id', not both")
 
         if tool_name and tool_args is None:
             raise ValueError("'tool_args' is required when 'tool_name' is provided")
@@ -301,6 +310,24 @@ class AgentGuardClient:
             return response.json()
         except Exception as exc:
             raise AgentGuardError(f"Failed to decode JSON response from {url}: {exc}") from exc
+
+    def _protected_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        headers = {"X-Service-Token": self.service_token} if self.service_token else None
+        return self._request(
+            method,
+            path,
+            json_body=json_body,
+            tenant_id=tenant_id,
+            use_bearer=bool(not self.service_token and self.bearer_token),
+            extra_headers=headers,
+        )
 
     # ------------------------------------------------------------------
     # SaaS Scan Endpoints
@@ -478,6 +505,7 @@ class AgentGuardClient:
 
         merged_policy_context = self._merge_policy_context(
             policy_context,
+            agent_id=agent_id,
             platform=platform,
             source_platform=source_platform,
             tool_platform=tool_platform,
@@ -602,6 +630,7 @@ class AgentGuardClient:
 
         merged_policy_context = self._merge_policy_context(
             policy_context,
+            agent_id=agent_id,
             platform=effective_platform,
             source_platform=source_platform,
             source_agent_id=source_agent_id,
@@ -651,7 +680,33 @@ class AgentGuardClient:
         is_agent: bool = True,
     ) -> Dict[str, Any]:
         path = f"/trust/score/{agent_id}?is_agent={'true' if is_agent else 'false'}"
-        return self._request("GET", path, tenant_id=tenant_id)
+        return self._protected_request("GET", path, tenant_id=tenant_id)
+
+    def get_behavioral_attestation(
+        self,
+        agent_id: str,
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        self._require_nonempty("agent_id", agent_id)
+        return self._protected_request("GET", f"/trust/behavior/{agent_id}", tenant_id=tenant_id)
+
+    def get_behavioral_summary(
+        self,
+        tenant_id: Optional[Union[str, int]] = None,
+        limit: int = 300,
+    ) -> Dict[str, Any]:
+        bounded_limit = max(1, min(int(limit), 1000))
+        return self._protected_request(
+            "GET",
+            f"/trust/behavior-summary?limit={bounded_limit}",
+            tenant_id=tenant_id,
+        )
+
+    def get_threat_signature_status(
+        self,
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        return self._protected_request("GET", "/security/threat-signatures/status", tenant_id=tenant_id)
 
     def report_incident(
         self,
@@ -672,7 +727,7 @@ class AgentGuardClient:
             "is_agent": is_agent,
             "platform": platform or "unknown",
         }
-        return self._request("POST", "/trust/report", json_body=payload, tenant_id=tenant_id)
+        return self._protected_request("POST", "/trust/report", json_body=payload, tenant_id=tenant_id)
 
     def reset_trust_score(
         self,
@@ -682,7 +737,7 @@ class AgentGuardClient:
         is_agent: bool = True,
         service_token: Optional[str] = None,
     ) -> Dict[str, Any]:
-        token = service_token or admin_secret or os.getenv("AGENTICDOME_SERVICE_TOKEN") or os.getenv("SERVICE_SECRET")
+        token = service_token or admin_secret or self.service_token
         if not token:
             raise ValueError("reset_trust_score requires service_token or AGENTICDOME_SERVICE_TOKEN")
         path = f"/trust/reset/{agent_id}?is_agent={'true' if is_agent else 'false'}"
@@ -742,6 +797,16 @@ class AgentGuardClient:
         block_on_sensitive_output: Optional[bool] = None,
         trusted_destination_domains: Optional[List[str]] = None,
         allowed_destination_domains: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        actor_chain: Optional[List[Dict[str, Any]]] = None,
+        scopes: Optional[List[str]] = None,
+        permissions: Optional[List[str]] = None,
+        parent_jti: Optional[str] = None,
+        root_jti: Optional[str] = None,
+        policy_id: Optional[str] = None,
+        policy_version: Optional[str] = None,
+        policy_hash: Optional[str] = None,
+        proof_thumbprint: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
         request_id: Union[str, int] = "1",
     ) -> Dict[str, Any]:
@@ -779,6 +844,7 @@ class AgentGuardClient:
 
         merged_policy_context = self._merge_policy_context(
             policy_context,
+            agent_id=agent_id,
             platform=platform,
             source_platform=source_platform,
             tool_platform=tool_platform,
@@ -798,6 +864,16 @@ class AgentGuardClient:
             block_on_sensitive_output=block_on_sensitive_output,
             trusted_destination_domains=trusted_destination_domains,
             allowed_destination_domains=allowed_destination_domains,
+            user_id=user_id,
+            actor_chain=actor_chain,
+            scopes=scopes,
+            permissions=permissions,
+            parent_jti=parent_jti,
+            root_jti=root_jti,
+            policy_id=policy_id,
+            policy_version=policy_version,
+            policy_hash=policy_hash,
+            proof_thumbprint=proof_thumbprint,
         )
 
         arguments = self._drop_none(
@@ -826,6 +902,16 @@ class AgentGuardClient:
                 "block_on_sensitive_output": block_on_sensitive_output,
                 "trusted_destination_domains": trusted_destination_domains,
                 "allowed_destination_domains": allowed_destination_domains,
+                "user_id": user_id,
+                "actor_chain": actor_chain,
+                "scopes": scopes,
+                "permissions": permissions,
+                "parent_jti": parent_jti,
+                "root_jti": root_jti,
+                "policy_id": policy_id,
+                "policy_version": policy_version,
+                "policy_hash": policy_hash,
+                "proof_thumbprint": proof_thumbprint,
             }
         )
 
@@ -854,7 +940,12 @@ class AgentGuardClient:
         agent_id: Optional[str] = None,
         source_agent_id: Optional[str] = None,
         platform: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        proof_thumbprint: Optional[str] = None,
+        proof_token: Optional[str] = None,
         require_allowed: bool = True,
+        consume: bool = True,
         tenant_id: Optional[Union[str, int]] = None,
     ) -> Dict[str, Any]:
         """
@@ -881,7 +972,12 @@ class AgentGuardClient:
                 "agent_id": agent_id,
                 "source_agent_id": source_agent_id,
                 "platform": platform,
+                "user_id": user_id,
+                "session_id": session_id,
+                "proof_thumbprint": proof_thumbprint,
+                "proof_token": proof_token,
                 "require_allowed": require_allowed,
+                "consume": consume,
             }
         )
 
@@ -896,7 +992,12 @@ class AgentGuardClient:
         agent_id: Optional[str] = None,
         source_agent_id: Optional[str] = None,
         platform: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        proof_thumbprint: Optional[str] = None,
+        proof_token: Optional[str] = None,
         require_allowed: bool = True,
+        consume: bool = True,
         tenant_id: Optional[Union[str, int]] = None,
         request_id: Union[str, int] = "1",
     ) -> Dict[str, Any]:
@@ -924,7 +1025,12 @@ class AgentGuardClient:
                 "agent_id": agent_id,
                 "source_agent_id": source_agent_id,
                 "platform": platform,
+                "user_id": user_id,
+                "session_id": session_id,
+                "proof_thumbprint": proof_thumbprint,
+                "proof_token": proof_token,
                 "require_allowed": require_allowed,
+                "consume": consume,
             }
         )
 
@@ -932,6 +1038,44 @@ class AgentGuardClient:
             "security.decision.verify",
             arguments,
             request_id=request_id,
+            tenant_id=tenant_id,
+        )
+
+    def get_decision_token_status(
+        self,
+        jti: str,
+        *,
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        self._require_nonempty("jti", jti)
+        return self._request(
+            "GET",
+            f"/a2a/decision/status/{jti}",
+            tenant_id=tenant_id,
+        )
+
+    def revoke_decision_token(
+        self,
+        *,
+        jti: Optional[str] = None,
+        root_jti: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        reason: str = "revoked by tenant administrator",
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        if not any(self._normalize_optional_string(value) for value in (jti, root_jti, agent_id, user_id)):
+            raise ValueError("revoke_decision_token requires jti, root_jti, agent_id, or user_id")
+        return self._request(
+            "POST",
+            "/a2a/decision/revoke",
+            json_body=self._drop_none({
+                "jti": jti,
+                "root_jti": root_jti,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "reason": reason,
+            }),
             tenant_id=tenant_id,
         )
 
@@ -1136,7 +1280,7 @@ class AgentGuardClient:
             "attack_profiles": attack_profiles or ["prompt_injection", "pii_leak"],
             "context": context,
         }
-        return self._request("POST", "/security/", json_body=payload, tenant_id=tenant_id)
+        return self._protected_request("POST", "/security/", json_body=payload, tenant_id=tenant_id)
 
     # ------------------------------------------------------------------
     # Convenience scenario builders

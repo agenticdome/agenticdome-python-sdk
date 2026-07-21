@@ -7,7 +7,7 @@ Install:
 
 Configure:
 
-    export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+    export AGENTICDOME_API_BASE="https://demo-sidecar.agenticdome.io"
     export AGENTICDOME_API_KEY="your_api_key"
     export AGENTICDOME_TENANT_ID="your_tenant_id"
 

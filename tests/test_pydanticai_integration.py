@@ -84,7 +84,7 @@ class FakeClient:
 def make_firewall(**overrides):
     client = FakeClient()
     config = FirewallConfig(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="test-key",
         tenant_id="test-tenant",
         retry_backoff_s=0,
@@ -107,7 +107,7 @@ def ctx(**kwargs):
 def test_pydanticai_firewall_imports():
     firewall, _ = make_firewall()
 
-    assert firewall.config.api_base == "https://au.agenticdome.io"
+    assert firewall.config.api_base == "https://demo-sidecar.agenticdome.io"
     assert firewall.config.platform == "pydanticai"
     assert hasattr(firewall, "secure_tool")
     assert hasattr(firewall, "attach_to_agent")

@@ -562,6 +562,7 @@ class AgenticDomeMicrosoftAIFoundryFirewall:
         for key in (
             "tenant_id", "entra_tenant_id", "oid", "object_id", "appid", "app_id", "client_id",
             "upn", "username", "email", "roles", "scp", "azp", "purview_label",
+            "user_id", "principal_id", "caller_id",
             "sensitivity_label", "data_classification", "foundry_project_id", "foundry_agent_id",
         ):
             value = self._ctx_attr(ctx, key, default=None)

@@ -68,7 +68,7 @@ Your local Python runtime executes agents, tools, workflows, and framework-speci
 [ LOCAL ENTERPRISE RUNTIME PERIMETER ]                     [ AGENTICDOME CENTRAL PLANE ]
 
 +-------------------------------------------------+          +-----------------------------+
-| Python Agent Runtime                            |          | https://au.agenticdome.io   |
+| Python Agent Runtime                            |          | https://demo-sidecar.agenticdome.io   |
 | CrewAI / PydanticAI / LangGraph / Microsoft AF / AI Foundry / Agno / OpenAI Agents / MCP Hosts / Bedrock / Google ADK / LlamaIndex |          | Centralized Policy Engine   |
 +-------------------------------------------------+          +-----------------------------+
      |                         |              ^                            ^
@@ -138,15 +138,48 @@ Authorizes tool calls before execution using:
 
 AgenticDome can transparently authorize multi-agent delegation workflows and issue decision tokens that bind:
 
+- Originating human subject, when present
+- Ordered and nested agent actor chain
 - Source manager agent
 - Target specialist agent
 - Tool name
 - Tool arguments
 - Session ID
+- Trace and lineage root/parent IDs
+- Intent digest, policy binding, authorized scopes, and trust epochs
 - Tenant context
 - Policy decision
 
-This helps prevent unauthorized lateral privilege escalation between agents.
+Execution verification consumes the server-side call budget and checks revocation state. Optional proof-bound decisions use a DPoP-style signed JWT tied to the decision token hash; sending the public-key thumbprint alone is not treated as proof.
+
+Install the proof helper extra and create a runtime-held key:
+
+```bash
+pip install "agenticdome-python-sdk[pop]"
+```
+
+```python
+from agenticdome_sdk import create_dpop_proof, generate_rsa_proof_key
+
+proof_key = generate_rsa_proof_key()
+# Pass proof_key["thumbprint"] as proof_thumbprint when authorizing.
+proof = create_dpop_proof(
+    proof_key["private_key_pem"],
+    access_token=decision_token,
+    method="POST",
+    uri="/a2a",
+)
+client.a2a_verify_decision_token_rpc(
+    decision_token,
+    tool_name=tool_name,
+    tool_args=tool_args,
+    agent_id=worker_id,
+    source_agent_id=manager_id,
+    proof_token=proof,
+)
+```
+
+This helps prevent unauthorized lateral privilege escalation and stolen-token replay between agents.
 
 ### Inline Output Data Loss Prevention, DLP
 
@@ -215,6 +248,7 @@ Install the extra for the framework you use:
 | AWS Bedrock / Bedrock Agents | `pip install "agenticdome-python-sdk[bedrock]"` |
 | MCP host / gateway | `pip install "agenticdome-python-sdk[mcp]"` |
 | Redis token storage | `pip install "agenticdome-python-sdk[redis]"` |
+| Proof-of-possession helpers | `pip install "agenticdome-python-sdk[pop]"` |
 | All optional integrations | `pip install "agenticdome-python-sdk[all]"` |
 
 Some adapters are dependency-light at import time. Google ADK, LlamaIndex, Bedrock, MCP, and Microsoft helpers can wrap local boundaries without forcing one exact runtime stack; install the framework packages your application actually uses.
@@ -228,8 +262,8 @@ Set these environment variables in your local shell, container, CI/CD environmen
 ### Required Variables
 
 ```bash
-# Regional gateway base URL.
-export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+# Tenant runtime sidecar URL. Do not use the control-plane website URL here.
+export AGENTICDOME_API_BASE="https://demo-sidecar.agenticdome.io"
 
 # Secure access token generated in the AgenticDome console.
 export AGENTICDOME_API_KEY="your_api_key_abc123..."
@@ -322,7 +356,7 @@ Set these values in the same place you configure your Python application runtime
 Minimum production configuration:
 
 ```bash
-export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+export AGENTICDOME_API_BASE="https://demo-sidecar.agenticdome.io"
 export AGENTICDOME_API_KEY="your_api_key"
 export AGENTICDOME_TENANT_ID="your_tenant_id"
 export AGENTICDOME_FAIL_CLOSED="true"
@@ -482,7 +516,7 @@ secure_refund = firewall.wrap_delegated_tool_handler(
 
 | Environment Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `AGENTICDOME_API_BASE` | string | required | AgenticDome regional API and console endpoint, for example `https://au.agenticdome.io`. |
+| `AGENTICDOME_API_BASE` | string | required | Tenant runtime sidecar origin, for example `https://demo-sidecar.agenticdome.io`. This is separate from the control-plane console URL. |
 | `AGENTICDOME_API_KEY` | string | required | API key generated in the AgenticDome console. |
 | `AGENTICDOME_TENANT_ID` | string | required | Tenant or organization isolation namespace. |
 | `AGENTICDOME_PLATFORM` | string | framework-specific | Runtime platform label included in policy context. |
@@ -690,7 +724,7 @@ Use the core client when you own the runtime loop or have a custom gateway. This
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -1045,7 +1079,7 @@ pip install "agenticdome-python-sdk[pydanticai]"
 [ PYDANTICAI AGENT RUNTIME PERIMETER ]            [ AGENTICDOME CONTROL PLANE ]
 
 +-------------------------------------------------+          +-----------------------------+
-| Agent.run() Execution Loop                      |          | https://au.agenticdome.io   |
+| Agent.run() Execution Loop                      |          | https://demo-sidecar.agenticdome.io   |
 +-------------------------------------------------+          +-----------------------------+
      |                         |              ^                            ^
      | 1. before_runner_init   | 4. after     | Verdict / DLP                |
@@ -1174,7 +1208,7 @@ PydanticAI lifecycle hook APIs have evolved. Current PydanticAI documents `pydan
 - If compatible legacy lifecycle decorators are available, `attach_to_agent()` attaches prompt ingress and egress DLP hooks.
 - If native `Hooks` capabilities are available, `create_hooks()` returns a capability object you can pass into `Agent(..., capabilities=[...])`.
 - If lifecycle decorators are not available, `@firewall.secure_tool(...)` still protects tool execution.
-- In production mode, configure API base, API key, tenant ID, and stable session IDs.
+- In production mode, configure the tenant runtime sidecar, API key, tenant ID, and stable session IDs.
 - `AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT=true` means AgenticDome may ask Mesh to block sensitive output; the SDK only blocks when the policy response verdict is `BLOCKED`.
 
 ---
@@ -1210,7 +1244,7 @@ pip install "agenticdome-python-sdk[langgraph]"
 [ LANGGRAPH STATEGRAPH RUNTIME ]                    [ AGENTICDOME CONTROL PLANE ]
 
 +-----------------------------------------------+     +-----------------------------+
-| StateGraph / CompiledStateGraph               |     | https://au.agenticdome.io   |
+| StateGraph / CompiledStateGraph               |     | https://demo-sidecar.agenticdome.io   |
 +-----------------------------------------------+     +-----------------------------+
      |                  |                 ^                       ^
      | 1. user message  | 2. tool calls   | 4. verdict / token    | validate
@@ -1425,7 +1459,7 @@ Install the Microsoft Agent Framework packages used by your application separate
 [ MICROSOFT AGENT FRAMEWORK PYTHON RUNTIME ]       [ AGENTICDOME CONTROL PLANE ]
 
 +------------------------------------------------+   +-----------------------------+
-| Agent.run / Workflow.run / Function Tool       |   | https://au.agenticdome.io   |
+| Agent.run / Workflow.run / Function Tool       |   | https://demo-sidecar.agenticdome.io   |
 +------------------------------------------------+   +-----------------------------+
      |                    |                 ^                     ^
      | 1. input text      | 2. tool args    | verdict / token      | validate
@@ -1622,7 +1656,7 @@ The Foundry integration supports:
 - Direct tool-argument stripping, lightweight JSON-schema validation, and sanitized-argument execution when AgenticDome returns safer arguments
 - Enterprise identity context propagation for Entra IDs, roles/scopes, Foundry project IDs, and Purview or sensitivity labels
 - Production-mode stable session ID enforcement and output-sanitization requirements
-- Output DLP through Mesh using the required AgenticDome API base URL, API key, and tenant ID
+- Output DLP through Mesh using the required tenant runtime sidecar URL, API key, and tenant ID
 - Structured-output preservation by parsing sanitized JSON back to dictionaries/lists where possible
 - Local rate limits, input/output/tool-argument size limits, retries, circuit breaker behavior, audit logging, and OpenTelemetry span events
 - Streaming response sanitization through `sanitize_streaming_response()`
@@ -1648,7 +1682,7 @@ If your application uses Microsoft Agent Framework hosted agents, install the Fo
 Foundry threat-contract calls use bearer authentication:
 
 ```bash
-export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+export AGENTICDOME_API_BASE="https://demo-sidecar.agenticdome.io"
 export AGENTICDOME_BEARER_TOKEN="your_foundry_threat_contract_bearer_token"
 ```
 
@@ -1807,7 +1841,7 @@ from agenticdome_sdk.microsoft_ai_foundry import (
 - Production deployments should pass a stable `session_id`, `run_id`, `trace_id`, `conversation_id`, or `thread_id`; generated fallback IDs are intended for local development only.
 - Pass Entra identity, roles/scopes, Foundry project IDs, and Purview/sensitivity labels on `ctx` or `policy_context` so server-side policy can make identity-aware decisions.
 - If a Foundry hosted tool executes entirely inside a remote provider runtime, this local Python SDK can protect the local request/response boundary but cannot inspect inside the remote execution environment.
-- Microsoft AI Foundry requires the standard AgenticDome API base URL, API key, and tenant ID. Threat-contract prompt and tool analysis also require `AGENTICDOME_BEARER_TOKEN`.
+- Microsoft AI Foundry requires the tenant runtime sidecar URL, API key, and tenant ID. Threat-contract prompt and tool analysis also require `AGENTICDOME_BEARER_TOKEN`.
 
 Official references:
 
@@ -2904,7 +2938,7 @@ If you need to call AgenticDome APIs manually, use the core SDK client.
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -2925,7 +2959,7 @@ client.report_incident(
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -2953,7 +2987,7 @@ print(result)
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -2989,7 +3023,7 @@ print(result)
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -3026,7 +3060,7 @@ print(authorization)
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -3057,7 +3091,7 @@ print(verification)
 from agenticdome_sdk.client import AgentGuardClient
 
 client = AgentGuardClient(
-    api_base="https://au.agenticdome.io",
+    api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
     timeout=20,
@@ -3106,7 +3140,7 @@ In-memory token storage is suitable for local development and single-process wor
 ## Recommended Production Settings
 
 ```bash
-export AGENTICDOME_API_BASE="https://au.agenticdome.io"
+export AGENTICDOME_API_BASE="https://demo-sidecar.agenticdome.io"
 export AGENTICDOME_API_KEY="your_api_key"
 export AGENTICDOME_TENANT_ID="your_tenant_id"
 
@@ -3331,7 +3365,7 @@ For strict security-policy validation, add:
 export AGENTICDOME_LIVE_EXPECT_STRICT=1
 ```
 
-The live tenant test performs real `guardrail_validate()` and `mesh_validate()` calls through the core client. Framework-specific behavior remains covered by the offline adapter test matrix above, because those tests assert where each framework boundary calls the shared AgenticDome client and how it handles policy decisions.
+The live tenant suite performs real `guardrail_validate()` and `mesh_validate()` calls, verifies that one request can carry an originating human subject and upstream agent actor together, and queries the tenant's active threat-signature bundle through the public SDK method. With `AGENTICDOME_LIVE_EXPECT_STRICT=1`, it additionally requires sensitive output enforcement plus a signed bundle whose provenance is `agenticdome_private_collection`. Framework-specific behavior remains covered by the offline adapter test matrix above.
 
 ---
 

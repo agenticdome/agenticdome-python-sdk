@@ -37,7 +37,7 @@ class FakeClient:
 def make_firewall(*, fail_closed=True, **overrides):
     client = FakeClient()
     config_kwargs = dict(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="key",
         tenant_id="tenant",
         fail_closed=fail_closed,

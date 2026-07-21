@@ -61,7 +61,7 @@ class FakeFoundryClient:
 def make_firewall(*, api_key="mesh-key", fail_closed=True, bearer_token="bearer-token", **overrides):
     client = FakeFoundryClient()
     config = FirewallConfig(
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         bearer_token=bearer_token,
         api_key=api_key,
         tenant_id="tenant-1",

@@ -12,6 +12,13 @@ pytestmark = pytest.mark.skipif(
 
 
 def live_client():
+    missing = [
+        name
+        for name in ("AGENTICDOME_API_BASE", "AGENTICDOME_API_KEY", "AGENTICDOME_TENANT_ID")
+        if not os.getenv(name, "").strip()
+    ]
+    if missing:
+        pytest.fail("Live tenant testing requires: " + ", ".join(missing))
     return AgentGuardClient(
         api_base=os.getenv("AGENTICDOME_API_BASE", "").rstrip("/"),
         api_key=os.getenv("AGENTICDOME_API_KEY", ""),
@@ -32,36 +39,75 @@ def verdict_from(response):
 
 def test_live_guardrail_allows_benign_prompt():
     client = live_client()
+    try:
+        response = client.guardrail_validate(
+            text="Summarize the public product documentation for a customer support agent.",
+            agent_id="python-sdk-live-smoke",
+            direction="inbound",
+            platform="python",
+            session_id="python-sdk-live-smoke-session",
+            policy_context={"test_case": "benign_prompt"},
+        )
 
-    response = client.guardrail_validate(
-        text="Summarize the public product documentation for a customer support agent.",
-        agent_id="python-sdk-live-smoke",
-        direction="inbound",
-        platform="python",
-        session_id="python-sdk-live-smoke-session",
-        policy_context={"test_case": "benign_prompt"},
-    )
-
-    verdict = verdict_from(response)
-    assert verdict not in {"BLOCKED", "DENIED"}, response
+        verdict = verdict_from(response)
+        assert verdict not in {"BLOCKED", "DENIED"}, response
+    finally:
+        client.close()
 
 
 def test_live_mesh_sanitizes_or_allows_output():
     client = live_client()
+    try:
+        response = client.mesh_validate(
+            text="Support response for alice@example.com with token=sk_live_example1234567890",
+            agent_id="python-sdk-live-smoke",
+            direction="output",
+            platform="python",
+            session_id="python-sdk-live-smoke-session",
+            redact_pii=True,
+            redact_secrets=True,
+            policy_context={"test_case": "mesh_output"},
+        )
 
-    response = client.mesh_validate(
-        text="Support response for alice@example.com with token=sk_live_example1234567890",
-        agent_id="python-sdk-live-smoke",
-        direction="output",
-        platform="python",
-        session_id="python-sdk-live-smoke-session",
-        redact_pii=True,
-        redact_secrets=True,
-        policy_context={"test_case": "mesh_output"},
-    )
+        verdict = verdict_from(response)
+        assert verdict in {"", "ALLOWED", "REDACTED", "BLOCKED", "DENIED"}, response
 
-    verdict = verdict_from(response)
-    assert verdict in {"", "ALLOWED", "REDACTED", "BLOCKED", "DENIED"}, response
+        if os.getenv("AGENTICDOME_LIVE_EXPECT_STRICT") == "1":
+            assert verdict in {"REDACTED", "BLOCKED", "DENIED"}, response
+    finally:
+        client.close()
 
-    if os.getenv("AGENTICDOME_LIVE_EXPECT_STRICT") == "1":
-        assert verdict in {"REDACTED", "BLOCKED", "DENIED"}, response
+
+def test_live_protocol_v2_accepts_human_subject_and_agent_actor_together():
+    client = live_client()
+    try:
+        response = client.guardrail_validate(
+            text="Check the approved public documentation before answering.",
+            agent_id="python-sdk-live-worker",
+            source_agent_id="python-sdk-live-manager",
+            user_id="python-sdk-live-user",
+            direction="outbound",
+            platform="pydanticai",
+            source_platform="langgraph",
+            session_id="python-sdk-live-lineage-session",
+            policy_context={"test_case": "protocol_v2_subject_actor"},
+        )
+        assert isinstance(response, dict)
+        assert verdict_from(response) in {"", "ALLOWED", "REDACTED", "BLOCKED", "DENIED"}, response
+    finally:
+        client.close()
+
+
+def test_live_private_threat_signature_status_is_publicly_queryable_by_sdk():
+    client = live_client()
+    try:
+        status = client.get_threat_signature_status()
+        assert status["schema"] == "agenticdome.threat-signatures.v1"
+        assert int(status["rule_count"]) > 0
+        assert str(status["digest"]).startswith("sha256:")
+
+        if os.getenv("AGENTICDOME_LIVE_EXPECT_STRICT") == "1":
+            assert status["signed"] is True
+            assert status["provenance"] == "agenticdome_private_collection"
+    finally:
+        client.close()

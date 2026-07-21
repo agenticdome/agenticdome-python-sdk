@@ -59,7 +59,7 @@ class FakePolicyClient:
 def make_firewall(fail_closed=True, **overrides):
     fw = AgenticDomeMicrosoftAgentFirewall(
         config=FirewallConfig(
-            api_base="https://au.agenticdome.io",
+            api_base="https://demo-sidecar.agenticdome.io",
             api_key="test-key",
             tenant_id="test-tenant",
             fail_closed=fail_closed,

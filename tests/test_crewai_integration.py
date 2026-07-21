@@ -63,7 +63,7 @@ def load_module():
     module.CLIENT = FakeCrewAIClient()
     module.CONFIG = replace(
         module.CONFIG,
-        api_base="https://au.agenticdome.io",
+        api_base="https://demo-sidecar.agenticdome.io",
         api_key="test-key",
         tenant_id="test-tenant",
         fail_closed=True,
