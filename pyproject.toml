@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.1.3"
+version = "1.1.4"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -48,71 +48,75 @@ dependencies = [
 
 [project.optional-dependencies]
 crewai = [
-    "crewai>=1.15.2"
+    "crewai==1.15.5"
 ]
 redis = [
     "redis>=4.5.0"
 ]
+pop = [
+    "cryptography>=42.0.0"
+]
 pydanticai = [
-    "pydantic-ai>=2.10.0",
+    "pydantic-ai==2.14.1",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai>=2.10.0",
+    "pydantic-ai==2.14.1",
     "anyio>=4.0.0"
 ]
 langgraph = [
-    "langgraph>=1.2.9",
-    "langchain-core>=1.4.9",
+    "langgraph==1.2.9",
+    "langchain-core==1.5.0",
     "anyio>=4.0.0"
 ]
 microsoft = []
 foundry = [
-    "azure-ai-projects>=2.3.0",
-    "azure-identity>=1.25.3"
+    "azure-ai-projects==2.3.0",
+    "azure-identity==1.25.3"
 ]
 agno = [
-    "agno>=2.7.3"
+    "agno==2.8.0"
 ]
 openai-agents = [
-    "openai-agents>=0.18.2"
+    "openai-agents==0.18.3"
 ]
 mcp = [
-    "mcp>=1.26.0"
+    "mcp>=1.26.0,<=1.28.1"
 ]
 bedrock = [
-    "boto3>=1.43.48"
+    "boto3==1.43.52"
 ]
 aws-bedrock = [
-    "boto3>=1.43.48"
+    "boto3==1.43.52"
 ]
 llamaindex = [
-    "llama-index>=0.14.23"
+    "llama-index==0.14.23"
 ]
 llama-index = [
-    "llama-index>=0.14.23"
+    "llama-index==0.14.23"
 ]
 google-adk = [
-    "google-adk>=2.4.0"
+    "google-adk==2.5.0"
 ]
 adk = [
-    "google-adk>=2.4.0"
+    "google-adk==2.5.0"
 ]
 all = [
-    "crewai>=1.15.2",
+    "crewai==1.15.5",
     "redis>=4.5.0",
-    "pydantic-ai>=2.10.0",
+    "cryptography>=42.0.0",
+    "pydantic-ai==2.14.1",
     "anyio>=4.0.0",
-    "langgraph>=1.2.9",
-    "langchain-core>=1.4.9",
-    "agno>=2.7.3",
-    "azure-ai-projects>=2.3.0",
-    "azure-identity>=1.25.3",
-    "openai-agents>=0.18.2",
-    "mcp>=1.26.0",
-    "boto3>=1.43.48",
-    "llama-index>=0.14.23",
-    "google-adk>=2.4.0"
+    "langgraph==1.2.9",
+    "langchain-core==1.5.0",
+    "agno==2.8.0",
+    "azure-ai-projects==2.3.0",
+    "azure-identity==1.25.3",
+    "openai-agents==0.18.3",
+    "mcp>=1.26.0,<=1.28.1",
+    "boto3==1.43.52",
+    "llama-index==0.14.23",
+    "google-adk==2.5.0"
 ]
 dev = [
     "pytest>=8.0.0",
@@ -124,7 +128,7 @@ dev = [
 
 
 [project.urls]
-Homepage = "https://au.agenticdome.io"
+Homepage = "https://www.agenticdome.io"
 Repository = "https://github.com/agenticdome/agenticdome-python-sdk"
 Documentation = "https://github.com/agenticdome/agenticdome-python-sdk#readme"
 Issues = "https://github.com/agenticdome/agenticdome-python-sdk/issues"
