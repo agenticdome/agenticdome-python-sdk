@@ -8,7 +8,7 @@
 
 `agenticdome-python-sdk` is the official Python SDK and middleware package for [AgenticDome](https://agenticdome.io). It enforces deterministic security controls at every boundary your agents cross — prompt ingress, tool execution, agent-to-agent handoffs, and output egress — backed by the AgenticDome central policy plane.
 
-**One security pattern, twelve runtimes:** CrewAI · PydanticAI · LangGraph/LangChain · Microsoft Agent Framework · Microsoft AI Foundry · OpenAI Agents SDK · Agno · Google ADK · LlamaIndex · AWS Bedrock · MCP hosts/gateways · custom Python.
+**One security pattern, fourteen runtimes:** CrewAI · PydanticAI · LangGraph/LangChain · Microsoft Agent Framework · Microsoft AI Foundry · OpenAI Agents SDK · Claude Agent SDK · Hugging Face smolagents · Agno · Google ADK · LlamaIndex · AWS Bedrock · MCP hosts/gateways · custom Python.
 
 ```python
 # The 30-second version: block a prompt-injected refund before it executes.
@@ -195,6 +195,8 @@ pip install agenticdome-python-sdk
 | Microsoft Agent Framework | `pip install "agenticdome-python-sdk[microsoft]"` |
 | Microsoft AI Foundry | `pip install "agenticdome-python-sdk[foundry]"` |
 | OpenAI Agents SDK | `pip install "agenticdome-python-sdk[openai-agents]"` |
+| Anthropic Claude Agent SDK | `pip install "agenticdome-python-sdk[claude]"` |
+| Hugging Face smolagents | `pip install "agenticdome-python-sdk[smolagents]"` |
 | Agno | `pip install "agenticdome-python-sdk[agno]"` |
 | Google ADK | `pip install "agenticdome-python-sdk[google-adk]"` |
 | LlamaIndex | `pip install "agenticdome-python-sdk[llamaindex]"` |
@@ -303,7 +305,7 @@ export AGENTICDOME_PRODUCTION_MODE="false"            # production hardening (st
 <details>
 <summary><strong>Full configuration reference — per-adapter variables</strong></summary>
 
-Every framework adapter exposes the same family of local hardening controls, prefixed per adapter: `AGENTICDOME_CREWAI_*`, `AGENTICDOME_PYDANTICAI_*`, `AGENTICDOME_LANGGRAPH_*`, `AGENTICDOME_MSAF_*` (Microsoft Agent Framework), `AGENTICDOME_FOUNDRY_*`, `AGENTICDOME_OPENAI_AGENTS_*`, `AGENTICDOME_AGNO_*`, `AGENTICDOME_BEDROCK_*`, `AGENTICDOME_GOOGLE_ADK_*`, and `AGENTICDOME_MCP_*`.
+Every framework adapter exposes the same family of local hardening controls, prefixed per adapter: `AGENTICDOME_CREWAI_*`, `AGENTICDOME_PYDANTICAI_*`, `AGENTICDOME_LANGGRAPH_*`, `AGENTICDOME_MSAF_*` (Microsoft Agent Framework), `AGENTICDOME_FOUNDRY_*`, `AGENTICDOME_OPENAI_AGENTS_*`, `AGENTICDOME_CLAUDE_*`, `AGENTICDOME_SMOLAGENTS_*`, `AGENTICDOME_AGNO_*`, `AGENTICDOME_BEDROCK_*`, `AGENTICDOME_GOOGLE_ADK_*`, and `AGENTICDOME_MCP_*`.
 
 **Common per-adapter pattern** (substitute the prefix for your adapter):
 
@@ -330,6 +332,11 @@ Every framework adapter exposes the same family of local hardening controls, pre
 | `AGENTICDOME_LANGGRAPH_AGENT_ID` | string | `langgraph_orchestrator` | Default LangGraph orchestrator node identity. |
 | `AGENTICDOME_LANGGRAPH_FINAL_ID` | string | `langgraph_final_node` | Default LangGraph final-output node identity. |
 | `AGENTICDOME_LANGGRAPH_REQUIRE_SERVER_TOKENS` | boolean | `false` | Requires handoff authorization responses to include server-issued decision tokens. |
+| `AGENTICDOME_CLAUDE_AGENT_ID` | string | `claude_agent` | Default Claude Agent SDK identity. |
+| `AGENTICDOME_CLAUDE_STRICT_DELEGATED_EXECUTION` | boolean | `true` | Requires server-issued decision tokens for Claude multi-agent handoffs. |
+| `AGENTICDOME_SMOLAGENTS_AGENT_ID` | string | `smolagent` | Default smolagents identity. |
+| `AGENTICDOME_SMOLAGENTS_SCAN_CODE_EXPRESSIONS` | boolean | `true` | Reviews CodeAgent-generated Python immediately before executor invocation. |
+| `AGENTICDOME_SMOLAGENTS_STRICT_DELEGATED_EXECUTION` | boolean | `true` | Authorizes and verifies managed-agent handoffs using bound decision tokens. |
 | `AGENTICDOME_LANGGRAPH_STRICT_DELEGATED_EXECUTION` | boolean | `true` | Blocks delegated executions that carry delegation metadata without a valid token. |
 | `AGENTICDOME_FOUNDRY_REQUIRE_OUTPUT_SANITIZATION_IN_PROD` | boolean | `true` | Requires API-key-backed Mesh output sanitization when Foundry production mode is enabled. |
 | `AGENTICDOME_BEDROCK_AGENT_ID` | string | `aws_bedrock_agent` | Default agent identity for Bedrock runtime calls and local action handlers. |
@@ -378,6 +385,8 @@ One table, one decision. Find your runtime, apply the required code action, and 
 | [Microsoft Agent Framework](#microsoft-agent-framework) | `agenticdome_sdk.microsoft_agent_framework` | Module where agents, workflows, tools, or middleware are declared | `create_middleware()`, `install_on_agent()`, or `run_agent_securely()` | `@firewall.secure_tool`, `wrap_tool_handler`, `secure_delegated_tool`, `wrap_delegated_tool_handler` |
 | [Microsoft AI Foundry](#microsoft-ai-foundry) | `agenticdome_sdk.microsoft_ai_foundry` | Module handling Foundry runs, function calls, or client construction | `create_middleware()`, `install_on_client()`, or `run_secure()` | `wrap_tool_executor()`, `@firewall.secure_tool(...)`, `before_tool_call()`, delegation verifiers |
 | [OpenAI Agents SDK](#openai-agents-sdk) | `agenticdome_sdk.openai_agents` | Module where `Agent`, `Runner.run(...)`, `@function_tool`, guardrails, or handoffs are declared | `run_agent_securely()`, `run_agent_stream_securely()`, `create_input_guardrail()`, `create_output_guardrail()` | `wrap_tool_handler()`, `wrap_delegated_tool_handler()`, `@firewall.secure_tool(...)`, handoff verifiers |
+| [Claude Agent SDK](#claude-agent-sdk) | `agenticdome_sdk.claude` | Module constructing `ClaudeAgentOptions`, `ClaudeSDKClient`, SDK MCP tools, or `query()` | `install_on_options()` plus `run_client_securely()`, or `secure_query()` | Native `PreToolUse`/`PostToolUse` hooks, `wrap_tool_handler()`, and `secure_sdk_tool()` |
+| [smolagents](#hugging-face-smolagents) | `agenticdome_sdk.smolagents` | Module constructing `CodeAgent`, `ToolCallingAgent`, tools, or managed agents | `run_agent_securely()` or `attach_firewall()` | Native `Tool` wrappers, CodeAgent executor proxy, observation callback, and managed-agent token verification |
 | [Agno](#agno) | `agenticdome_sdk.agno` | Module where `Agent`, Team, Workflow, or AgentOS components are declared | `attach_firewall(agent_or_team)`, `create_hook_bundle()`, `create_middleware()`, or `create_plugin()` | `@firewall.secure_tool(...)` for high-risk local tools |
 | [Google ADK](#google-adk) | `agenticdome_sdk.google_adk` | Module where `LlmAgent(...)` or ADK plugins are declared | `build_callback_kwargs()`, `create_plugin()`, or `install_on_agent(...)` | `wrap_tool_handler()` or `@firewall.secure_tool(...)` |
 | [LlamaIndex](#llamaindex) | `agenticdome_sdk.llamaindex` | Module where tools, query engines, retrievers, callbacks, or agents are assembled | `run_query_securely()`, `wrap_query_engine()`, `wrap_retriever()`, `create_node_postprocessor()`, `create_callback_handler()` | `wrap_tool_function()`, `to_function_tool()`, `@firewall.secure_tool(...)`, handoff verifiers |
@@ -1175,6 +1184,138 @@ from agenticdome_sdk.openai_agents import (
 ```
 
 </details>
+
+---
+
+### Claude Agent SDK
+
+The adapter uses Claude Agent SDK's native hook contract for prompt submission, pre-tool permission decisions, and post-tool output replacement. It also wraps the asynchronous `query()` and `ClaudeSDKClient.receive_response()` pipelines so final assistant text is reviewed before your application returns it.
+
+```bash
+pip install "agenticdome-python-sdk[claude]"
+```
+
+**Secure a `ClaudeSDKClient` and its built-in/MCP tools:**
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from agenticdome_sdk.claude import AgenticDomeClaudeFirewall
+
+firewall = AgenticDomeClaudeFirewall()
+options = ClaudeAgentOptions(allowed_tools=["Read", "mcp__crm__lookup"])
+firewall.install_on_options(
+    options,
+    session_id="sess_prod_01J4X",
+    agent_id="claude_support_agent",
+)
+
+async with ClaudeSDKClient(options=options) as client:
+    async for message in firewall.run_client_securely(
+        client,
+        "Look up the customer's active support case.",
+        session_id="sess_prod_01J4X",
+        agent_id="claude_support_agent",
+    ):
+        consume(message)
+```
+
+For the one-shot API, iterate `firewall.secure_query(prompt, session_id=..., options=...)`. If the run may execute built-in tools, install the returned hook matchers on its options as well; `secure_query()` itself covers ingress and returned messages.
+
+**Compose with Claude's native SDK MCP `@tool`:**
+
+```python
+@firewall.secure_sdk_tool(
+    "lookup_customer",
+    "Look up a customer support profile",
+    {"customer_id": str},
+    session_id="sess_prod_01J4X",
+    agent_id="claude_support_agent",
+    tool_platform="crm",
+)
+async def lookup_customer(args):
+    return {"content": [{"type": "text", "text": crm_lookup(args["customer_id"])}]}
+```
+
+The `PreToolUse` hook returns Claude's native `permissionDecision: deny` response before local side effects. If policy supplies sanitized arguments, it returns `updatedInput`. The `PostToolUse` hook uses `updatedToolOutput` so DLP-reviewed tool data is what the model sees.
+
+```bash
+export AGENTICDOME_PLATFORM="claude_agent_sdk"
+export AGENTICDOME_CLAUDE_AGENT_ID="claude_support_agent"
+export AGENTICDOME_CLAUDE_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_CLAUDE_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_CLAUDE_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_CLAUDE_STREAMING_BUFFER_CHARS="4000"
+export AGENTICDOME_CLAUDE_RATE_LIMIT_PER_MINUTE="60"
+export AGENTICDOME_CLAUDE_RETRY_ATTEMPTS="2"
+export AGENTICDOME_CLAUDE_RETRY_BACKOFF_S="0.25"
+export AGENTICDOME_CLAUDE_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_CLAUDE_CIRCUIT_BREAKER_RESET_S="60"
+export AGENTICDOME_CLAUDE_AUDIT_LOGGING="true"
+export AGENTICDOME_CLAUDE_OTEL_ENABLED="true"
+export AGENTICDOME_CLAUDE_STRICT_DELEGATED_EXECUTION="true"
+export AGENTICDOME_CLAUDE_EMERGENCY_BLOCK_TOOLS=""
+export AGENTICDOME_CLAUDE_EMERGENCY_BLOCK_AGENTS=""
+```
+
+Use `authorize_manager_handoff()` and `verify_specialist_execution()` when a manager delegates sensitive work. Configure Redis and `AGENTICDOME_TOKEN_HMAC_SECRET` when authorization and specialist execution can land on different workers. Claude hooks protect operations visible to the local SDK process; externally hosted services still require enforcement at their local gateway or MCP host.
+
+Official references: [Claude Agent SDK Python](https://github.com/anthropics/claude-agent-sdk-python) · [Claude Agent SDK overview](https://platform.claude.com/docs/en/agent-sdk/overview)
+
+---
+
+### Hugging Face smolagents
+
+smolagents `CodeAgent` generates Python and invokes `python_executor(code)` before step callbacks run. The adapter therefore wraps the executor itself, wraps every native `Tool`, sanitizes step observations before the next model turn, and enforces managed-agent handoffs with bound decision tokens.
+
+```bash
+pip install "agenticdome-python-sdk[smolagents]"
+```
+
+```python
+from smolagents import CodeAgent, InferenceClientModel, tool
+from agenticdome_sdk.smolagents import AgenticDomeSmolagentsFirewall
+
+@tool
+def lookup_customer(customer_id: str) -> str:
+    """Look up a customer by ID."""
+    return crm_lookup(customer_id)
+
+agent = CodeAgent(tools=[lookup_customer], model=InferenceClientModel())
+firewall = AgenticDomeSmolagentsFirewall()
+
+result = firewall.run_agent_securely(
+    agent,
+    "Look up customer cust_123 for their active support case.",
+    session_id="sess_prod_01J4X",
+    agent_id="smol_support_agent",
+)
+```
+
+`attach_firewall(agent, session_id=...)` is idempotent and can be used when another component owns `agent.run()`. For streaming, use `run_agent_stream_securely()` so event output is reviewed before it is yielded. Direct `agent.run()` after attachment still gets tool, code, managed-agent, and step-observation enforcement, but the application should use the secure run wrapper for final-output DLP.
+
+```bash
+export AGENTICDOME_PLATFORM="smolagents"
+export AGENTICDOME_SMOLAGENTS_AGENT_ID="smol_support_agent"
+export AGENTICDOME_SMOLAGENTS_MAX_INPUT_CHARS="50000"
+export AGENTICDOME_SMOLAGENTS_MAX_OUTPUT_CHARS="100000"
+export AGENTICDOME_SMOLAGENTS_MAX_TOOL_ARG_CHARS="20000"
+export AGENTICDOME_SMOLAGENTS_STREAMING_BUFFER_CHARS="4000"
+export AGENTICDOME_SMOLAGENTS_RATE_LIMIT_PER_MINUTE="60"
+export AGENTICDOME_SMOLAGENTS_RETRY_ATTEMPTS="2"
+export AGENTICDOME_SMOLAGENTS_RETRY_BACKOFF_S="0.25"
+export AGENTICDOME_SMOLAGENTS_CIRCUIT_BREAKER_FAILURES="5"
+export AGENTICDOME_SMOLAGENTS_CIRCUIT_BREAKER_RESET_S="60"
+export AGENTICDOME_SMOLAGENTS_AUDIT_LOGGING="true"
+export AGENTICDOME_SMOLAGENTS_OTEL_ENABLED="true"
+export AGENTICDOME_SMOLAGENTS_EMERGENCY_BLOCK_TOOLS=""
+export AGENTICDOME_SMOLAGENTS_EMERGENCY_BLOCK_AGENTS=""
+export AGENTICDOME_SMOLAGENTS_STRICT_DELEGATED_EXECUTION="true"
+export AGENTICDOME_SMOLAGENTS_SCAN_CODE_EXPRESSIONS="true"
+```
+
+Keep code-expression scanning enabled in production. It adds business-intent policy before smolagents' local or remote executor; it does not replace the executor's OS/container/WASM sandbox. The adapter intentionally sends generated code and serialized tool arguments to the configured AgenticDome sidecar, so place that sidecar within the approved trust boundary and apply normal data-residency controls.
+
+Official references: [smolagents agents](https://huggingface.co/docs/smolagents/main/reference/agents) · [smolagents tools](https://huggingface.co/docs/smolagents/main/reference/tools)
 
 ---
 
@@ -2153,6 +2294,8 @@ python -m pytest -q tests/test_langgraph_integration.py
 | Microsoft Agent Framework | `python -m pytest -q tests/test_microsoft_agent_framework_integration.py` | Tool/run boundaries, delegated tool verification, middleware install helpers, identity context, Copilot enforcement hooks, streaming output |
 | Microsoft AI Foundry | `python -m pytest -q tests/test_microsoft_ai_foundry_integration.py` | Prompt threat contracts, local tool executors, run boundaries, bearer/API-key configuration, delegated execution, circuit breaker, stream DLP |
 | OpenAI Agents SDK | `python -m pytest -q tests/test_openai_agents_integration.py` | Runner wrappers, guardrail helpers, function-tool wrappers, handoff/delegated tools, HMAC token storage, schema checks, retries, streaming output |
+| Claude Agent SDK | `python -m pytest -q tests/test_claude_integration.py` | Native prompt/tool hooks, tool-output replacement, secure query responses, decision-token binding and one-time consumption |
+| Hugging Face smolagents | `python -m pytest -q tests/test_smolagents_integration.py` | Native Tool wrapper, pre-execution CodeAgent scanning, idempotent attachment, managed-agent handoff verification, output DLP |
 | Agno | `python -m pytest -q tests/test_agno_integration.py` | Agent/team hooks, tool hooks, middleware/plugin helpers, delegated specialist execution, retrieved text sanitization, schema checks, stream DLP |
 | MCP host / gateway | `python -m pytest -q tests/test_mcp_host_integration.py` | JSON-RPC preflight, tool/resource/prompt authorization, private metadata stripping, delegated token verification, response filtering, forwarder DLP |
 | AWS Bedrock | `python -m pytest -q tests/test_aws_bedrock_integration.py` | Converse/InvokeModel wrappers, Bedrock Agents streams, action-group Lambda wrappers, retrieval DLP, tool authorization, handoff tokens, retries |

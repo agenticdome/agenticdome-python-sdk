@@ -119,6 +119,9 @@ def test_project_extras_cover_documented_frameworks():
         "bedrock",
         "llamaindex",
         "google-adk",
+        "claude",
+        "claude-agent-sdk",
+        "smolagents",
         "all",
         "dev",
     }
@@ -126,6 +129,8 @@ def test_project_extras_cover_documented_frameworks():
     assert "pytest>=8.0.0" in extras["dev"]
     assert "tomli>=2.0.0; python_version < '3.11'" in extras["dev"]
     assert "build>=1.0.0" in extras["dev"]
+    assert "langchain-openai==1.3.5" in extras["langgraph"]
+    assert "langchain-openai==1.3.5" in extras["all"]
 
 def test_readme_documents_framework_verification_matrix():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -148,5 +153,7 @@ def test_readme_documents_framework_verification_matrix():
         "tests/test_aws_bedrock_integration.py",
         "tests/test_google_adk_integration.py",
         "tests/test_llamaindex_integration.py",
+        "tests/test_claude_integration.py",
+        "tests/test_smolagents_integration.py",
     ]:
         assert test_file in readme

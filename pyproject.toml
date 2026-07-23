@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.1"
+version = "1.2.2"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -57,16 +57,17 @@ pop = [
     "cryptography>=42.0.0"
 ]
 pydanticai = [
-    "pydantic-ai==2.15.0",
+    "pydantic-ai==2.16.0",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai==2.15.0",
+    "pydantic-ai==2.16.0",
     "anyio>=4.0.0"
 ]
 langgraph = [
     "langgraph==1.2.9",
     "langchain-core==1.5.0",
+    "langchain-openai==1.3.5",
     "anyio>=4.0.0"
 ]
 microsoft = []
@@ -84,10 +85,10 @@ mcp = [
     "mcp>=1.26.0,<=1.28.1"
 ]
 bedrock = [
-    "boto3==1.43.53"
+    "boto3==1.43.54"
 ]
 aws-bedrock = [
-    "boto3==1.43.53"
+    "boto3==1.43.54"
 ]
 llamaindex = [
     "llama-index==0.14.23"
@@ -101,22 +102,34 @@ google-adk = [
 adk = [
     "google-adk==2.5.0"
 ]
+claude = [
+    "claude-agent-sdk==0.2.126"
+]
+claude-agent-sdk = [
+    "claude-agent-sdk==0.2.126"
+]
+smolagents = [
+    "smolagents==1.26.0"
+]
 all = [
     "crewai==1.15.5",
     "redis>=4.5.0",
     "cryptography>=42.0.0",
-    "pydantic-ai==2.15.0",
+    "pydantic-ai==2.16.0",
     "anyio>=4.0.0",
     "langgraph==1.2.9",
     "langchain-core==1.5.0",
+    "langchain-openai==1.3.5",
     "agno==2.8.0",
     "azure-ai-projects==2.3.0",
     "azure-identity==1.25.3",
     "openai-agents==0.18.3",
     "mcp>=1.26.0,<=1.28.1",
-    "boto3==1.43.53",
+    "boto3==1.43.54",
     "llama-index==0.14.23",
-    "google-adk==2.5.0"
+    "google-adk==2.5.0",
+    "claude-agent-sdk==0.2.126",
+    "smolagents==1.26.0"
 ]
 dev = [
     "pytest>=8.0.0",
