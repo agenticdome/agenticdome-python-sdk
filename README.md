@@ -2385,7 +2385,7 @@ python -m build
 python -m twine check dist/*
 ```
 
-`python -m pytest -q` runs the core SDK tests, package metadata contract tests, and every dependency-light framework adapter test in one pass — the normal offline full-suite command. Adapter tests use fake framework/client boundaries where possible, so CI verifies authorization, delegation-token handling, sanitized tool arguments, output DLP, streaming sanitization, rate limits, and fail-open/fail-closed behavior without live third-party services.
+`python -m pytest -q` runs the core SDK tests and every dependency-light framework adapter test in one pass — the normal offline full-suite command. Adapter tests use fake framework/client boundaries where possible, so CI verifies authorization, delegation-token handling, sanitized tool arguments, output DLP, streaming sanitization, rate limits, and fail-open/fail-closed behavior without live third-party services. Private release automation separately validates package metadata and rejects internal-only files from both wheel and source-distribution artifacts.
 
 ### Framework Test Matrix
 
@@ -2399,7 +2399,6 @@ python -m pytest -q tests/test_langgraph_integration.py
 | Runtime / integration | Test command | Coverage focus |
 | :--- | :--- | :--- |
 | Core SDK client | `python -m pytest -q tests/test_client.py` | Request validation, headers, guardrail calls, A2A/MCP JSON-RPC calls, Mesh DLP, HTTP errors, JSON handling |
-| Package contract | `python -m pytest -q tests/test_packaging_contract.py` | `pyproject.toml` metadata, legacy `setup.py` shim, public exports, manifest hygiene, ignored build artifacts, documented extras |
 | Attack demos | `python -m pytest -q tests/test_attack_demo.py` | Offline vulnerable-vs-protected CLI coverage, including AutoGen, Claude Agent SDK, and Hugging Face smolagents |
 | CrewAI | `python -m pytest -q tests/test_crewai_integration.py` | Prompt/tool hooks, handoff token injection, specialist verification, output redaction, schema checks, rate limits, retries, streaming DLP |
 | PydanticAI | `python -m pytest -q tests/test_pydanticai_integration.py` | Agent hooks, secure tools, sanitized arguments, token-store fallback, production session enforcement, rate limits, retries, streaming output |
@@ -2418,14 +2417,15 @@ python -m pytest -q tests/test_langgraph_integration.py
 
 ### Release gates
 
-**Metadata and artifact validation only:**
+**Metadata and artifact validation:**
 
 ```bash
-python -m pytest -q tests/test_packaging_contract.py
 rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
 python -m build
 python -m twine check dist/*
 ```
+
+The private release pipeline performs additional package-contract and forbidden-file checks before upload.
 
 **Full offline release gate** across all supported Python integrations:
 
@@ -2437,17 +2437,16 @@ python -m build
 python -m twine check dist/*
 ```
 
-**Focused verification** — packaging checks plus optional live tenant smoke tests:
+**Focused verification** — optional live tenant smoke tests:
 
 ```bash
-python -m pytest -q tests/test_packaging_contract.py tests/test_live_tenant.py
+python -m pytest -q tests/test_live_tenant.py
 ```
 
 | Part | Meaning |
 | :--- | :--- |
 | `python -m pytest` | Runs `pytest` using the current Python environment |
 | `-q` | Quiet mode — compact results instead of verbose test names |
-| `tests/test_packaging_contract.py` | Packaging and release-quality checks: `pyproject.toml` metadata, minimal `setup.py` shim, public imports, `.gitignore`, `MANIFEST.in`, README verification coverage |
 | `tests/test_live_tenant.py` | Live AgenticDome tenant smoke tests — skipped by default, only runs when explicitly enabled |
 
 **Live tenant release gate** — against a real AgenticDome tenant:
