@@ -8,7 +8,7 @@
 
 `agenticdome-python-sdk` is the official Python SDK and middleware package for [AgenticDome](https://agenticdome.io). It enforces deterministic security controls at every boundary your agents cross — prompt ingress, tool execution, agent-to-agent handoffs, and output egress — backed by the AgenticDome central policy plane.
 
-**One security pattern, fourteen runtimes:** CrewAI · PydanticAI · LangGraph/LangChain · Microsoft Agent Framework · Microsoft AI Foundry · OpenAI Agents SDK · Claude Agent SDK · Hugging Face smolagents · Agno · Google ADK · LlamaIndex · AWS Bedrock · MCP hosts/gateways · custom Python.
+**One security pattern, fifteen runtimes:** CrewAI · PydanticAI · LangGraph/LangChain · Microsoft Agent Framework · Microsoft AutoGen · Microsoft AI Foundry · OpenAI Agents SDK · Claude Agent SDK · Hugging Face smolagents · Agno · Google ADK · LlamaIndex · AWS Bedrock · MCP hosts/gateways · custom Python.
 
 ```python
 # The 30-second version: block a prompt-injected refund before it executes.
@@ -30,7 +30,7 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
 5. [Configuration](#configuration)
 6. [Choosing Your Integration Point](#choosing-your-integration-point)
 7. [Framework Integrations](#framework-integrations)
-   - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
+   - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AutoGen](#microsoft-autogen) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
 8. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)
 9. [Production Deployment](#production-deployment)
 10. [Package Build and Verification](#package-build-and-verification)
@@ -175,6 +175,8 @@ result = crew.kickoff()
 
 ```bash
 python examples/attack_demo.py --framework crewai --scenario refund_hijack
+python examples/attack_demo.py --framework claude --scenario metadata_exfil
+python examples/attack_demo.py --framework smolagents --scenario generated_code_exfil
 ```
 
 ---
@@ -193,6 +195,7 @@ pip install agenticdome-python-sdk
 | PydanticAI | `pip install "agenticdome-python-sdk[pydanticai]"` |
 | LangGraph / LangChain | `pip install "agenticdome-python-sdk[langgraph]"` |
 | Microsoft Agent Framework | `pip install "agenticdome-python-sdk[microsoft]"` |
+| Microsoft AutoGen AgentChat / Core (Python 3.10+) | `pip install "agenticdome-python-sdk[autogen]"` |
 | Microsoft AI Foundry | `pip install "agenticdome-python-sdk[foundry]"` |
 | OpenAI Agents SDK | `pip install "agenticdome-python-sdk[openai-agents]"` |
 | Anthropic Claude Agent SDK | `pip install "agenticdome-python-sdk[claude]"` |
@@ -207,6 +210,12 @@ pip install agenticdome-python-sdk
 | All optional integrations | `pip install "agenticdome-python-sdk[all]"` |
 
 Some adapters are dependency-light at import time: Google ADK, LlamaIndex, Bedrock, MCP, and Microsoft helpers can wrap local boundaries without forcing one exact runtime stack. Install the framework packages your application actually uses.
+
+### Framework-version compatibility
+
+AgenticDome supports framework versions only inside the range certified by the SDK Harness. When an upstream framework release appears, **Upgrade & Certify** keeps the existing certified version as the compatibility floor, tests the new release as the ceiling, and publishes an inclusive dependency range such as `framework>=floor,<=ceiling` only when both endpoints pass the adapter and firewall release gates. Multi-package integrations such as LangGraph/LangChain are also retested at their complete certified floor set.
+
+This means upgrading support for the latest framework does not silently drop customers on the previously certified version. Versions below the displayed certified floor are not claimed as supported until they are tested. Customers managing framework dependencies themselves may install the core SDK without an extra, but their framework version must still be inside the certified range for a production support claim.
 
 ---
 
@@ -305,7 +314,7 @@ export AGENTICDOME_PRODUCTION_MODE="false"            # production hardening (st
 <details>
 <summary><strong>Full configuration reference — per-adapter variables</strong></summary>
 
-Every framework adapter exposes the same family of local hardening controls, prefixed per adapter: `AGENTICDOME_CREWAI_*`, `AGENTICDOME_PYDANTICAI_*`, `AGENTICDOME_LANGGRAPH_*`, `AGENTICDOME_MSAF_*` (Microsoft Agent Framework), `AGENTICDOME_FOUNDRY_*`, `AGENTICDOME_OPENAI_AGENTS_*`, `AGENTICDOME_CLAUDE_*`, `AGENTICDOME_SMOLAGENTS_*`, `AGENTICDOME_AGNO_*`, `AGENTICDOME_BEDROCK_*`, `AGENTICDOME_GOOGLE_ADK_*`, and `AGENTICDOME_MCP_*`.
+Every framework adapter exposes the same family of local hardening controls, prefixed per adapter: `AGENTICDOME_CREWAI_*`, `AGENTICDOME_PYDANTICAI_*`, `AGENTICDOME_LANGGRAPH_*`, `AGENTICDOME_MSAF_*` (Microsoft Agent Framework), `AGENTICDOME_AUTOGEN_*`, `AGENTICDOME_FOUNDRY_*`, `AGENTICDOME_OPENAI_AGENTS_*`, `AGENTICDOME_CLAUDE_*`, `AGENTICDOME_SMOLAGENTS_*`, `AGENTICDOME_AGNO_*`, `AGENTICDOME_BEDROCK_*`, `AGENTICDOME_GOOGLE_ADK_*`, and `AGENTICDOME_MCP_*`.
 
 **Common per-adapter pattern** (substitute the prefix for your adapter):
 
@@ -383,6 +392,7 @@ One table, one decision. Find your runtime, apply the required code action, and 
 | [PydanticAI](#pydanticai) | `agenticdome_sdk.pydantic` | Module where each `Agent(...)` and tool is constructed | `CyberSecFirewall(...)` + `create_hooks()`, `install_native_hooks(agent)`, or `attach_to_agent(agent)` | `@firewall.secure_tool(...)` with optional `tool_schema` validation |
 | [LangGraph](#langgraph) | `agenticdome_sdk.langgraph` | Module where `StateGraph` or LangChain `create_agent()` is assembled | Add `input_node()` / `transition_node()` / `graph_transition_node()` / `output_node()`, or `as_langchain_middleware()` | `wrap_agent_node()`, `wrap_tool_node()`, `security_route()` for blocked edges |
 | [Microsoft Agent Framework](#microsoft-agent-framework) | `agenticdome_sdk.microsoft_agent_framework` | Module where agents, workflows, tools, or middleware are declared | `create_middleware()`, `install_on_agent()`, or `run_agent_securely()` | `@firewall.secure_tool`, `wrap_tool_handler`, `secure_delegated_tool`, `wrap_delegated_tool_handler` |
+| [Microsoft AutoGen](#microsoft-autogen) | `agenticdome_sdk.autogen` | AgentChat teams/Core runtimes; legacy 0.2 ConversableAgent loops | `wrap_team()`, `create_intervention_handler()`, `create_termination_condition()`, `attach_agentchat_agent()`, or `attach_conversable_agent()` | Core `FunctionCall` authorization plus inherited `wrap_tool_handler()` / `secure_tool()` |
 | [Microsoft AI Foundry](#microsoft-ai-foundry) | `agenticdome_sdk.microsoft_ai_foundry` | Module handling Foundry runs, function calls, or client construction | `create_middleware()`, `install_on_client()`, or `run_secure()` | `wrap_tool_executor()`, `@firewall.secure_tool(...)`, `before_tool_call()`, delegation verifiers |
 | [OpenAI Agents SDK](#openai-agents-sdk) | `agenticdome_sdk.openai_agents` | Module where `Agent`, `Runner.run(...)`, `@function_tool`, guardrails, or handoffs are declared | `run_agent_securely()`, `run_agent_stream_securely()`, `create_input_guardrail()`, `create_output_guardrail()` | `wrap_tool_handler()`, `wrap_delegated_tool_handler()`, `@firewall.secure_tool(...)`, handoff verifiers |
 | [Claude Agent SDK](#claude-agent-sdk) | `agenticdome_sdk.claude` | Module constructing `ClaudeAgentOptions`, `ClaudeSDKClient`, SDK MCP tools, or `query()` | `install_on_options()` plus `run_client_securely()`, or `secure_query()` | Native `PreToolUse`/`PostToolUse` hooks, `wrap_tool_handler()`, and `secure_sdk_tool()` |
@@ -909,6 +919,108 @@ from agenticdome_sdk.microsoft_agent_framework import (
 ```
 
 </details>
+
+---
+
+### Microsoft AutoGen
+
+AutoGen is Microsoft's open-source conversational multi-agent framework and is now community-managed in maintenance mode; Microsoft Agent Framework is the recommended successor for new systems. AgenticDome supports current AutoGen AgentChat/Core applications and existing legacy `ConversableAgent` deployments so teams can migrate without losing runtime enforcement.
+
+```bash
+# AutoGen AgentChat requires Python 3.10+.
+pip install "agenticdome-python-sdk[autogen]"
+```
+
+**Protect a current AgentChat team** — the wrapper screens the initial task, every streamed team event, and final messages while retaining the underlying Team API:
+
+```python
+from autogen_agentchat.teams import RoundRobinGroupChat
+from agenticdome_sdk.autogen import AgenticDomeAutoGenFirewall
+
+firewall = AgenticDomeAutoGenFirewall()
+team = RoundRobinGroupChat([planner, researcher, payments_specialist], max_turns=12)
+secure_team = firewall.wrap_team(
+    team,
+    session_id="sess_prod_01J4X",
+    agent_id="customer_operations_team",
+    policy_context={"request_purpose": "customer_support"},
+)
+
+result = await secure_team.run(task=user_prompt)
+```
+
+**Authorize AutoGen Core tool traffic at the runtime boundary** — current AutoGen sends `FunctionCall` messages to tool agents, so the intervention handler is a stronger boundary than patching an individual assistant:
+
+```python
+from autogen_core import SingleThreadedAgentRuntime
+
+handler = firewall.create_intervention_handler(
+    session_id="sess_prod_01J4X",
+    agent_id="autogen_planner",
+)
+runtime = SingleThreadedAgentRuntime(intervention_handlers=[handler])
+```
+
+**Freeze a group chat on behavioral drift** — compose the AgenticDome condition with AutoGen's normal termination conditions:
+
+```python
+agenticdome_stop = firewall.create_termination_condition(
+    session_id="sess_prod_01J4X",
+    agent_id="customer_operations_team",
+)
+team = RoundRobinGroupChat(
+    [planner, researcher, payments_specialist],
+    termination_condition=agenticdome_stop | normal_stop,
+    max_turns=12,
+)
+```
+
+Family 2 policy receives a bounded rolling conversation window digest, participant lineage, semantic-deviation evaluation request, and tool-call frequency. A blocked cross-agent message or excessive tool rate freezes the local session, reports a trust incident, and advances revocation state for the emitting agent before an external action can run.
+
+**Existing AutoGen 0.2 deployments** — attach to the legacy `ConversableAgent.send()`, `receive()`, `a_send()`, and `a_receive()` lifecycles:
+
+Keep the customer's already-certified legacy AutoGen dependency in place and install the dependency-light base SDK (do not use the `[autogen]` extra, because that extra deliberately installs the current AgentChat release):
+
+```bash
+pip install agenticdome-python-sdk
+```
+
+```python
+assistant = firewall.attach_conversable_agent(
+    assistant,
+    session_id="sess_prod_01J4X",
+    agent_id="legacy_autogen_assistant",
+)
+user_proxy = firewall.attach_conversable_agent(
+    user_proxy,
+    session_id="sess_prod_01J4X",
+    agent_id="legacy_autogen_user_proxy",
+)
+```
+
+Wrap side-effecting local tools as well; conversation screening does not replace authorization at the execution boundary:
+
+```python
+secure_refund = firewall.wrap_tool_handler(
+    tool_name="payments.refund.create",
+    tool_platform="payments",
+    handler=raw_refund,
+    session_id="sess_prod_01J4X",
+    agent_id="payments_specialist",
+)
+```
+
+```bash
+export AGENTICDOME_PLATFORM="autogen"
+export AGENTICDOME_PRODUCTION_MODE="true"
+export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
+export AGENTICDOME_AUTOGEN_CONVERSATION_WINDOW="12"
+export AGENTICDOME_AUTOGEN_MAX_TOOL_CALLS_PER_WINDOW="8"
+export AGENTICDOME_AUTOGEN_FREEZE_ON_BLOCK="true"
+export AGENTICDOME_AUTOGEN_REVOKE_ON_FREEZE="true"
+```
+
+Official references: [AutoGen project status and migration guidance](https://github.com/microsoft/autogen) · [AgentChat teams](https://microsoft.github.io/autogen/stable/reference/python/autogen_agentchat.teams.html) · [Core intervention handlers](https://microsoft.github.io/autogen/dev/user-guide/core-user-guide/cookbook/tool-use-with-intervention.html) · [Legacy 0.2 conversational agents](https://microsoft.github.io/autogen/0.2/docs/Use-Cases/agent_chat/)
 
 ---
 
@@ -2265,7 +2377,7 @@ source .venv/bin/activate
 
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
-python -m pip install -e ".[crewai,pydanticai,langgraph,microsoft,foundry,agno,openai-agents,mcp,bedrock,google-adk,llamaindex,redis]"
+python -m pip install -e ".[crewai,pydanticai,langgraph,microsoft,autogen,foundry,agno,openai-agents,claude,smolagents,mcp,bedrock,google-adk,llamaindex,redis]"
 
 python -m pytest -q
 rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
@@ -2288,10 +2400,12 @@ python -m pytest -q tests/test_langgraph_integration.py
 | :--- | :--- | :--- |
 | Core SDK client | `python -m pytest -q tests/test_client.py` | Request validation, headers, guardrail calls, A2A/MCP JSON-RPC calls, Mesh DLP, HTTP errors, JSON handling |
 | Package contract | `python -m pytest -q tests/test_packaging_contract.py` | `pyproject.toml` metadata, legacy `setup.py` shim, public exports, manifest hygiene, ignored build artifacts, documented extras |
+| Attack demos | `python -m pytest -q tests/test_attack_demo.py` | Offline vulnerable-vs-protected CLI coverage, including AutoGen, Claude Agent SDK, and Hugging Face smolagents |
 | CrewAI | `python -m pytest -q tests/test_crewai_integration.py` | Prompt/tool hooks, handoff token injection, specialist verification, output redaction, schema checks, rate limits, retries, streaming DLP |
 | PydanticAI | `python -m pytest -q tests/test_pydanticai_integration.py` | Agent hooks, secure tools, sanitized arguments, token-store fallback, production session enforcement, rate limits, retries, streaming output |
 | LangGraph / LangChain | `python -m pytest -q tests/test_langgraph_integration.py` | Graph input, transition, tool, retrieval, middleware, security routing, token consumption, output DLP, streaming events |
 | Microsoft Agent Framework | `python -m pytest -q tests/test_microsoft_agent_framework_integration.py` | Tool/run boundaries, delegated tool verification, middleware install helpers, identity context, Copilot enforcement hooks, streaming output |
+| Microsoft AutoGen | `python -m pytest -q tests/test_autogen_integration.py` | Current AgentChat team/Core interception, legacy send/receive hooks, rolling Family 2 context, session freeze, trust incident and revocation escalation |
 | Microsoft AI Foundry | `python -m pytest -q tests/test_microsoft_ai_foundry_integration.py` | Prompt threat contracts, local tool executors, run boundaries, bearer/API-key configuration, delegated execution, circuit breaker, stream DLP |
 | OpenAI Agents SDK | `python -m pytest -q tests/test_openai_agents_integration.py` | Runner wrappers, guardrail helpers, function-tool wrappers, handoff/delegated tools, HMAC token storage, schema checks, retries, streaming output |
 | Claude Agent SDK | `python -m pytest -q tests/test_claude_integration.py` | Native prompt/tool hooks, tool-output replacement, secure query responses, decision-token binding and one-time consumption |
@@ -2316,7 +2430,7 @@ python -m twine check dist/*
 **Full offline release gate** across all supported Python integrations:
 
 ```bash
-python -m pip install -e ".[dev,crewai,pydanticai,langgraph,microsoft,foundry,agno,openai-agents,mcp,bedrock,google-adk,llamaindex,redis]"
+python -m pip install -e ".[dev,crewai,pydanticai,langgraph,microsoft,autogen,foundry,agno,openai-agents,claude,smolagents,mcp,bedrock,google-adk,llamaindex,redis]"
 python -m pytest -q
 rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
 python -m build

@@ -90,7 +90,14 @@ def test_manifest_and_ignore_files_keep_release_artifacts_out_of_source_contract
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
 
-    for required in ["include README.md", "include LICENSE", "include pyproject.toml", "include setup.py"]:
+    for required in [
+        "include README.md",
+        "include LICENSE",
+        "include pyproject.toml",
+        "include setup.py",
+        "recursive-include examples *.py",
+        "recursive-include tests *.py",
+    ]:
         assert required in manifest
 
     for ignored in ["build/", "dist/", "*.egg-info/", "__pycache__/", ".pytest_cache/"]:
@@ -112,6 +119,8 @@ def test_project_extras_cover_documented_frameworks():
         "pydanticai",
         "langgraph",
         "microsoft",
+        "autogen",
+        "microsoft-autogen",
         "foundry",
         "agno",
         "openai-agents",
@@ -131,21 +140,31 @@ def test_project_extras_cover_documented_frameworks():
     assert "build>=1.0.0" in extras["dev"]
     assert "langchain-openai==1.3.5" in extras["langgraph"]
     assert "langchain-openai==1.3.5" in extras["all"]
+    assert "autogen-agentchat==0.7.5" in extras["autogen"]
+    assert "autogen-agentchat==0.7.5" in extras["microsoft-autogen"]
+    assert "autogen-agentchat==0.7.5" in extras["all"]
 
 def test_readme_documents_framework_verification_matrix():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "## Package Build and Verification" in readme
     assert "### Framework Test Matrix" in readme
+    assert "### Framework-version compatibility" in readme
     assert "tests/test_live_tenant.py" in readme
+    assert "python examples/attack_demo.py --framework claude --scenario metadata_exfil" in readme
+    assert "python examples/attack_demo.py --framework smolagents --scenario generated_code_exfil" in readme
+    assert "Microsoft AutoGen" in readme
+    assert "tests/test_autogen_integration.py" in readme
 
     for test_file in [
         "tests/test_client.py",
         "tests/test_packaging_contract.py",
+        "tests/test_attack_demo.py",
         "tests/test_crewai_integration.py",
         "tests/test_pydanticai_integration.py",
         "tests/test_langgraph_integration.py",
         "tests/test_microsoft_agent_framework_integration.py",
+        "tests/test_autogen_integration.py",
         "tests/test_microsoft_ai_foundry_integration.py",
         "tests/test_openai_agents_integration.py",
         "tests/test_agno_integration.py",
