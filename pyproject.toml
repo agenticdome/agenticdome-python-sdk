@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.4"
+version = "1.2.6"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -48,7 +48,7 @@ dependencies = [
 
 [project.optional-dependencies]
 crewai = [
-    "crewai>=1.15.5,<=1.15.6"
+    "crewai>=1.15.5,<=1.15.10"
 ]
 redis = [
     "redis>=4.5.0"
@@ -57,16 +57,16 @@ pop = [
     "cryptography>=42.0.0"
 ]
 pydanticai = [
-    "pydantic-ai>=2.16.0,<=2.18.0",
+    "pydantic-ai>=2.16.0,<=2.22.0",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai>=2.16.0,<=2.18.0",
+    "pydantic-ai>=2.16.0,<=2.22.0",
     "anyio>=4.0.0"
 ]
 langgraph = [
-    "langgraph==1.2.9",
-    "langchain-core>=1.5.0,<=1.5.1",
+    "langgraph>=1.2.9,<=1.2.10",
+    "langchain-core>=1.5.0,<=1.5.3",
     "langchain-openai==1.3.5",
     "anyio>=4.0.0"
 ]
@@ -78,23 +78,23 @@ microsoft-autogen = [
     "autogen-agentchat==0.7.5"
 ]
 foundry = [
-    "azure-ai-projects==2.3.0",
+    "azure-ai-projects>=2.3.0,<=2.4.0",
     "azure-identity==1.25.3"
 ]
 agno = [
-    "agno>=2.8.0,<=2.8.3"
+    "agno>=2.8.0,<=2.8.6"
 ]
 openai-agents = [
-    "openai-agents==0.18.3"
+    "openai-agents>=0.18.3,<=0.19.2"
 ]
 mcp = [
     "mcp>=1.26.0,<=1.28.1"
 ]
 bedrock = [
-    "boto3>=1.43.54,<=1.43.56"
+    "boto3>=1.43.54,<=1.43.62"
 ]
 aws-bedrock = [
-    "boto3>=1.43.54,<=1.43.56"
+    "boto3>=1.43.54,<=1.43.62"
 ]
 llamaindex = [
     "llama-index==0.14.23"
@@ -103,10 +103,10 @@ llama-index = [
     "llama-index==0.14.23"
 ]
 google-adk = [
-    "google-adk==2.5.0"
+    "google-adk>=2.5.0,<=2.6.1"
 ]
 adk = [
-    "google-adk==2.5.0"
+    "google-adk>=2.5.0,<=2.6.1"
 ]
 claude = [
     "claude-agent-sdk>=0.2.126,<=0.2.128"
@@ -118,23 +118,23 @@ smolagents = [
     "smolagents==1.26.0"
 ]
 all = [
-    "crewai>=1.15.5,<=1.15.6",
+    "crewai>=1.15.5,<=1.15.10",
     "redis>=4.5.0",
     "cryptography>=42.0.0",
-    "pydantic-ai>=2.16.0,<=2.18.0",
+    "pydantic-ai>=2.16.0,<=2.22.0",
     "anyio>=4.0.0",
-    "langgraph==1.2.9",
-    "langchain-core>=1.5.0,<=1.5.1",
+    "langgraph>=1.2.9,<=1.2.10",
+    "langchain-core>=1.5.0,<=1.5.3",
     "langchain-openai==1.3.5",
     "autogen-agentchat==0.7.5",
-    "agno>=2.8.0,<=2.8.3",
-    "azure-ai-projects==2.3.0",
+    "agno>=2.8.0,<=2.8.6",
+    "azure-ai-projects>=2.3.0,<=2.4.0",
     "azure-identity==1.25.3",
-    "openai-agents==0.18.3",
+    "openai-agents>=0.18.3,<=0.19.2",
     "mcp>=1.26.0,<=1.28.1",
-    "boto3>=1.43.54,<=1.43.56",
+    "boto3>=1.43.54,<=1.43.62",
     "llama-index==0.14.23",
-    "google-adk==2.5.0",
+    "google-adk>=2.5.0,<=2.6.1",
     "claude-agent-sdk>=0.2.126,<=0.2.128",
     "smolagents==1.26.0"
 ]
