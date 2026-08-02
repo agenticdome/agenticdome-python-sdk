@@ -91,6 +91,65 @@ def test_guardrail_validate_success(mock_request, client):
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")
+def test_registered_tool_provenance_is_forwarded_without_runtime_hashing(mock_request, client):
+    digest = "sha256:" + "a" * 64
+    mock_request.return_value = make_response(200, {"verdict": "ALLOWED"})
+    client.register_tool_provenance("crm.lookup", tool_version="4.2.1", tool_digest=digest, tool_platform="mcp")
+
+    client.guardrail_validate(
+        text="lookup customer",
+        agent_id="support-agent",
+        direction="outbound",
+        platform="langgraph",
+        tool_platform="mcp",
+        tool_name="crm.lookup",
+        tool_args={"customer_id": "42"},
+    )
+
+    payload = mock_request.call_args.kwargs["json"]
+    assert payload["tool_version"] == "4.2.1"
+    assert payload["tool_digest"] == digest
+    assert payload["policy_context"]["tool_digest"] == digest
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
+def test_registered_provenance_is_bound_to_authorize_and_verify(mock_request, client):
+    digest = "sha256:" + "b" * 64
+    mock_request.return_value = make_response(200, {"jsonrpc": "2.0", "id": "1", "result": {"verdict": "ALLOWED", "valid": True}})
+    client.register_tool_provenance("payments.refund", tool_version="2.0.0", tool_digest=digest)
+
+    client.a2a_authorize_tool(
+        text="delegate refund",
+        agent_id="billing-agent",
+        platform="autogen",
+        source_agent_id="manager-agent",
+        source_platform="autogen",
+        tool_name="payments.refund",
+        tool_args={"amount": 25},
+    )
+    authorize = mock_request.call_args.kwargs["json"]["params"]["arguments"]
+    assert authorize["tool_version"] == "2.0.0"
+    assert authorize["tool_digest"] == digest
+
+    client.a2a_verify_decision_token_rpc(
+        "decision-token",
+        tool_name="payments.refund",
+        tool_args={"amount": 25},
+        agent_id="billing-agent",
+        source_agent_id="manager-agent",
+        platform="autogen",
+    )
+    verify = mock_request.call_args.kwargs["json"]["params"]["arguments"]
+    assert verify["tool_version"] == "2.0.0"
+    assert verify["tool_digest"] == digest
+
+
+def test_invalid_registered_tool_digest_fails_before_network(client):
+    with pytest.raises(ValueError, match="tool_digest"):
+        client.register_tool_provenance("unsafe.tool", tool_digest="sha256:not-a-real-digest")
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_guardrail_validate_blocks_invalid_tool_pairing(mock_request, client):
     with pytest.raises(ValueError, match="'tool_args' is required"):
         client.guardrail_validate(
@@ -295,6 +354,26 @@ def test_mcp_guardrail_validate(mock_request, client):
     assert arguments["direction"] == "output"
     assert arguments["platform"] == "mcp"
     assert arguments["tool_name"] == "mcp.execute_remote_patch"
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
+def test_mcp_guardrail_uses_registered_tool_provenance(mock_request, client):
+    digest = "sha256:" + "d" * 64
+    mock_request.return_value = make_response(200, {"jsonrpc": "2.0", "id": "1", "result": {"verdict": "ALLOWED"}})
+    client.register_tool_provenance("mcp.customer.lookup", tool_version="1.8.0", tool_digest=digest, tool_platform="mcp")
+
+    client.mcp_guardrail_validate(
+        text="lookup customer",
+        agent_id="mcp-agent",
+        platform="mcp",
+        tool_platform="mcp",
+        tool_name="mcp.customer.lookup",
+        tool_args={"customer_id": "42"},
+    )
+
+    arguments = mock_request.call_args.kwargs["json"]["params"]["arguments"]
+    assert arguments["tool_version"] == "1.8.0"
+    assert arguments["tool_digest"] == digest
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")

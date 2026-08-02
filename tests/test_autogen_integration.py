@@ -20,6 +20,10 @@ class FakeClient:
         self.mesh_calls = []
         self.incidents = []
         self.revocations = []
+        self.provenance = {}
+
+    def register_tool_provenance(self, tool_name, **kwargs):
+        self.provenance[tool_name] = kwargs
 
     def guardrail_validate(self, **kwargs):
         self.guardrail_calls.append(kwargs)
@@ -67,6 +71,24 @@ def firewall(**overrides):
 def test_autogen_requires_agenticdome_runtime_configuration():
     with pytest.raises(AutoGenFirewallConfigurationError):
         AgenticDomeAutoGenFirewall(FirewallConfig(api_base="", api_key="", tenant_id=""))
+
+
+def test_autogen_forwards_explicit_tool_provenance_and_supports_cached_registration():
+    fw, client = firewall()
+    digest = "sha256:" + "c" * 64
+    fw.register_tool_provenance("crm.lookup", tool_version="3.0.0", tool_digest=digest)
+    fw.authorize_tool_call(
+        session_id="tool-provenance",
+        agent_id="planner",
+        tool_name="crm.lookup",
+        tool_args={"customer_id": "42"},
+        tool_version="3.0.0",
+        tool_digest=digest,
+    )
+
+    assert client.provenance["crm.lookup"]["tool_digest"] == digest
+    assert client.guardrail_calls[-1]["tool_version"] == "3.0.0"
+    assert client.guardrail_calls[-1]["tool_digest"] == digest
 
 
 def test_conversation_window_sends_family_two_metrics_and_redacts_output():

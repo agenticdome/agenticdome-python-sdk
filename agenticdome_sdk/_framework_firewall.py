@@ -63,6 +63,8 @@ class DecisionTokenRecord:
     source_agent_id: str
     created_at: float
     token_hmac: str = ""
+    tool_version: str = ""
+    tool_digest: str = ""
 
 
 def _stable_json(value: Any) -> str:
@@ -212,6 +214,22 @@ class FrameworkFirewallBase:
             self.client.close()
         except Exception:
             pass
+
+    def register_tool_provenance(
+        self,
+        tool_name: str,
+        *,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
+        tool_platform: Optional[str] = None,
+    ) -> None:
+        """Cache precomputed provenance once for this firewall's client."""
+        self.client.register_tool_provenance(
+            tool_name,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
+            tool_platform=tool_platform or self.config.default_tool_platform,
+        )
 
     @staticmethod
     def serialize(value: Any) -> str:
@@ -372,6 +390,8 @@ class FrameworkFirewallBase:
         tool_args: Dict[str, Any],
         text: str = "",
         tool_platform: Optional[str] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
         source_agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -392,6 +412,8 @@ class FrameworkFirewallBase:
                 tool_platform=tool_platform or self.config.default_tool_platform,
                 tool_name=tool_name,
                 tool_args=clean_args,
+                tool_version=tool_version,
+                tool_digest=tool_digest,
                 policy_context=self._policy_context(session_id, f"{self.config.platform}_tool_call", policy_context, tool_name=tool_name),
             )
             if self.verdict(response) == "BLOCKED":
@@ -421,6 +443,8 @@ class FrameworkFirewallBase:
         tool_args: Dict[str, Any],
         text: str = "",
         tool_platform: Optional[str] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         clean_args = self.strip_private_args(tool_args)
@@ -435,6 +459,8 @@ class FrameworkFirewallBase:
                 tool_platform=tool_platform or self.config.default_tool_platform,
                 tool_name=tool_name,
                 tool_args=clean_args,
+                tool_version=tool_version,
+                tool_digest=tool_digest,
                 session_id=session_id,
                 direction="outbound",
                 policy_context=self._policy_context(
@@ -456,7 +482,7 @@ class FrameworkFirewallBase:
                     target_agent_id=specialist_agent_id,
                     tool_name=tool_name,
                     tool_args=clean_args,
-                    record=DecisionTokenRecord(token, manager_agent_id, time.time(), self._token_hmac(token)),
+                    record=DecisionTokenRecord(token, manager_agent_id, time.time(), self._token_hmac(token), tool_version or "", tool_digest or ""),
                     ttl_s=self.config.handoff_token_ttl_s,
                 )
             return env
@@ -475,6 +501,8 @@ class FrameworkFirewallBase:
         tool_args: Dict[str, Any],
         decision_token: Optional[str] = None,
         source_agent_id: Optional[str] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
     ) -> Dict[str, Any]:
         clean_args = self.strip_private_args(tool_args)
         record = None
@@ -488,6 +516,12 @@ class FrameworkFirewallBase:
             if record:
                 decision_token = record.decision_token
                 source_agent_id = source_agent_id or record.source_agent_id
+                if tool_version and record.tool_version and tool_version != record.tool_version:
+                    raise self.denied_error("AgenticDome delegated tool version differs from the authorized version.")
+                if tool_digest and record.tool_digest and tool_digest != record.tool_digest:
+                    raise self.denied_error("AgenticDome delegated tool digest differs from the authorized digest.")
+                tool_version = tool_version or record.tool_version or None
+                tool_digest = tool_digest or record.tool_digest or None
         if record and self.config.token_hmac_secret:
             expected = self._token_hmac(record.decision_token)
             if not record.token_hmac or not hmac.compare_digest(record.token_hmac, expected):
@@ -500,6 +534,8 @@ class FrameworkFirewallBase:
                 decision_token,
                 tool_name=tool_name,
                 tool_args=clean_args,
+                tool_version=tool_version,
+                tool_digest=tool_digest,
                 agent_id=specialist_agent_id,
                 source_agent_id=source_agent_id,
                 platform=self.config.platform,
@@ -611,4 +647,3 @@ class FrameworkFirewallBase:
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             return self.wrap_tool_handler(tool_name=tool_name or fn.__name__, handler=fn, **options)
         return decorator
-

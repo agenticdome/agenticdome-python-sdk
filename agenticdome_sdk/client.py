@@ -1,6 +1,7 @@
 import base64
 import os
-from typing import Optional, Dict, List, Any, Tuple, Union
+import re
+from typing import Optional, Dict, List, Any, Tuple, Union, Mapping
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -58,6 +59,7 @@ class AgentGuardClient:
         pool_maxsize: int = 100,
         pool_block: bool = False,
         service_token: Optional[str] = None,
+        tool_provenance: Optional[Mapping[str, Mapping[str, str]]] = None,
     ):
         self.api_base = self._require_nonempty("api_base", api_base).rstrip("/")
         self.api_key = self._require_nonempty(
@@ -84,6 +86,13 @@ class AgentGuardClient:
             default=5.0,
         )
         self.user_agent = user_agent
+        self._tool_provenance: Dict[str, Dict[str, str]] = {}
+        for registered_name, provenance in dict(tool_provenance or {}).items():
+            self.register_tool_provenance(
+                registered_name,
+                tool_version=(provenance or {}).get("tool_version") or (provenance or {}).get("version"),
+                tool_digest=(provenance or {}).get("tool_digest") or (provenance or {}).get("digest"),
+            )
 
         self.session = requests.Session()
         retry = Retry(
@@ -157,6 +166,55 @@ class AgentGuardClient:
             return None
         s = str(value).strip()
         return s or None
+
+    def register_tool_provenance(
+        self,
+        tool_name: str,
+        *,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
+        tool_platform: Optional[str] = None,
+    ) -> None:
+        """Register precomputed provenance once; request-time lookup is local O(1)."""
+        name = self._require_nonempty("tool_name", tool_name)
+        version = self._normalize_optional_string(tool_version)
+        digest = self._normalize_optional_string(tool_digest)
+        if digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
+        if version is None and digest is None:
+            raise ValueError("tool_version or tool_digest is required")
+        key = f"{self._normalize_optional_string(tool_platform)}:{name}" if tool_platform else name
+        self._tool_provenance[key] = {"tool_version": version or "", "tool_digest": digest or ""}
+
+    def unregister_tool_provenance(self, tool_name: str, *, tool_platform: Optional[str] = None) -> None:
+        name = self._require_nonempty("tool_name", tool_name)
+        key = f"{self._normalize_optional_string(tool_platform)}:{name}" if tool_platform else name
+        self._tool_provenance.pop(key, None)
+
+    def _resolve_tool_provenance(
+        self,
+        *,
+        tool_name: Optional[str],
+        tool_version: Optional[str],
+        tool_digest: Optional[str],
+        tool_platform: Optional[str] = None,
+        policy_context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        if not tool_name:
+            return tool_version, tool_digest
+        context = policy_context or {}
+        context_provenance = context.get("tool_provenance") if isinstance(context.get("tool_provenance"), dict) else {}
+        key = f"{tool_platform}:{tool_name}" if tool_platform else ""
+        registered = self._tool_provenance.get(key) or self._tool_provenance.get(str(tool_name)) or {}
+        version = self._normalize_optional_string(tool_version) or self._normalize_optional_string(
+            context.get("tool_version") or context_provenance.get("tool_version") or context_provenance.get("version") or registered.get("tool_version")
+        )
+        digest = self._normalize_optional_string(tool_digest) or self._normalize_optional_string(
+            context.get("tool_digest") or context_provenance.get("tool_digest") or context_provenance.get("digest") or registered.get("tool_digest")
+        )
+        if digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
+        return version, digest
 
     def _positive_float(self, name: str, value: Any, *, default: float) -> float:
         try:
@@ -257,6 +315,7 @@ class AgentGuardClient:
         token: str,
         tool_name: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
+        tool_digest: Optional[str] = None,
     ) -> None:
         """
         Validate decision-token verification inputs.
@@ -268,6 +327,8 @@ class AgentGuardClient:
             raise ValueError("'tool_args' is required when 'tool_name' is provided")
         if tool_args is not None and not tool_name:
             raise ValueError("'tool_name' is required when 'tool_args' is provided")
+        if tool_digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(tool_digest)):
+            raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
 
     def _request(
         self,
@@ -453,6 +514,8 @@ class AgentGuardClient:
         tool_platform: Optional[str] = None,
         tool_name: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
         reasoning_trace: Optional[str] = None,
         agent_instance_id: Optional[str] = None,
@@ -491,6 +554,13 @@ class AgentGuardClient:
         Delegation rule:
           - source_agent_id requires source_platform
         """
+        tool_version, tool_digest = self._resolve_tool_provenance(
+            tool_name=tool_name,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
+            tool_platform=tool_platform,
+            policy_context=policy_context,
+        )
         normalized_direction = self._validate_guardrail_args(
             text=text,
             agent_id=agent_id,
@@ -502,6 +572,8 @@ class AgentGuardClient:
             source_platform=source_platform,
             user_id=user_id,
         )
+        if tool_digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(tool_digest)):
+            raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
 
         merged_policy_context = self._merge_policy_context(
             policy_context,
@@ -511,6 +583,8 @@ class AgentGuardClient:
             tool_platform=tool_platform,
             tool_name=tool_name,
             tool_args=tool_args,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
             reasoning_trace=reasoning_trace,
             agent_instance_id=agent_instance_id,
             user_id=user_id,
@@ -540,6 +614,8 @@ class AgentGuardClient:
                 "tool_platform": tool_platform,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
+                "tool_version": tool_version,
+                "tool_digest": tool_digest,
                 "policy_context": merged_policy_context,
                 "reasoning_trace": reasoning_trace,
                 "agent_instance_id": agent_instance_id,
@@ -780,6 +856,8 @@ class AgentGuardClient:
         source_platform: str,
         tool_name: str,
         tool_args: Dict[str, Any],
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         tool_platform: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
@@ -830,6 +908,15 @@ class AgentGuardClient:
         self._require_nonempty("source_agent_id", source_agent_id)
         self._require_nonempty("source_platform", source_platform)
         self._require_nonempty("tool_name", tool_name)
+        tool_version, tool_digest = self._resolve_tool_provenance(
+            tool_name=tool_name,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
+            tool_platform=tool_platform,
+            policy_context=policy_context,
+        )
+        if tool_digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(tool_digest)):
+            raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
 
         normalized_direction = self._validate_guardrail_args(
             text=text,
@@ -851,6 +938,8 @@ class AgentGuardClient:
             source_agent_id=source_agent_id,
             tool_name=tool_name,
             tool_args=tool_args,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
             request_purpose=request_purpose,
             purpose=purpose,
             intent=intent,
@@ -887,6 +976,8 @@ class AgentGuardClient:
                 "tool_platform": tool_platform,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
+                "tool_version": tool_version,
+                "tool_digest": tool_digest,
                 "policy_context": merged_policy_context,
                 "source_agent_id": source_agent_id,
                 "request_purpose": request_purpose,
@@ -937,6 +1028,8 @@ class AgentGuardClient:
         *,
         tool_name: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         agent_id: Optional[str] = None,
         source_agent_id: Optional[str] = None,
         platform: Optional[str] = None,
@@ -958,10 +1051,17 @@ class AgentGuardClient:
           - platform
           - source_agent_id (for delegated sensitive flows)
         """
+        tool_version, tool_digest = self._resolve_tool_provenance(
+            tool_name=tool_name,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
+            tool_platform=platform,
+        )
         self._validate_decision_verify_args(
             token=token,
             tool_name=tool_name,
             tool_args=tool_args,
+            tool_digest=tool_digest,
         )
 
         payload = self._drop_none(
@@ -969,6 +1069,8 @@ class AgentGuardClient:
                 "token": token,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
+                "tool_version": tool_version,
+                "tool_digest": tool_digest,
                 "agent_id": agent_id,
                 "source_agent_id": source_agent_id,
                 "platform": platform,
@@ -989,6 +1091,8 @@ class AgentGuardClient:
         *,
         tool_name: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         agent_id: Optional[str] = None,
         source_agent_id: Optional[str] = None,
         platform: Optional[str] = None,
@@ -1011,10 +1115,17 @@ class AgentGuardClient:
           - platform
           - source_agent_id (for delegated sensitive flows)
         """
+        tool_version, tool_digest = self._resolve_tool_provenance(
+            tool_name=tool_name,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
+            tool_platform=platform,
+        )
         self._validate_decision_verify_args(
             token=token,
             tool_name=tool_name,
             tool_args=tool_args,
+            tool_digest=tool_digest,
         )
 
         arguments = self._drop_none(
@@ -1022,6 +1133,8 @@ class AgentGuardClient:
                 "token": token,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
+                "tool_version": tool_version,
+                "tool_digest": tool_digest,
                 "agent_id": agent_id,
                 "source_agent_id": source_agent_id,
                 "platform": platform,
@@ -1111,6 +1224,8 @@ class AgentGuardClient:
         tool_platform: Optional[str] = None,
         tool_name: Optional[str] = None,
         tool_args: Optional[Dict[str, Any]] = None,
+        tool_version: Optional[str] = None,
+        tool_digest: Optional[str] = None,
         policy_context: Optional[Dict[str, Any]] = None,
         direction: str = "outbound",
         source_agent_id: Optional[str] = None,
@@ -1149,6 +1264,13 @@ class AgentGuardClient:
         Delegation rule:
           - source_agent_id requires source_platform
         """
+        tool_version, tool_digest = self._resolve_tool_provenance(
+            tool_name=tool_name,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
+            tool_platform=tool_platform,
+            policy_context=policy_context,
+        )
         normalized_direction = self._validate_guardrail_args(
             text=text,
             agent_id=agent_id,
@@ -1170,6 +1292,8 @@ class AgentGuardClient:
             user_id=user_id,
             tool_name=tool_name,
             tool_args=tool_args,
+            tool_version=tool_version,
+            tool_digest=tool_digest,
             reasoning_trace=reasoning_trace,
             request_purpose=request_purpose,
             purpose=purpose,
@@ -1195,6 +1319,8 @@ class AgentGuardClient:
                 "tool_platform": tool_platform,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
+                "tool_version": tool_version,
+                "tool_digest": tool_digest,
                 "policy_context": merged_policy_context,
                 "source_agent_id": source_agent_id,
                 "user_id": user_id,
