@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 import re
 from typing import Optional, Dict, List, Any, Tuple, Union, Mapping
@@ -60,6 +61,7 @@ class AgentGuardClient:
         pool_block: bool = False,
         service_token: Optional[str] = None,
         tool_provenance: Optional[Mapping[str, Mapping[str, str]]] = None,
+        execution_broker_mode: Optional[str] = None,
     ):
         self.api_base = self._require_nonempty("api_base", api_base).rstrip("/")
         self.api_key = self._require_nonempty(
@@ -86,6 +88,14 @@ class AgentGuardClient:
             default=5.0,
         )
         self.user_agent = user_agent
+        broker_mode = str(
+            execution_broker_mode
+            if execution_broker_mode is not None
+            else os.getenv("AGENTICDOME_EXECUTION_BROKER_MODE", "off")
+        ).strip().lower()
+        if broker_mode not in {"off", "observe", "enforce"}:
+            raise ValueError("execution_broker_mode must be off, observe, or enforce")
+        self.execution_broker_mode = broker_mode
         self._tool_provenance: Dict[str, Dict[str, str]] = {}
         for registered_name, provenance in dict(tool_provenance or {}).items():
             self.register_tool_provenance(
@@ -528,12 +538,23 @@ class AgentGuardClient:
         actual_role: Optional[str] = None,
         source_agent_role: Optional[str] = None,
         target_agent_role: Optional[str] = None,
+        actor_chain: Optional[List[Dict[str, Any]]] = None,
+        scopes: Optional[List[str]] = None,
+        permissions: Optional[List[str]] = None,
+        parent_jti: Optional[str] = None,
+        root_jti: Optional[str] = None,
+        policy_id: Optional[str] = None,
+        policy_version: Optional[str] = None,
+        policy_hash: Optional[str] = None,
+        proof_thumbprint: Optional[str] = None,
         redact_pii: Optional[bool] = None,
         redact_secrets: Optional[bool] = None,
         block_on_sensitive_output: Optional[bool] = None,
         trusted_destination_domains: Optional[List[str]] = None,
         allowed_destination_domains: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
+        execution_broker: Optional[bool] = None,
+        execution_boundary_id: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
     ) -> Dict[str, Any]:
         """
@@ -596,6 +617,15 @@ class AgentGuardClient:
             actual_role=actual_role,
             source_agent_role=source_agent_role,
             target_agent_role=target_agent_role,
+            actor_chain=actor_chain,
+            scopes=scopes,
+            permissions=permissions,
+            parent_jti=parent_jti,
+            root_jti=root_jti,
+            policy_id=policy_id,
+            policy_version=policy_version,
+            policy_hash=policy_hash,
+            proof_thumbprint=proof_thumbprint,
             redact_pii=redact_pii,
             redact_secrets=redact_secrets,
             block_on_sensitive_output=block_on_sensitive_output,
@@ -628,6 +658,15 @@ class AgentGuardClient:
                 "actual_role": actual_role,
                 "source_agent_role": source_agent_role,
                 "target_agent_role": target_agent_role,
+                "actor_chain": actor_chain,
+                "scopes": scopes,
+                "permissions": permissions,
+                "parent_jti": parent_jti,
+                "root_jti": root_jti,
+                "policy_id": policy_id,
+                "policy_version": policy_version,
+                "policy_hash": policy_hash,
+                "proof_thumbprint": proof_thumbprint,
                 "redact_pii": redact_pii,
                 "redact_secrets": redact_secrets,
                 "block_on_sensitive_output": block_on_sensitive_output,
@@ -637,12 +676,33 @@ class AgentGuardClient:
             }
         )
 
-        return self._request(
-            "POST",
-            "/tools/guardrail/validate",
-            json_body=payload,
-            tenant_id=tenant_id,
+        broker_enabled = bool(
+            tool_name
+            and (self.execution_broker_mode in {"observe", "enforce"} or execution_broker is True)
         )
+        if broker_enabled:
+            boundary_id = self._normalize_optional_string(execution_boundary_id)
+            if boundary_id is None:
+                material = "|".join([
+                    str(platform or "unknown"),
+                    str(agent_id),
+                    str(tool_name),
+                    str(session_id or "stateless"),
+                ])
+                boundary_id = "sdk:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+            payload["boundary_id"] = boundary_id
+
+        path = "/tools/execution/authorize" if broker_enabled else "/tools/guardrail/validate"
+        response = self._request("POST", path, json_body=payload, tenant_id=tenant_id)
+        if broker_enabled:
+            broker = response.get("broker") if isinstance(response.get("broker"), dict) else {}
+            verified = bool(broker.get("verified")) and bool(broker.get("token_consumed"))
+            must_enforce = self.execution_broker_mode == "enforce" or execution_broker is True
+            if must_enforce and not verified:
+                raise AgentGuardError(
+                    "AgenticDome execution broker did not return a verified, atomically consumed decision"
+                )
+        return response
 
     # Backward compatibility alias
     def guardrail_check(
@@ -660,6 +720,13 @@ class AgentGuardClient:
             session_id=session_id,
             policy_context=policy_context,
         )
+
+    def get_tool_provenance_status(
+        self,
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """Return the tenant's signed provenance cache readiness and tool count."""
+        return self._request("GET", "/tools/provenance/status", tenant_id=tenant_id)
 
     # ------------------------------------------------------------------
     # Mesh
@@ -1339,6 +1406,41 @@ class AgentGuardClient:
                 "allowed_destination_domains": allowed_destination_domains,
             }
         )
+
+        # In broker mode the official MCP adapter uses the same one-request
+        # execution boundary as REST. This preserves immediate decision
+        # consumption without adding a second network round trip.
+        if tool_name and self.execution_broker_mode in {"observe", "enforce"}:
+            return self.guardrail_validate(
+                text=text,
+                agent_id=agent_id,
+                platform=platform,
+                source_platform=source_platform,
+                tool_platform=tool_platform,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_version=tool_version,
+                tool_digest=tool_digest,
+                policy_context=policy_context,
+                direction=direction,
+                source_agent_id=source_agent_id,
+                user_id=user_id,
+                reasoning_trace=reasoning_trace,
+                request_purpose=request_purpose,
+                purpose=purpose,
+                intent=intent,
+                claimed_role=claimed_role,
+                actual_role=actual_role,
+                source_agent_role=source_agent_role,
+                target_agent_role=target_agent_role,
+                redact_pii=redact_pii,
+                redact_secrets=redact_secrets,
+                block_on_sensitive_output=block_on_sensitive_output,
+                trusted_destination_domains=trusted_destination_domains,
+                allowed_destination_domains=allowed_destination_domains,
+                execution_broker=True,
+                tenant_id=tenant_id,
+            )
 
         return self.mcp_tool_call(
             "guardrail.validate",
