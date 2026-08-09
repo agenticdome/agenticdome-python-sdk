@@ -28,6 +28,7 @@ except Exception as exc:  # pragma: no cover
     ) from exc
 
 from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
     from agenticdome_sdk.exceptions import AgentGuardHTTPError
@@ -551,7 +552,7 @@ class CyberSecFirewall:
     def __init__(self, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
         self.config = config or FirewallConfig()
 
-        configured = bool(self.config.api_base and self.config.api_key and self.config.tenant_id)
+        configured = credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id)
         if not configured:
             raise PydanticAIFirewallConfigurationError(
                 "AgenticDome PydanticAI firewall requires AGENTICDOME_API_BASE, "

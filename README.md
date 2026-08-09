@@ -6,7 +6,7 @@
 
 > **Production-grade security guardrails, DLP, tool authorization, and cryptographically verified multi-agent delegation for Python autonomous AI runtimes.**
 
-`agenticdome-python-sdk` is the official Python SDK and middleware package for [AgenticDome](https://agenticdome.io). It enforces deterministic security controls at every boundary your agents cross — prompt ingress, tool execution, agent-to-agent handoffs, and output egress — backed by the AgenticDome central policy plane.
+`agenticdome-python-sdk` is the official Python SDK and middleware package for [AgenticDome](https://agenticdome.io). It enforces deterministic security controls at every boundary your agents cross — prompt ingress, tool execution, agent-to-agent handoffs, and output egress — using the tenant's assigned AgenticDome runtime sidecar.
 
 **One security pattern, fifteen runtimes:** CrewAI · PydanticAI · LangGraph/LangChain · Microsoft Agent Framework · Microsoft AutoGen · Microsoft AI Foundry · OpenAI Agents SDK · Claude Agent SDK · Hugging Face smolagents · Agno · Google ADK · LlamaIndex · AWS Bedrock · MCP hosts/gateways · custom Python.
 
@@ -30,7 +30,7 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
 5. [Configuration](#configuration)
 6. [Choosing Your Integration Point](#choosing-your-integration-point)
 7. [Framework Integrations](#framework-integrations)
-   - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AutoGen](#microsoft-autogen) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
+   - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AutoGen](#microsoft-autogen) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Claude Agent SDK](#claude-agent-sdk) · [Hugging Face smolagents](#hugging-face-smolagents) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
 8. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)
 9. [Production Deployment](#production-deployment)
 10. [Package Build and Verification](#package-build-and-verification)
@@ -141,17 +141,27 @@ AgenticDome uses a **hybrid split-plane architecture**. Your local Python runtim
 
 ## Quickstart
 
-Five steps from zero to a protected runtime.
+Start with a network-free simulation, then connect the same SDK to your assigned runtime sidecar for real tenant enforcement.
 
-**1. Onboard.** Create an account in the AgenticDome Management Console (AU region), copy your tenant identifier from organization settings, and generate a production API key from the access-control section.
+**1. Try the installed local simulation.** No account, API key, tenant, network call, telemetry, or framework package is required:
 
-**2. Install** the SDK with the extra matching your framework:
+```bash
+pip install agenticdome-python-sdk
+agenticdome-demo --framework langgraph --scenario refund_hijack
+agenticdome-demo --list-frameworks
+```
+
+This is visibly labelled **LOCAL SIMULATION — NOT CLOUD ENFORCEMENT**. It evaluates a small bundled demonstration policy through the real public client contract, but it does not load tenant policy, issue signed decision tokens or execution receipts, write cloud evidence, or provide runtime assurance. To exercise a wrapper inside your own process without credentials, set `AGENTICDOME_MODE=local_sim`. The SDK refuses that mode when `AGENTICDOME_PRODUCTION_MODE=true`.
+
+**2. Onboard for real enforcement.** Create an account in the AgenticDome Management Console, obtain your tenant identifier and Runtime / SDK API key, and identify the tenant's assigned runtime sidecar.
+
+**3. Install** the SDK with the extra matching your framework:
 
 ```bash
 pip install "agenticdome-python-sdk[crewai]"     # or pydanticai, langgraph, ...
 ```
 
-**3. Configure** the three required environment variables (all clients fail with a configuration error rather than silently running unprotected):
+**4. Configure** the three required production environment variables (live clients fail with a configuration error rather than silently running unprotected):
 
 ```bash
 # Tenant runtime sidecar URL. Do not use the control-plane website URL here.
@@ -160,7 +170,7 @@ export AGENTICDOME_API_KEY="your_api_key_abc123..."
 export AGENTICDOME_TENANT_ID="your_tenant_id_xyz789..."
 ```
 
-**4. Attach** AgenticDome at your framework's boundary — environment variables alone never intercept execution; every framework needs its one-time code attachment (see [Choosing Your Integration Point](#choosing-your-integration-point)):
+**5. Attach** AgenticDome at your framework's boundary — environment variables alone never intercept execution; every framework needs its one-time code attachment (see [Choosing Your Integration Point](#choosing-your-integration-point)):
 
 ```python
 # CrewAI example: one import in your bootstrap, before crews are built.
@@ -171,13 +181,20 @@ crew = Crew(agents=[manager, specialist], tasks=[task])
 result = crew.kickoff()
 ```
 
-**5. Verify** by running the vulnerable-vs-protected attack demo:
+**6. Verify** locally or against the real assigned sidecar:
 
 ```bash
-python examples/attack_demo.py --framework crewai --scenario refund_hijack
-python examples/attack_demo.py --framework claude --scenario metadata_exfil
-python examples/attack_demo.py --framework smolagents --scenario generated_code_exfil
+# Local, deterministic and network-free.
+agenticdome-demo --framework crewai --scenario refund_hijack
+agenticdome-demo --framework langgraph --scenario refund_hijack
+agenticdome-demo --framework claude --scenario metadata_exfil
+agenticdome-demo --framework smolagents --scenario metadata_exfil
+
+# Live: uses AGENTICDOME_API_BASE/API_KEY/TENANT_ID and the assigned sidecar.
+agenticdome-demo --framework langgraph --scenario safe_lookup --live
 ```
+
+Every Python integration listed below is selectable through `agenticdome-demo --framework ...`; the demo prints the correct package extra and integration import for that framework. Local simulation proves SDK compatibility and control flow only. The live command proves the configured tenant-sidecar path.
 
 ---
 
@@ -2320,6 +2337,44 @@ client.report_incident(
 
 ---
 
+## Brokered Execution and the Enforcement Gateway
+
+For high-impact tools, authorise at the last responsible moment and bind the decision to the real destination, HTTP method, tool version/digest, and workload identity. The sidecar returns a short-lived, single-use execution receipt; attach it to the actual outbound request that traverses the AgenticDome enforcement gateway.
+
+```python
+from agenticdome_sdk import AgentGuardClient
+
+client = AgentGuardClient(
+    "https://your-sidecar.example.com",
+    execution_broker_mode="enforce",
+)
+decision = client.guardrail_validate(
+    text="Read customer account",
+    agent_id="support-agent-1",
+    direction="outbound",
+    platform="mcp",
+    tool_name="crm.lookup",
+    tool_args={"customer_id": "123"},
+    tool_version="1.4.2",
+    tool_digest="sha256:" + "a" * 64,
+    execution_destination="https://crm.example.com/customers/123",
+    execution_http_method="GET",
+    workload_id="spiffe://customer.example/agent/support-agent-1",
+)
+
+# Apply these headers to the real HTTP request, not to a simulated callback.
+headers = client.enforcement_headers(
+    decision,
+    workload_id="spiffe://customer.example/agent/support-agent-1",
+)
+```
+
+The control-plane website, provenance registry, SBOM registry, and LLM are not called on this request path. Approved provenance and policy bundles are already cached in the assigned sidecar. If the gateway is in enforce mode, a missing, expired, replayed, destination-mismatched, method-mismatched, or workload-mismatched receipt fails closed.
+
+Framework adapters share this core client, but the application still owns the final executor boundary: pass the real destination/method and attach the returned headers where the framework invokes the external tool. Customers using an AgenticDome-managed sidecar install only the SDK; the deployment administrator operates Envoy, Tetragon/eBPF, SPIFFE, and sandbox infrastructure.
+
+---
+
 ## Production Deployment
 
 ### Fail-safe behavior
@@ -2400,6 +2455,7 @@ python -m pytest -q tests/test_langgraph_integration.py
 | :--- | :--- | :--- |
 | Core SDK client | `python -m pytest -q tests/test_client.py` | Request validation, headers, guardrail calls, A2A/MCP JSON-RPC calls, Mesh DLP, HTTP errors, JSON handling |
 | Attack demos | `python -m pytest -q tests/test_attack_demo.py` | Offline vulnerable-vs-protected CLI coverage, including AutoGen, Claude Agent SDK, and Hugging Face smolagents |
+| Local simulation parity | `python -m pytest -q tests/test_local_simulation.py` | No-credential/no-network mode, production refusal, broker fail-closed behavior, installed demo catalog and constructor coverage for every supported Python adapter |
 | CrewAI | `python -m pytest -q tests/test_crewai_integration.py` | Prompt/tool hooks, handoff token injection, specialist verification, output redaction, schema checks, rate limits, retries, streaming DLP |
 | PydanticAI | `python -m pytest -q tests/test_pydanticai_integration.py` | Agent hooks, secure tools, sanitized arguments, token-store fallback, production session enforcement, rate limits, retries, streaming output |
 | LangGraph / LangChain | `python -m pytest -q tests/test_langgraph_integration.py` | Graph input, transition, tool, retrieval, middleware, security routing, token consumption, output DLP, streaming events |

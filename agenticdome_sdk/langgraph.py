@@ -18,6 +18,7 @@ import anyio
 from typing_extensions import TypedDict
 
 from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
     from agenticdome_sdk.exceptions import AgentGuardHTTPError
@@ -900,7 +901,7 @@ class AgenticDomeLangGraphFirewall:
     """
 
     def __init__(self, *, config: FirewallConfig = DEFAULT_CONFIG):
-        if not config.api_base or not config.api_key or not config.tenant_id:
+        if not credentials_or_local_sim(config.api_base, config.api_key, config.tenant_id):
             raise ValueError(
                 "AgenticDome LangGraph firewall misconfigured. "
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."

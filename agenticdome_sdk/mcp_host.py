@@ -17,6 +17,7 @@ from threading import Lock
 from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 from .client import AgentGuardClient
+from ._mode import credentials_or_local_sim
 
 try:
     from .exceptions import AgentGuardHTTPError
@@ -345,7 +346,7 @@ class AgenticDomeMCPHostFirewall:
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or load_config()
-        if not (self.config.api_base and self.config.api_key and self.config.tenant_id):
+        if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
             raise MCPConfigurationError(
                 "AgenticDome MCP host firewall is misconfigured. "
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."

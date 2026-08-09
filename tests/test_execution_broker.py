@@ -17,7 +17,11 @@ def test_tool_authorization_uses_one_request_broker_and_requires_receipt(monkeyp
 
     def request(method, path, **kwargs):
         observed.update({"method": method, "path": path, **kwargs})
-        return {"verdict": "ALLOWED", "broker": {"verified": True, "token_consumed": True}}
+        return {
+            "verdict": "ALLOWED",
+            "execution_receipt": "signed-receipt",
+            "broker": {"verified": True, "token_consumed": True},
+        }
 
     monkeypatch.setattr(client, "_request", request)
     response = client.guardrail_validate(
@@ -40,6 +44,9 @@ def test_tool_authorization_uses_one_request_broker_and_requires_receipt(monkeyp
         policy_version="3",
         policy_hash="sha256:" + "a" * 64,
         proof_thumbprint="proof-thumbprint",
+        execution_destination="https://crm.example.test/customers/123",
+        execution_http_method="GET",
+        workload_id="spiffe://customer.test/agent/support",
     )
 
     assert response["verdict"] == "ALLOWED"
@@ -54,7 +61,17 @@ def test_tool_authorization_uses_one_request_broker_and_requires_receipt(monkeyp
     assert observed["json_body"]["policy_version"] == "3"
     assert observed["json_body"]["policy_hash"] == "sha256:" + "a" * 64
     assert observed["json_body"]["proof_thumbprint"] == "proof-thumbprint"
+    assert observed["json_body"]["destination"] == "https://crm.example.test/customers/123"
+    assert observed["json_body"]["http_method"] == "GET"
+    assert observed["json_body"]["workload_id"] == "spiffe://customer.test/agent/support"
     assert observed["json_body"]["policy_context"]["actor_chain"][0]["id"] == "support-manager"
+    assert client.enforcement_headers(
+        response,
+        workload_id="spiffe://customer.test/agent/support",
+    ) == {
+        "X-AgenticDome-Execution-Receipt": "signed-receipt",
+        "X-AgenticDome-Workload-Id": "spiffe://customer.test/agent/support",
+    }
 
 
 def test_enforced_broker_fails_closed_without_consumed_receipt(monkeypatch):

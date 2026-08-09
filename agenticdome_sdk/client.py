@@ -1,7 +1,9 @@
 import base64
 import hashlib
+import logging
 import os
 import re
+from importlib import metadata
 from typing import Optional, Dict, List, Any, Tuple, Union, Mapping
 
 import requests
@@ -9,6 +11,20 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .identity import enrich_policy_context
+from ._mode import LOCAL_SIM_MODE, resolve_mode
+from .simulation import LocalSimulationEngine
+
+
+logger = logging.getLogger("agenticdome.client")
+
+
+def _sdk_version() -> str:
+    try:
+        return metadata.version("agenticdome-python-sdk")
+    except metadata.PackageNotFoundError:
+        # A source checkout is not an installed distribution. Do not embed a
+        # version literal here: it inevitably drifts from pyproject.toml.
+        return "source"
 
 
 class AgentGuardError(Exception):
@@ -48,12 +64,12 @@ class AgentGuardClient:
 
     def __init__(
         self,
-        api_base: str,
+        api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 20,
-        user_agent: str = "agenticdome-python-sdk/1.1.3",
+        user_agent: Optional[str] = None,
         max_retries: int = 3,
         connect_timeout: Optional[float] = None,
         pool_connections: int = 20,
@@ -62,16 +78,33 @@ class AgentGuardClient:
         service_token: Optional[str] = None,
         tool_provenance: Optional[Mapping[str, Mapping[str, str]]] = None,
         execution_broker_mode: Optional[str] = None,
+        mode: Optional[str] = None,
     ):
-        self.api_base = self._require_nonempty("api_base", api_base).rstrip("/")
-        self.api_key = self._require_nonempty(
-            "api_key",
-            api_key or os.getenv("AGENTICDOME_API_KEY", ""),
-        )
-        self.tenant_id = self._require_nonempty(
-            "tenant_id",
-            str(tenant_id) if tenant_id is not None else os.getenv("AGENTICDOME_TENANT_ID", ""),
-        )
+        self.mode = resolve_mode(mode)
+        self.is_simulation = self.mode == LOCAL_SIM_MODE
+        if self.is_simulation:
+            self.api_base = "local-sim://agenticdome"
+            self.api_key = "local-sim-no-credential"
+            self.tenant_id = str(tenant_id or "local-sim")
+            self._simulation = LocalSimulationEngine()
+            logger.warning(
+                "AgenticDome LOCAL SIMULATION active: no tenant policy, network enforcement, "
+                "signed decision, telemetry, or runtime assurance is being used."
+            )
+        else:
+            self.api_base = self._require_nonempty(
+                "api_base",
+                api_base or os.getenv("AGENTICDOME_API_BASE", ""),
+            ).rstrip("/")
+            self.api_key = self._require_nonempty(
+                "api_key",
+                api_key or os.getenv("AGENTICDOME_API_KEY", ""),
+            )
+            self.tenant_id = self._require_nonempty(
+                "tenant_id",
+                str(tenant_id) if tenant_id is not None else os.getenv("AGENTICDOME_TENANT_ID", ""),
+            )
+            self._simulation = None
         self.bearer_token = (
             bearer_token
             or os.getenv("AGENTICDOME_BEARER_TOKEN")
@@ -87,7 +120,7 @@ class AgentGuardClient:
             connect_timeout if connect_timeout is not None else os.getenv("AGENTICDOME_CONNECT_TIMEOUT_S", "5"),
             default=5.0,
         )
-        self.user_agent = user_agent
+        self.user_agent = user_agent or f"agenticdome-python-sdk/{_sdk_version()}"
         broker_mode = str(
             execution_broker_mode
             if execution_broker_mode is not None
@@ -351,6 +384,9 @@ class AgentGuardClient:
         extra_headers: Optional[Dict[str, str]] = None,
         timeout: Optional[Union[int, float, Tuple[float, float]]] = None,
     ) -> Dict[str, Any]:
+        if self.is_simulation:
+            return self._simulation.request(method, path, json_body)
+
         url = f"{self.api_base}{path}"
         headers = self._headers(
             tenant_id=tenant_id,
@@ -555,6 +591,9 @@ class AgentGuardClient:
         attachments: Optional[List[str]] = None,
         execution_broker: Optional[bool] = None,
         execution_boundary_id: Optional[str] = None,
+        execution_destination: Optional[str] = None,
+        execution_http_method: Optional[str] = None,
+        workload_id: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
     ) -> Dict[str, Any]:
         """
@@ -691,6 +730,25 @@ class AgentGuardClient:
                 ])
                 boundary_id = "sdk:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
             payload["boundary_id"] = boundary_id
+            if execution_destination is not None:
+                destination = self._normalize_optional_string(execution_destination)
+                if destination is None or len(destination) > 2048:
+                    raise ValueError("'execution_destination' must be a non-empty URL/origin up to 2048 characters")
+                payload["destination"] = destination
+            if execution_http_method is not None:
+                method = self._normalize_optional_string(execution_http_method)
+                if method is None or not re.fullmatch(r"[A-Za-z]{1,16}", method):
+                    raise ValueError("'execution_http_method' must contain 1-16 letters")
+                payload["http_method"] = method.upper()
+            if workload_id is not None:
+                normalized_workload = self._normalize_optional_string(workload_id)
+                if (
+                    normalized_workload is None
+                    or len(normalized_workload) > 512
+                    or not normalized_workload.startswith("spiffe://")
+                ):
+                    raise ValueError("'workload_id' must be a non-empty SPIFFE ID up to 512 characters")
+                payload["workload_id"] = normalized_workload
 
         path = "/tools/execution/authorize" if broker_enabled else "/tools/guardrail/validate"
         response = self._request("POST", path, json_body=payload, tenant_id=tenant_id)
@@ -703,6 +761,24 @@ class AgentGuardClient:
                     "AgenticDome execution broker did not return a verified, atomically consumed decision"
                 )
         return response
+
+    @staticmethod
+    def enforcement_headers(result: Dict[str, Any], *, workload_id: Optional[str] = None) -> Dict[str, str]:
+        """Build headers for an AgenticDome egress gateway from a broker result."""
+        receipt = str(result.get("execution_receipt") or "").strip()
+        if not receipt:
+            raise AgentGuardError("Broker result does not contain an execution receipt")
+        headers = {"X-AgenticDome-Execution-Receipt": receipt}
+        if workload_id is not None:
+            normalized = str(workload_id).strip()
+            if not normalized.startswith("spiffe://"):
+                raise ValueError("'workload_id' must be a SPIFFE ID")
+            headers["X-AgenticDome-Workload-Id"] = normalized
+        return headers
+
+    def get_runtime_readiness(self) -> Dict[str, Any]:
+        """Return signed-runtime prerequisite and layered-enforcement readiness."""
+        return self._request("GET", "/health/readiness")
 
     # Backward compatibility alias
     def guardrail_check(

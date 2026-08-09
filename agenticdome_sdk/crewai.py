@@ -39,6 +39,7 @@ register_before_llm_call_hook = _preserve_hook_function(register_before_llm_call
 register_before_tool_call_hook = _preserve_hook_function(register_before_tool_call_hook)
 
 from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
     from agenticdome_sdk.exceptions import AgentGuardHTTPError
@@ -174,7 +175,7 @@ CONFIG = FirewallConfig(
 
 CLIENT: Optional[AgentGuardClient] = None
 
-if CONFIG.api_base and CONFIG.api_key and CONFIG.tenant_id:
+if credentials_or_local_sim(CONFIG.api_base, CONFIG.api_key, CONFIG.tenant_id):
     try:
         CLIENT = AgentGuardClient(
             api_base=CONFIG.api_base,
@@ -207,7 +208,7 @@ def _configuration_error() -> AgenticDomeCrewAIConfigurationError:
 
 
 def _config_is_complete(config: FirewallConfig) -> bool:
-    return bool(config.api_base and config.api_key and config.tenant_id)
+    return credentials_or_local_sim(config.api_base, config.api_key, config.tenant_id)
 
 
 # ---------------------------------------------------------------------

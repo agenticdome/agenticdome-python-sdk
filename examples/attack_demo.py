@@ -10,7 +10,8 @@ Run from the SDK root:
     python examples/attack_demo.py --framework smolagents --scenario generated_code_exfil
     python examples/attack_demo.py --framework autogen --scenario cross_agent_poisoning
 
-By default this is an offline demo so prospects can run it immediately.
+By default this uses the SDK's deterministic local simulation so prospects can
+exercise the real public client contract without credentials or network calls.
 Set --live and configure AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and
 AGENTICDOME_TENANT_ID to call the AgenticDome API.
 """
@@ -138,6 +139,20 @@ secure_lookup = firewall.wrap_tool_function(lookup_customer, tool_name="crm.look
 firewall = AgenticDomeBedrockFirewall()
 response = firewall.secure_converse(bedrock_client, model_id=model_id, messages=messages)""",
     },
+    "foundry": {
+        "label": "Microsoft AI Foundry",
+        "platform": "microsoft_ai_foundry",
+        "snippet": """from agenticdome_sdk.microsoft_ai_foundry import AgenticDomeMicrosoftAIFoundryFirewall
+
+firewall = AgenticDomeMicrosoftAIFoundryFirewall()""",
+    },
+    "custom-python": {
+        "label": "Custom Python",
+        "platform": "custom_python",
+        "snippet": """from agenticdome_sdk import AgentGuardClient
+
+client = AgentGuardClient()""",
+    },
 }
 
 
@@ -247,17 +262,24 @@ def vulnerable_tool_execution(scenario: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def offline_agenticdome_decision(scenario: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "decision": "blocked",
-        "tool_executed": False,
-        "reason": scenario["blocked_reason"],
-        "policy_controls": [
-            "prompt_injection_detection",
-            "tool_authorization",
-            "delegation_role_validation",
-        ],
-        "incident_id": "demo-incident-001",
-    }
+    from agenticdome_sdk import AgentGuardClient
+
+    client = AgentGuardClient(mode="local_sim")
+    try:
+        return client.guardrail_validate(
+            text=scenario["prompt"],
+            agent_id=scenario["agent_id"],
+            direction="outbound",
+            platform="custom_python",
+            source_platform="custom_python",
+            source_agent_id=scenario["source_agent_id"],
+            tool_platform=scenario["tool_platform"],
+            tool_name=scenario["tool_name"],
+            tool_args=scenario["tool_args"],
+            policy_context={"demo": True, "request_purpose": "sdk_onboarding"},
+        )
+    finally:
+        client.close()
 
 
 def live_agenticdome_decision(framework: Dict[str, str], scenario: Dict[str, Any]) -> Dict[str, Any]:

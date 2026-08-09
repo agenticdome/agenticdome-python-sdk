@@ -14,6 +14,7 @@ from threading import Lock
 from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tuple
 
 from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
     from agenticdome_sdk.exceptions import AgentGuardHTTPError
@@ -607,7 +608,7 @@ class AgenticDomeAgnoFirewall:
     ) -> None:
         self.config = config or load_config()
 
-        if not self.config.api_base or not self.config.api_key or not self.config.tenant_id:
+        if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
             raise AgenticDomeAgnoConfigurationError(
                 "AgenticDome Agno firewall misconfigured. "
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."

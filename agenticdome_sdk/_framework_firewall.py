@@ -16,6 +16,7 @@ from threading import Lock, Thread
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Tuple, Type
 
 from .client import AgentGuardClient
+from ._mode import credentials_or_local_sim
 
 
 @dataclass(frozen=True)
@@ -190,7 +191,7 @@ class FrameworkFirewallBase:
         label: str,
         logger: logging.Logger,
     ) -> None:
-        if not (config.api_base and config.api_key and config.tenant_id):
+        if not credentials_or_local_sim(config.api_base, config.api_key, config.tenant_id):
             raise configuration_error("Missing AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, or AGENTICDOME_TENANT_ID.")
         self.config = config
         self.client = client or AgentGuardClient(
