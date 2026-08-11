@@ -10,6 +10,53 @@
 
 **One security pattern, fifteen runtimes:** CrewAI · PydanticAI · LangGraph/LangChain · Microsoft Agent Framework · Microsoft AutoGen · Microsoft AI Foundry · OpenAI Agents SDK · Claude Agent SDK · Hugging Face smolagents · Agno · Google ADK · LlamaIndex · AWS Bedrock · MCP hosts/gateways · custom Python.
 
+## Five-minute developer trial
+
+### 1. Install
+
+```bash
+pip install agenticdome-python-sdk
+```
+
+### 2. Enable the offline simulator
+
+```bash
+export AGENTICDOME_MODE=local_sim
+```
+
+No account, API key, tenant, network connection, or third-party framework package is required.
+
+### 3. See one allowed and one blocked action
+
+```bash
+agenticdome-demo --framework langgraph --scenario both
+```
+
+Look for `ALLOWED — TOOL WOULD EXECUTE` followed by `BLOCKED — TOOL WOULD NOT EXECUTE`. These are simulations: the example does not execute either tool.
+
+### 4. Select your framework
+
+```bash
+agenticdome-demo --list-frameworks
+agenticdome-demo --framework all --scenario both
+```
+
+You can also open the [framework example gallery](examples/README.md) and run the individual example matching your stack. Before editing production code, use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md) to find the exact construction file, public attachment call and local execution boundary for your framework.
+
+### 5. Connect the same integration to AgenticDome
+
+When you are ready to test real tenant policy, remove `AGENTICDOME_MODE=local_sim`, obtain the assigned runtime sidecar URL, Runtime/SDK API key and tenant ID from AgenticDome, and configure:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example"
+export AGENTICDOME_API_KEY="your_runtime_sdk_key"
+export AGENTICDOME_TENANT_ID="your_tenant_id"
+agenticdome-demo --framework langgraph --scenario both --live
+```
+
+Offline simulation demonstrates the SDK decision flow using a bundled public baseline. Only live mode applies the customer's policy, topology, telemetry, signed decisions and runtime enforcement.
+
 ```python
 # The 30-second version: block a prompt-injected refund before it executes.
 import agenticdome_sdk.crewai   # registers global CrewAI security hooks
@@ -23,18 +70,19 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
 
 ## Contents
 
-1. [Why AgenticDome](#why-agenticdome)
-2. [How It Works](#how-it-works)
-3. [Quickstart](#quickstart)
-4. [Installation](#installation)
-5. [Configuration](#configuration)
-6. [Choosing Your Integration Point](#choosing-your-integration-point)
-7. [Framework Integrations](#framework-integrations)
+1. [Five-minute developer trial](#five-minute-developer-trial)
+2. [Why AgenticDome](#why-agenticdome)
+3. [How It Works](#how-it-works)
+4. [Quickstart](#quickstart)
+5. [Installation](#installation)
+6. [Configuration](#configuration)
+7. [Choosing Your Integration Point](#choosing-your-integration-point)
+8. [Framework Integrations](#framework-integrations)
    - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AutoGen](#microsoft-autogen) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Claude Agent SDK](#claude-agent-sdk) · [Hugging Face smolagents](#hugging-face-smolagents) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
-8. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)
-9. [Production Deployment](#production-deployment)
-10. [Package Build and Verification](#package-build-and-verification)
-11. [License](#license)
+9. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)
+10. [Production Deployment](#production-deployment)
+11. [Package Build and Verification](#package-build-and-verification)
+12. [License](#license)
 
 ---
 
@@ -147,11 +195,17 @@ Start with a network-free simulation, then connect the same SDK to your assigned
 
 ```bash
 pip install agenticdome-python-sdk
-agenticdome-demo --framework langgraph --scenario refund_hijack
+# Show one ALLOWED and one BLOCKED action for LangGraph.
+agenticdome-demo --framework langgraph --scenario both
+
+# Or prove the same offline contract across all 15 integrations.
+agenticdome-demo --framework all --scenario both
 agenticdome-demo --list-frameworks
 ```
 
-This is visibly labelled **LOCAL SIMULATION — NOT CLOUD ENFORCEMENT**. It evaluates a small bundled demonstration policy through the real public client contract, but it does not load tenant policy, issue signed decision tokens or execution receipts, write cloud evidence, or provide runtime assurance. To exercise a wrapper inside your own process without credentials, set `AGENTICDOME_MODE=local_sim`. The SDK refuses that mode when `AGENTICDOME_PRODUCTION_MODE=true`.
+This is visibly labelled **LOCAL SIMULATION — NOT CLOUD ENFORCEMENT**. It evaluates a small bundled demonstration policy through the real public client contract, but it does not load tenant policy, issue signed decision tokens or execution receipts, write cloud evidence, or provide runtime assurance. To exercise any wrapper inside your own process without credentials, set `AGENTICDOME_MODE=local_sim`. The SDK refuses that mode when `AGENTICDOME_PRODUCTION_MODE=true`.
+
+Browse the public [`examples/`](examples/README.md) gallery for a runnable allowed/blocked example for CrewAI, PydanticAI, LangGraph, Microsoft Agent Framework, AutoGen, AI Foundry, OpenAI Agents, Claude, smolagents, Agno, Google ADK, LlamaIndex, Bedrock, MCP, and custom Python. Local blocked/redacted results emit safe terminal logs containing verdict metadata only—not raw prompts, arguments, keys, or secrets.
 
 **2. Onboard for real enforcement.** Create an account in the AgenticDome Management Console, obtain your tenant identifier and Runtime / SDK API key, and identify the tenant's assigned runtime sidecar.
 
@@ -185,8 +239,13 @@ result = crew.kickoff()
 
 ```bash
 # Local, deterministic and network-free.
-agenticdome-demo --framework crewai --scenario refund_hijack
-agenticdome-demo --framework langgraph --scenario refund_hijack
+agenticdome-demo --framework crewai --scenario both
+agenticdome-demo --framework langgraph --scenario both
+agenticdome-demo --framework claude --scenario both
+agenticdome-demo --framework smolagents --scenario both
+agenticdome-demo --framework all --scenario both
+
+# Additional blocked-only examples for focused attack demonstrations.
 agenticdome-demo --framework claude --scenario metadata_exfil
 agenticdome-demo --framework smolagents --scenario metadata_exfil
 
@@ -245,6 +304,18 @@ AgenticDome has two setup layers, and both are required:
 
 Environment variables do **not** intercept framework execution by themselves.
 
+### Offline community trial
+
+Every supported Python integration inherits the same credential-free, network-free simulator:
+
+```bash
+export AGENTICDOME_MODE="local_sim"
+```
+
+No API base, API key, tenant ID, or third-party framework package is needed to run the public demonstration. `ALLOWED` decisions are logged at `INFO`; `BLOCKED` and `REDACTED` decisions are logged at `WARNING` so they are visible in a normal terminal. Logs contain decision metadata only and exclude raw prompt text and tool arguments.
+
+Local simulation is deliberately limited: it uses the bundled public baseline, does not execute tools, does not use tenant policy, topology, signed provenance, runtime telemetry, decision tokens, or execution receipts, and cannot satisfy an enforced execution broker. It is refused whenever `AGENTICDOME_PRODUCTION_MODE=true`.
+
 ### Required variables
 
 ```bash
@@ -301,6 +372,7 @@ export AGENTICDOME_PRODUCTION_MODE="false"            # production hardening (st
 | `AGENTICDOME_API_BASE` | string | required | Tenant runtime sidecar origin, e.g. `https://demo-sidecar.agenticdome.io`. Separate from the control-plane console URL. |
 | `AGENTICDOME_API_KEY` | string | required | API key generated in the AgenticDome console. |
 | `AGENTICDOME_TENANT_ID` | string | required | Tenant or organization isolation namespace. |
+| `AGENTICDOME_MODE` | `live` / `local_sim` | `live` | Selects real sidecar enforcement or the credential-free, network-free demonstration evaluator. `local_sim` is refused in production mode. |
 | `AGENTICDOME_PLATFORM` | string | framework-specific | Runtime platform label included in policy context. |
 | `AGENTICDOME_TIMEOUT_S` | integer | `20` | HTTP timeout in seconds for SDK calls. |
 | `AGENTICDOME_FAIL_CLOSED` | boolean | `true` | Blocks execution if security checks fail. |
@@ -402,6 +474,8 @@ Every framework adapter exposes the same family of local hardening controls, pre
 ## Choosing Your Integration Point
 
 One table, one decision. Find your runtime, apply the required code action, and jump to its guide. In every case, environment config alone is **not** enough — hooks activate only after the code attachment shown here.
+
+For a shorter operator/developer handoff, use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md). It includes the attachment boundary, bypass warning and production proof checklist for every supported framework without exposing private policy or detection internals.
 
 | Runtime | SDK module | Global code location | Required code action | Tool-level enforcement |
 | :--- | :--- | :--- | :--- | :--- |

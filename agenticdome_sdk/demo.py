@@ -54,6 +54,8 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+DEMO_PAIR = ("safe_lookup", "refund_hijack")
+
 
 def _client(live: bool):
     from .client import AgentGuardClient
@@ -73,10 +75,52 @@ def _client(live: bool):
     return AgentGuardClient(mode="local_sim")
 
 
+def _run_demo(framework_key: str, scenario_key: str, *, live: bool) -> Dict[str, Any]:
+    framework = FRAMEWORKS[framework_key]
+    scenario = SCENARIOS[scenario_key]
+    mode = "LIVE SIDECAR" if live else "LOCAL SIMULATION — NOT CLOUD ENFORCEMENT"
+    print(f"AgenticDome demo: {framework['label']}")
+    print(f"Mode: {mode}")
+    print(f"Scenario: {scenario['title']}")
+    print("Without AgenticDome: TOOL WOULD EXECUTE (no policy decision)")
+
+    client = _client(live)
+    try:
+        decision = client.guardrail_validate(
+            text=scenario["text"],
+            agent_id=f"{framework_key}-demo-agent",
+            direction="outbound",
+            platform=framework_key,
+            tool_name=scenario["tool_name"],
+            tool_args=scenario["tool_args"],
+            policy_context={"demo": True, "request_purpose": "sdk_onboarding"},
+        )
+    finally:
+        client.close()
+
+    verdict = str(decision.get("verdict") or decision.get("decision") or "UNKNOWN").upper()
+    outcome = "TOOL WOULD EXECUTE" if verdict in {"ALLOWED", "REDACTED"} else "TOOL WOULD NOT EXECUTE"
+    print(f"With AgenticDome: {verdict} — {outcome}")
+    print(json.dumps(decision, indent=2, sort_keys=True))
+    print("Production integration import:")
+    print(framework["import"])
+    return decision
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run the AgenticDome local simulation or a live tenant-sidecar proof.")
-    parser.add_argument("--framework", choices=sorted(FRAMEWORKS), default="crewai")
-    parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="refund_hijack")
+    parser.add_argument(
+        "--framework",
+        choices=[*sorted(FRAMEWORKS), "all"],
+        default="crewai",
+        help="Framework to demonstrate, or 'all' for complete parity coverage.",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=[*sorted(SCENARIOS), "both"],
+        default="refund_hijack",
+        help="Scenario to run, or 'both' for one ALLOWED and one BLOCKED decision.",
+    )
     parser.add_argument("--live", action="store_true", help="Use the configured assigned runtime sidecar instead of local simulation.")
     parser.add_argument("--list-frameworks", action="store_true")
     args = parser.parse_args(argv)
@@ -87,32 +131,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"{key:18} {framework['label']}  pip install agenticdome-python-sdk{extra}")
         return 0
 
-    framework = FRAMEWORKS[args.framework]
-    scenario = SCENARIOS[args.scenario]
-    mode = "LIVE SIDECAR" if args.live else "LOCAL SIMULATION — NOT CLOUD ENFORCEMENT"
-    print(f"AgenticDome demo: {framework['label']}")
-    print(f"Mode: {mode}")
-    print(f"Scenario: {scenario['title']}")
-    print("Without AgenticDome: TOOL EXECUTED")
+    framework_keys = sorted(FRAMEWORKS) if args.framework == "all" else [args.framework]
+    scenario_keys = list(DEMO_PAIR) if args.scenario == "both" else [args.scenario]
+    total = len(framework_keys) * len(scenario_keys)
+    verdict_totals: Dict[str, int] = {}
 
-    client = _client(args.live)
-    try:
-        decision = client.guardrail_validate(
-            text=scenario["text"],
-            agent_id=f"{args.framework}-demo-agent",
-            direction="outbound",
-            platform=args.framework,
-            tool_name=scenario["tool_name"],
-            tool_args=scenario["tool_args"],
-            policy_context={"demo": True, "request_purpose": "sdk_onboarding"},
-        )
-    finally:
-        client.close()
+    for number, (framework_key, scenario_key) in enumerate(
+        ((framework_key, scenario_key) for framework_key in framework_keys for scenario_key in scenario_keys),
+        start=1,
+    ):
+        if total > 1:
+            print(f"\n{'=' * 72}\nDemo {number}/{total}\n{'=' * 72}")
+        decision = _run_demo(framework_key, scenario_key, live=args.live)
+        verdict = str(decision.get("verdict") or decision.get("decision") or "UNKNOWN").upper()
+        verdict_totals[verdict] = verdict_totals.get(verdict, 0) + 1
 
-    print("With AgenticDome:")
-    print(json.dumps(decision, indent=2, sort_keys=True))
-    print("Integration import:")
-    print(framework["import"])
+    if total > 1:
+        summary = ", ".join(f"{key}={value}" for key, value in sorted(verdict_totals.items()))
+        print(f"\nCompleted {total} offline framework/scenario proofs: {summary}")
     return 0
 
 

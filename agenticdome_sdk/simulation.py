@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from typing import Any, Dict, Optional
 
 
 LOCAL_POLICY_ID = "agenticdome-local-baseline-v1"
 SIMULATED_TOKEN_PREFIX = "agenticdome-local-sim-not-for-production."
+logger = logging.getLogger("agenticdome_sdk.local_sim")
 
 
 _BLOCK_PATTERNS = (
@@ -90,7 +92,7 @@ class LocalSimulationEngine:
             findings.extend(sensitive_findings)
 
         decision_id = _decision_id(material)
-        return {
+        result = {
             "verdict": verdict,
             "decision": verdict,
             "status": verdict.lower(),
@@ -109,6 +111,19 @@ class LocalSimulationEngine:
             "assurance": "not_cloud_enforced",
             "warning": "Simulation only: no tenant policy, cloud assurance, signed token, or execution receipt was used.",
         }
+        # Give trial users an immediate terminal signal without leaking prompts,
+        # arguments, credentials, or other payload content into application logs.
+        log = logger.warning if verdict in {"BLOCKED", "REDACTED"} else logger.info
+        log(
+            "AgenticDome local simulation decision verdict=%s decision_id=%s "
+            "agent_id=%s tool_name=%s reason=%s (not cloud enforcement)",
+            verdict,
+            decision_id,
+            str(body.get("agent_id") or "unknown"),
+            str(body.get("tool_name") or body.get("name") or "none"),
+            reason,
+        )
+        return result
 
     def request(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         body = dict(payload or {})
