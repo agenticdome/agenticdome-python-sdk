@@ -81,7 +81,7 @@ Every entry runs the same allowed/blocked pair without importing the third-party
 | Google ADK | `pip install "agenticdome-python-sdk[google-adk]"` | [`frameworks/google_adk.py`](frameworks/google_adk.py) | [Register callbacks or plugin](../README.md#google-adk) |
 | LlamaIndex | `pip install "agenticdome-python-sdk[llamaindex]"` | [`frameworks/llamaindex.py`](frameworks/llamaindex.py) | [Wrap tools, query and retrieval](../README.md#llamaindex) |
 | AWS Bedrock | `pip install "agenticdome-python-sdk[bedrock]"` | [`frameworks/aws_bedrock.py`](frameworks/aws_bedrock.py) | [Replace direct runtime calls with secure methods](../README.md#aws-bedrock) |
-| MCP host / gateway | `pip install "agenticdome-python-sdk[mcp]"` | [`frameworks/mcp.py`](frameworks/mcp.py) | [Wrap the JSON-RPC forwarder](../README.md#mcp-host--gateway) |
+| MCP host / gateway | `pip install "agenticdome-python-sdk[mcp]"` | [`frameworks/mcp.py`](frameworks/mcp.py) · [`mcp_gateway_action_firewall.py`](mcp_gateway_action_firewall.py) | [MCP Action Firewall guide](../docs/mcp-integration.md) · [API reference](../README.md#mcp-host--gateway) |
 | Custom Python | `pip install agenticdome-python-sdk` | [`frameworks/custom_python.py`](frameworks/custom_python.py) | [Check before execution and review output](../README.md#core-sdk-client-custom-runtimes) |
 
 ## What the simulator proves

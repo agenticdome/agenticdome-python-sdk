@@ -1,0 +1,12 @@
+AgenticDome Python SDK
+Copyright 2026 AgenticDome
+
+The SDK client is open source; it requires a paid AgenticDome tenant for live enforcement.
+
+The Apache License 2.0 in this distribution applies only to the SDK client,
+public examples, tests, and documentation included in this repository. It does
+not license the AgenticDome sidecar, management console, policy engine, threat
+intelligence, or server-side decision logic, which are separate proprietary
+products and services.
+
+This NOTICE is informational and does not modify the Apache License 2.0.

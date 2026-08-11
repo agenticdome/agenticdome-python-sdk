@@ -2,9 +2,10 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
-[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-blue.svg)](#license)
+[![CI](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
+[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [MCP integration guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [Security policy](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
 
 > **Production-grade security guardrails, DLP, tool authorization, and cryptographically verified multi-agent delegation for Python autonomous AI runtimes.**
 
@@ -43,7 +44,7 @@ agenticdome-demo --list-frameworks
 agenticdome-demo --framework all --scenario both
 ```
 
-You can also open the [framework example gallery](examples/README.md) and run the individual example matching your stack. Before editing production code, use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md) to find the exact construction file, public attachment call and local execution boundary for your framework.
+You can also open the [framework example gallery](examples/README.md) and run the individual example matching your stack. Before editing production code, use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md) to find the exact construction file, public attachment call and local execution boundary for your framework. MCP host and gateway developers can follow the dedicated [MCP Action Firewall guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md).
 
 ### 5. Connect the same integration to AgenticDome
 
@@ -84,7 +85,7 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
 9. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)
 10. [Production Deployment](#production-deployment)
 11. [Source Installation and Verification](#source-installation-and-verification)
-12. [License](#license)
+12. [Licensing](#licensing)
 
 ---
 
@@ -2088,6 +2089,8 @@ from agenticdome_sdk.aws_bedrock import (
 
 The host is the right place to protect MCP: it can inspect `tools/call` requests before side effects happen and sanitize tool results before they return to the planner, agent, or client. The adapter accepts plain JSON-RPC request dictionaries, so it works with any MCP host, proxy, gateway, or router.
 
+Start with the dedicated [MCP Host and Gateway Action Firewall guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md), including the network-free allowed, blocked, and poisoned-result rehearsal.
+
 ```bash
 pip install "agenticdome-python-sdk[mcp]"
 ```
@@ -2453,7 +2456,7 @@ Plus, for every production deployment:
 
 ## Source Installation and Verification
 
-Most customers should install the published package from PyPI. Contributors evaluating the public source can perform a network-free verification from the SDK root:
+Most customers should install the published package from PyPI. Contributors evaluating the public source can run the public tests from the SDK root:
 
 ```bash
 python3 -m venv .venv
@@ -2462,18 +2465,18 @@ source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
 python -m pytest -q
-python -m build
-python -m twine check dist/*
 ```
 
-The public suite verifies the package contract and supported adapter behavior without tenant credentials or live third-party services. AgenticDome operates live certification and package publication separately from customer application environments.
+Installing dependencies may require network access. After installation, the public tests require no AgenticDome credentials or live AgenticDome or third-party service connections. They verify the core package contract and dependency-light adapter behavior.
+
+Source contributors can find artifact build and metadata validation commands in [CONTRIBUTING.md](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/CONTRIBUTING.md). AgenticDome performs live certification and package publication separately from customer application environments.
 
 ---
 
-## License
+## Licensing
 
-Copyright (c) AgenticDome. All rights reserved.
+The Python SDK client, public examples, and public SDK documentation in this repository are open source under the [Apache License 2.0](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/LICENSE). Live policy enforcement requires an active AgenticDome tenant and assigned runtime service. The AgenticDome sidecar, management console, policy engine, threat intelligence, and server-side decision logic are separate proprietary products and are not licensed under this SDK repository's Apache-2.0 license. See [NOTICE](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/NOTICE) for the commercial service boundary.
 
-This SDK is distributed under a proprietary license. Use, copying, modification, and redistribution are permitted only under a written agreement with AgenticDome or terms published by AgenticDome for this package.
+Security vulnerabilities must be reported privately as described in [SECURITY.md](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md), not through a public issue.
 
 For enterprise deployments, advanced governance workflows, dedicated regional control planes, or priority integration support, visit **[agenticdome.io](https://agenticdome.io)**.
