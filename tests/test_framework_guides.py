@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import re
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 
 SDK_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +77,14 @@ GUIDES = {
 }
 
 
+def _production_python(guide: Path) -> str:
+    text = guide.read_text(encoding="utf-8")
+    section = text.split("## Attach in production", 1)[1].split("## Launch checks", 1)[0]
+    blocks = re.findall(r"```python\n(.*?)```", section, flags=re.DOTALL)
+    assert blocks, f"{guide.name}: missing production Python block"
+    return "\n\n".join(blocks)
+
+
 def test_every_supported_non_mcp_integration_has_a_launch_guide() -> None:
     index = (GUIDE_ROOT / "README.md").read_text(encoding="utf-8")
     for filename in GUIDES:
@@ -93,6 +106,34 @@ def test_documented_attachment_methods_exist_on_public_adapter_classes() -> None
         for method in methods:
             assert hasattr(adapter, method), f"{filename}: missing {class_name}.{method}"
             assert method in guide, f"{filename}: public method {method} is not documented"
+
+
+@pytest.mark.parametrize("filename", sorted(GUIDES))
+def test_production_snippets_compile_without_undefined_names_or_top_level_await(filename: str, tmp_path: Path) -> None:
+    source = _production_python(GUIDE_ROOT / filename)
+    tree = ast.parse(source, filename=filename)
+    compile(tree, filename, "exec")
+    assert not any(isinstance(node, (ast.Await, ast.AsyncFor)) for node in tree.body), (
+        f"{filename}: await/async-for must be inside an async integration function"
+    )
+
+    snippet = tmp_path / filename.replace(".md", ".py")
+    snippet.write_text(source, encoding="utf-8")
+    lint = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select", "F821", "--output-format", "concise", str(snippet)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert lint.returncode == 0, f"{filename}: production snippet has undefined names\n{lint.stdout}{lint.stderr}"
+
+
+@pytest.mark.parametrize("filename", sorted(GUIDES))
+def test_each_framework_guide_is_self_contained_about_live_runtime_configuration(filename: str) -> None:
+    text = (GUIDE_ROOT / filename).read_text(encoding="utf-8")
+    for variable in ("AGENTICDOME_API_BASE", "AGENTICDOME_API_KEY", "AGENTICDOME_TENANT_ID"):
+        assert variable in text, f"{filename}: missing {variable} production configuration"
+    assert "application-owned" in text.lower(), f"{filename}: application-owned inputs are not explained"
 
 
 def test_local_markdown_links_in_launch_documentation_resolve() -> None:

@@ -14,18 +14,43 @@ agenticdome-demo --framework agno --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime, and make sure simulation is not inherited by
+the production process:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+This factory receives the application-owned model and CRM operation explicitly,
+defines the secured tool before registration, then attaches hooks before the
+agent's first run:
+
 ```python
+from typing import Any, Callable, Tuple
+
+from agno.agent import Agent
 from agenticdome_sdk.agno import AgenticDomeAgnoFirewall
 
-firewall = AgenticDomeAgnoFirewall()
-agent = firewall.attach_firewall(agent)
+def build_secured_agent(
+    *,
+    model: Any,
+    crm_lookup: Callable[[str], Any],
+) -> Tuple[Any, AgenticDomeAgnoFirewall]:
+    firewall = AgenticDomeAgnoFirewall()
 
-@firewall.secure_tool(
-    tool_name="crm.customer.read",
-    tool_platform="crm",
-)
-def read_customer(agent, customer_id: str):
-    return crm.read_customer(customer_id)
+    @firewall.secure_tool(
+        tool_name="crm.customer.read",
+        tool_platform="crm",
+    )
+    def read_customer(agent_context: Any, customer_id: str) -> Any:
+        return crm_lookup(customer_id)
+
+    agent = Agent(name="support-agent", model=model, tools=[read_customer])
+    firewall.attach_firewall(agent)
+    return agent, firewall
 ```
 
 Use `create_hook_bundle()`, `create_middleware()` or `create_plugin()` when the

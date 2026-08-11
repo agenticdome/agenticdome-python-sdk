@@ -14,22 +14,43 @@ agenticdome-demo --framework openai-agents --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned runner, agent and raw handler into an async boundary.
+Register only `secure_lookup` with the framework's function-tool mechanism:
+
 ```python
+from typing import Any, Callable, Tuple
+
 from agenticdome_sdk.openai_agents import AgenticDomeOpenAIAgentsFirewall
 
-firewall = AgenticDomeOpenAIAgentsFirewall()
-secure_lookup = firewall.wrap_tool_handler(
-    tool_name="crm.customer.read",
-    tool_platform="crm",
-    handler=raw_lookup,
-)
-
-result = await firewall.run_agent_securely(
-    runner=Runner,
-    agent=agent,
-    input_text=user_prompt,
-    session_id="stable-session-id",
-)
+async def run_secured_agent(
+    *,
+    runner: Any,
+    agent: Any,
+    user_prompt: str,
+    raw_lookup: Callable[..., Any],
+) -> Tuple[Any, Callable[..., Any]]:
+    firewall = AgenticDomeOpenAIAgentsFirewall()
+    secure_lookup = firewall.wrap_tool_handler(
+        tool_name="crm.customer.read",
+        tool_platform="crm",
+        handler=raw_lookup,
+    )
+    result = await firewall.run_agent_securely(
+        runner=runner,
+        agent=agent,
+        input_text=user_prompt,
+        session_id="stable-session-id",
+    )
+    return result, secure_lookup
 ```
 
 Register `secure_lookup` with `@function_tool`; do not register `raw_lookup`.

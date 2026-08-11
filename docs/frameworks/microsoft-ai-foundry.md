@@ -14,17 +14,36 @@ agenticdome-demo --framework foundry --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned Foundry client and executor into the assembly
+function, then publish only the secured executor to the dispatch table:
+
 ```python
+from typing import Any, Callable, Tuple
+
 from agenticdome_sdk.microsoft_ai_foundry import AgenticDomeMicrosoftAIFoundryFirewall
 
-firewall = AgenticDomeMicrosoftAIFoundryFirewall()
-client = firewall.install_on_client(client)
-
-secure_executor = firewall.wrap_tool_executor(
-    tool_name="payments.refund.create",
-    tool_platform="payments",
-    handler=raw_refund_executor,
-)
+def secure_foundry_client(
+    *,
+    client: Any,
+    raw_refund_executor: Callable[..., Any],
+) -> Tuple[Any, Callable[..., Any]]:
+    firewall = AgenticDomeMicrosoftAIFoundryFirewall()
+    secured_client = firewall.install_on_client(client)
+    secure_executor = firewall.wrap_tool_executor(
+        tool_name="payments.refund.create",
+        tool_platform="payments",
+        handler=raw_refund_executor,
+    )
+    return secured_client, secure_executor
 ```
 
 Call `run_secure(...)` when the application controls the complete run. Register

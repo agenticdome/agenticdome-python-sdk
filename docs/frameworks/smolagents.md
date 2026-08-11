@@ -14,18 +14,31 @@ agenticdome-demo --framework smolagents --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned agent and prompt into the execution boundary:
+
 ```python
+from typing import Any
+
 from agenticdome_sdk.smolagents import AgenticDomeSmolagentsFirewall
 
-firewall = AgenticDomeSmolagentsFirewall()
-agent = firewall.attach_firewall(agent, session_id="stable-session-id")
-
-result = firewall.run_agent_securely(
-    agent,
-    user_prompt,
-    session_id="stable-session-id",
-    agent_id="support-agent",
-)
+def run_secured_agent(*, agent: Any, user_prompt: str) -> Any:
+    firewall = AgenticDomeSmolagentsFirewall()
+    secured_agent = firewall.attach_firewall(agent, session_id="stable-session-id")
+    return firewall.run_agent_securely(
+        secured_agent,
+        user_prompt,
+        session_id="stable-session-id",
+        agent_id="support-agent",
+    )
 ```
 
 Wrap sensitive native tools with `wrap_tool(...)`. Use

@@ -14,20 +14,37 @@ agenticdome-demo --framework bedrock --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Create the application-owned boto3 client in your AWS bootstrap, then pass it
+and the real request into this async boundary:
+
 ```python
-import boto3
+from typing import Any, Dict, List
+
 from agenticdome_sdk.aws_bedrock import AgenticDomeAWSBedrockFirewall
 
-bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
-firewall = AgenticDomeAWSBedrockFirewall()
-
-response = await firewall.converse_securely(
-    bedrock_runtime_client=bedrock,
-    model_id=model_id,
-    messages=messages,
-    agent_id="support-agent",
-    session_id="stable-session-id",
-)
+async def converse_with_policy(
+    *,
+    bedrock_runtime_client: Any,
+    model_id: str,
+    messages: List[Dict[str, Any]],
+) -> Any:
+    firewall = AgenticDomeAWSBedrockFirewall()
+    return await firewall.converse_securely(
+        bedrock_runtime_client=bedrock_runtime_client,
+        model_id=model_id,
+        messages=messages,
+        agent_id="support-agent",
+        session_id="stable-session-id",
+    )
 ```
 
 Use the corresponding secure methods for streaming, `InvokeModel` and Bedrock

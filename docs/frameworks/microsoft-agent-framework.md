@@ -16,17 +16,36 @@ Install the Microsoft packages used by your application separately.
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned agent and real tool handler into the assembly
+function, then register only the returned secured handler:
+
 ```python
+from typing import Any, Callable, Tuple
+
 from agenticdome_sdk.microsoft_agent_framework import AgenticDomeMicrosoftAgentFirewall
 
-firewall = AgenticDomeMicrosoftAgentFirewall()
-agent = firewall.install_on_agent(agent)
-
-secure_lookup = firewall.wrap_tool_handler(
-    tool_name="crm.customer.read",
-    tool_platform="crm",
-    handler=raw_lookup,
-)
+def secure_agent_and_tool(
+    *,
+    agent: Any,
+    raw_lookup: Callable[..., Any],
+) -> Tuple[Any, Callable[..., Any]]:
+    firewall = AgenticDomeMicrosoftAgentFirewall()
+    secured_agent = firewall.install_on_agent(agent)
+    secure_lookup = firewall.wrap_tool_handler(
+        tool_name="crm.customer.read",
+        tool_platform="crm",
+        handler=raw_lookup,
+    )
+    return secured_agent, secure_lookup
 ```
 
 Applications that own invocation should call `run_agent_securely(...)`. Use

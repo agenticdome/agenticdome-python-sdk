@@ -14,23 +14,42 @@ agenticdome-demo --framework llamaindex --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned lookup function and query engine into the assembly
+function instead of relying on undeclared example globals:
+
 ```python
+from typing import Any, Callable, Tuple
+
 from agenticdome_sdk.llamaindex import AgenticDomeLlamaIndexFirewall
 
-firewall = AgenticDomeLlamaIndexFirewall()
-secure_lookup = firewall.to_function_tool(
-    lookup_customer,
-    tool_name="crm.customer.read",
-    tool_platform="crm",
-    agent_id="support-agent",
-    session_id="stable-session-id",
-)
-
-secure_query_engine = firewall.wrap_query_engine(
-    query_engine,
-    agent_id="support-agent",
-    session_id="stable-session-id",
-)
+def build_secured_rag(
+    *,
+    lookup_customer: Callable[..., Any],
+    query_engine: Any,
+) -> Tuple[Any, Any]:
+    firewall = AgenticDomeLlamaIndexFirewall()
+    secure_lookup = firewall.to_function_tool(
+        lookup_customer,
+        tool_name="crm.customer.read",
+        tool_platform="crm",
+        agent_id="support-agent",
+        session_id="stable-session-id",
+    )
+    secure_query_engine = firewall.wrap_query_engine(
+        query_engine,
+        agent_id="support-agent",
+        session_id="stable-session-id",
+    )
+    return secure_lookup, secure_query_engine
 ```
 
 Also wrap retrievers or install the node postprocessor before retrieved text is

@@ -14,16 +14,31 @@ agenticdome-demo --framework autogen --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned team and task into an async boundary rather than
+copying a top-level `await` statement:
+
 ```python
+from typing import Any
+
 from agenticdome_sdk.autogen import AgenticDomeAutoGenFirewall
 
-firewall = AgenticDomeAutoGenFirewall()
-secure_team = firewall.wrap_team(
-    team,
-    session_id="stable-session-id",
-    agent_id="operations-team",
-)
-result = await secure_team.run(task=user_prompt)
+async def run_secured_team(*, team: Any, user_prompt: str) -> Any:
+    firewall = AgenticDomeAutoGenFirewall()
+    secure_team = firewall.wrap_team(
+        team,
+        session_id="stable-session-id",
+        agent_id="operations-team",
+    )
+    return await secure_team.run(task=user_prompt)
 ```
 
 For AutoGen Core, install `create_intervention_handler(...)` when constructing

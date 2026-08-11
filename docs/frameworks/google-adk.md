@@ -14,17 +14,32 @@ agenticdome-demo --framework google-adk --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned model into the same factory that constructs every
+protected ADK agent:
+
 ```python
+from typing import Any
+
 from google.adk.agents import LlmAgent
 from agenticdome_sdk.google_adk import AgenticDomeGoogleADKFirewall
 
-firewall = AgenticDomeGoogleADKFirewall()
-agent = LlmAgent(
-    name="support-agent",
-    model="gemini-2.5-flash",
-    instruction="Help support users safely.",
-    **firewall.build_callback_kwargs(),
-)
+def build_secured_agent(*, model: Any) -> LlmAgent:
+    firewall = AgenticDomeGoogleADKFirewall()
+    return LlmAgent(
+        name="support-agent",
+        model=model,
+        instruction="Help support users safely.",
+        **firewall.build_callback_kwargs(),
+    )
 ```
 
 Use `install_on_agent(...)` for an existing agent, `create_plugin()` for

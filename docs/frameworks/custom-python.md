@@ -14,32 +14,48 @@ agenticdome-demo --framework custom-python --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first. The executor remains application-owned:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
 ```python
+from typing import Any, Callable, Dict
+
 from agenticdome_sdk import AgentGuardClient
 
-client = AgentGuardClient()
-decision = client.guardrail_validate(
-    text="Support agent requests a customer lookup.",
-    agent_id="support-agent",
-    session_id="stable-session-id",
-    direction="outbound",
-    platform="python",
-    tool_name="crm.customer.read",
-    tool_args={"customer_id": customer_id},
-)
+def secured_customer_lookup(
+    *,
+    customer_id: str,
+    execute_customer_lookup: Callable[[str], Any],
+) -> Dict[str, Any]:
+    client = AgentGuardClient()
+    decision = client.guardrail_validate(
+        text="Support agent requests a customer lookup.",
+        agent_id="support-agent",
+        session_id="stable-session-id",
+        direction="outbound",
+        platform="python",
+        tool_name="crm.customer.read",
+        tool_args={"customer_id": customer_id},
+    )
 
-if decision.get("verdict") == "BLOCKED":
-    raise PermissionError(decision.get("reason", "Action blocked"))
+    if decision.get("verdict") == "BLOCKED":
+        raise PermissionError(decision.get("reason", "Action blocked"))
 
-# Execute only after the decision and use sanitized arguments when returned.
-raw_output = execute_customer_lookup(customer_id)
-safe_output = client.mesh_validate(
-    agent_id="support-agent",
-    session_id="stable-session-id",
-    direction="output",
-    platform="python",
-    text=str(raw_output),
-)
+    effective_args = decision.get("sanitized_tool_args") or {"customer_id": customer_id}
+    raw_output = execute_customer_lookup(str(effective_args["customer_id"]))
+    return client.mesh_validate(
+        agent_id="support-agent",
+        session_id="stable-session-id",
+        direction="output",
+        platform="python",
+        text=str(raw_output),
+    )
 ```
 
 Use the A2A authorization and verification methods when a manager delegates a

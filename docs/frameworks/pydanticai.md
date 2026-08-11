@@ -14,19 +14,40 @@ agenticdome-demo --framework pydanticai --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned agent and CRM coroutine into the same factory that
+registers tools; no undeclared globals are required:
+
 ```python
+from typing import Any, Awaitable, Callable
+
 from agenticdome_sdk.pydantic import CyberSecFirewall
 
-firewall = CyberSecFirewall()
-firewall.install_native_hooks(agent)
+def attach_secured_tools(
+    *,
+    agent: Any,
+    crm_lookup: Callable[[str], Awaitable[Any]],
+) -> CyberSecFirewall:
+    firewall = CyberSecFirewall()
+    firewall.install_native_hooks(agent)
 
-@agent.tool
-@firewall.secure_tool(
-    tool_name="crm.customer.read",
-    tool_platform="crm",
-)
-async def read_customer(ctx, customer_id: str):
-    return await crm.read_customer(customer_id)
+    @agent.tool
+    @firewall.secure_tool(
+        tool_name="crm.customer.read",
+        tool_platform="crm",
+    )
+    async def read_customer(ctx: Any, customer_id: str) -> Any:
+        return await crm_lookup(customer_id)
+
+    return firewall
 ```
 
 Create the firewall after configuring the assigned sidecar URL, Runtime/SDK

@@ -14,20 +14,42 @@ agenticdome-demo --framework langgraph --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned agent and tool nodes into the graph factory; do not
+leave raw execution nodes reachable through another edge:
+
 ```python
+from typing import Any, Callable
+
 from langgraph.graph import START, StateGraph
 from agenticdome_sdk.langgraph import AgentState, AgenticDomeLangGraphFirewall
 
-firewall = AgenticDomeLangGraphFirewall()
-graph = StateGraph(AgentState)
-graph.add_node("input_security", firewall.input_node(agent_id="support"))
-graph.add_node("agent", agent_node)
-graph.add_node("tool_security", firewall.transition_node(agent_id="support"))
-graph.add_node("tools", tool_node)
-graph.add_node("output_security", firewall.output_node(agent_id="support"))
-graph.add_edge(START, "input_security")
-# Connect input_security -> agent -> tool_security -> tools -> output_security.
-compiled = graph.compile()
+def build_secured_graph(
+    *,
+    agent_node: Callable[[AgentState], Any],
+    tool_node: Callable[[AgentState], Any],
+) -> Any:
+    firewall = AgenticDomeLangGraphFirewall()
+    graph = StateGraph(AgentState)
+    graph.add_node("input_security", firewall.input_node(agent_id="support"))
+    graph.add_node("agent", agent_node)
+    graph.add_node("tool_security", firewall.transition_node(agent_id="support"))
+    graph.add_node("tools", tool_node)
+    graph.add_node("output_security", firewall.output_node(agent_id="support"))
+    graph.add_edge(START, "input_security")
+    graph.add_edge("input_security", "agent")
+    graph.add_edge("agent", "tool_security")
+    graph.add_edge("tool_security", "tools")
+    graph.add_edge("tools", "output_security")
+    return graph.compile()
 ```
 
 Alternatively use `wrap_agent_node()`, `wrap_tool_node()`, or

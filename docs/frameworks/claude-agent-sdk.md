@@ -14,19 +14,39 @@ agenticdome-demo --framework claude --scenario both
 
 ## Attach in production
 
+Configure the assigned runtime first:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Pass the application-owned options and message consumer explicitly. Keeping
+the async iterator inside a function makes the example valid Python:
+
 ```python
+from typing import Any, Callable
+
 from agenticdome_sdk.claude import AgenticDomeClaudeFirewall
 
-firewall = AgenticDomeClaudeFirewall()
-options = firewall.install_on_options(options)
+async def run_secured_query(
+    *,
+    options: Any,
+    user_prompt: str,
+    consume: Callable[[Any], None],
+) -> None:
+    firewall = AgenticDomeClaudeFirewall()
+    secured_options = firewall.install_on_options(options)
 
-async for message in firewall.secure_query(
-    prompt=user_prompt,
-    options=options,
-    session_id="stable-session-id",
-    agent_id="support-agent",
-):
-    consume(message)
+    async for message in firewall.secure_query(
+        prompt=user_prompt,
+        options=secured_options,
+        session_id="stable-session-id",
+        agent_id="support-agent",
+    ):
+        consume(message)
 ```
 
 Use `run_client_securely(...)` for a constructed SDK client and

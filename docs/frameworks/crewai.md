@@ -18,15 +18,26 @@ contacting a sidecar or executing either demonstration tool.
 ## Attach in production
 
 Configure the assigned runtime sidecar URL, Runtime/SDK key and matching tenant
-ID, then import the adapter in application bootstrap **before** constructing
-agents or crews:
+ID, and make sure simulation is not inherited by the production process:
+
+```bash
+unset AGENTICDOME_MODE
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
+export AGENTICDOME_API_KEY="your-runtime-sdk-key"
+export AGENTICDOME_TENANT_ID="your-tenant-id"
+```
+
+Then import the adapter in application bootstrap **before** constructing the
+application-owned agents or crews:
 
 ```python
 import agenticdome_sdk.crewai  # registers the process-wide hooks
 
-from crewai import Agent, Crew, Task
+from crewai import Crew
 
-# Construct agents, tasks and crews only after the security hooks are loaded.
+def build_secured_crew(*, agents: list, tasks: list) -> Crew:
+    # Agents and tasks are constructed by the application after hooks load.
+    return Crew(agents=agents, tasks=tasks)
 ```
 
 For explicit lifecycle control, instantiate `AgenticDomeCrewAIFirewall` and
