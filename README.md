@@ -4,6 +4,8 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-blue.svg)](#license)
 
+[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
+
 > **Production-grade security guardrails, DLP, tool authorization, and cryptographically verified multi-agent delegation for Python autonomous AI runtimes.**
 
 `agenticdome-python-sdk` is the official Python SDK and middleware package for [AgenticDome](https://agenticdome.io). It enforces deterministic security controls at every boundary your agents cross — prompt ingress, tool execution, agent-to-agent handoffs, and output egress — using the tenant's assigned AgenticDome runtime sidecar.
@@ -81,7 +83,7 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
    - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AutoGen](#microsoft-autogen) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Claude Agent SDK](#claude-agent-sdk) · [Hugging Face smolagents](#hugging-face-smolagents) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
 9. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)
 10. [Production Deployment](#production-deployment)
-11. [Package Build and Verification](#package-build-and-verification)
+11. [Source Installation and Verification](#source-installation-and-verification)
 12. [License](#license)
 
 ---
@@ -96,7 +98,7 @@ An agent can be hijacked while holding valid tokens, approved tools, and fully a
 | **Tool & skill authorization** | Unauthorized or out-of-policy tool calls, evaluated on agent identity, tool name, arguments, session, source metadata, and delegation chain | Before tool execution |
 | **Cryptographic delegation handoffs** | Confused-deputy attacks, lateral privilege escalation, stolen-token replay between agents | At every manager→specialist handoff |
 | **Inline output DLP** | Leakage of PII, emails, phone numbers, API keys, access tokens, cloud credentials, corporate secrets, compliance-sensitive records | Before output is persisted, displayed, or re-enters the agent loop |
-| **Fail-safe runtime behavior** | Silent security bypass when the control plane is unreachable | Configurable fail-closed (production) / fail-open (dev) |
+| **Fail-safe runtime behavior** | Silent security bypass when the assigned runtime is unavailable | Configurable fail-closed (production) / fail-open (dev) |
 
 **Delegation tokens are the differentiator.** Every authorized handoff issues a decision token that binds the originating human subject (when present), the ordered and nested agent actor chain, source manager and target specialist, exact tool name and arguments, session ID, trace and lineage root/parent IDs, intent digest, policy binding, authorized scopes, trust epochs, tenant context, and the policy decision itself. Execution verification consumes the server-side call budget and checks revocation state — a token authorizes one exact action, once.
 
@@ -131,50 +133,25 @@ client.a2a_verify_decision_token_rpc(
 
 ## How It Works
 
-AgenticDome uses a **hybrid split-plane architecture**. Your local Python runtime executes agents, tools, workflows, and framework lifecycle hooks. The AgenticDome central governance plane provides policy decisions, API-key authentication, tenant isolation, incident tracking, delegation-token validation, and threat analytics. The SDK is the bridge: it intercepts framework boundaries locally and enforces the central plane's verdicts.
+AgenticDome uses a **hybrid split-plane architecture**. Your application executes agents, tools and workflows. The SDK protects the application-controlled boundaries and sends live policy checks to the tenant's assigned runtime sidecar. The management console distributes configuration to that runtime out of band; it is not the per-action SDK endpoint.
 
 ```text
-[ LOCAL ENTERPRISE RUNTIME PERIMETER ]                [ AGENTICDOME CENTRAL PLANE ]
-
-+--------------------------------------------+        +--------------------------------+
-|  Python Agent Runtime                      |        |  https://demo-sidecar          |
-|  CrewAI / PydanticAI / LangGraph /         |        |        .agenticdome.io         |
-|  Microsoft AF / AI Foundry / Agno /        |        |  Centralized Policy Engine     |
-|  OpenAI Agents / MCP / Bedrock /           |        +--------------------------------+
-|  Google ADK / LlamaIndex                   |             ^                  ^
-+--------------------------------------------+             |                  |
-     |                                                     |                  |
-     | 1. Prompt ingress                                   |                  |
-     v                                                     |                  |
-+--------------------------+                               |                  |
-|  Ingress Guardrail Scan  |------------------------------ +                  |
-+--------------------------+        verdict                                   |
-     |                                                                        |
-     | 2. Tool call                                                           |
-     v                                                                        |
-+-----------------------------------+       4. verdict / token enforcement   |
-|  AgenticDome Python Shield        |-------------------------------------- -+
-+-----------------------------------+                                        |
-     |  if delegation detected                                               |
-     v                                                                       |
-+---------------------------------------------+        validate token        |
-|  Distributed Shared Token Store             |--------------------------- --+
-|  InMemory lock / Redis multi-worker cache   |
-+---------------------------------------------+
-     |
-     | 3. Execute tool / skill
-     v
-+------------------------+
-|  Specialized Workforce |
-+------------------------+
-     |
-     | 5. Output review
-     v
-+---------------------------+
-|  Egress DLP Firewall      |
-|  PII / secrets filtering  |
-+---------------------------+
+Management console / control plane
+        |
+        | policy and tenant configuration (out of band)
+        v
+Tenant-assigned runtime sidecar <------ live policy checks ------+
+        |                                                        |
+        +---------------- verdict / authorization -------------->|
+                                                                 |
+Customer application                                             |
+  user input -> agent -> tool / MCP -> agent -> output            |
+                 ^         ^                    ^                  |
+                 +---------+--------------------+------------------+
+                     AgenticDome SDK protection boundaries
 ```
+
+The SDK must be attached in application code; setting environment variables alone does not intercept a framework. The assigned sidecar authenticates the tenant and evaluates live requests. Tools still execute in the customer's environment or selected provider unless a separate execution service has been deliberately configured.
 
 ### Who does what
 
@@ -182,8 +159,9 @@ AgenticDome uses a **hybrid split-plane architecture**. Your local Python runtim
 | :--- | :--- | :--- |
 | **Enterprise / organization** | Hosts the local agent runtime. Uses the AgenticDome console to create policies, obtain a Tenant ID, generate API keys, and monitor security events. | Paid subscriber (SaaS license or API volume) |
 | **Agent / tool developer** | Builds tools, skills, agents, and workflow components. Uses the SDK to support secure tool calls, delegation metadata, and DLP-aware outputs. | Free ecosystem partner — no subscription required |
-| **This Python SDK** | Runs inside the local Python process. Intercepts framework lifecycle hooks, calls the central plane, manages tokens, and enforces policy results. | Runtime security utility |
-| **AgenticDome cloud plane** | Centralized policy evaluation, threat analytics, incident tracking, tenant isolation, governance workflows, delegation verification. | Cloud governance plane |
+| **This Python SDK** | Runs inside the application process. Protects supported framework boundaries, calls the assigned runtime sidecar, and enforces returned policy results. | Runtime security utility |
+| **Assigned runtime sidecar** | Authenticates the tenant and evaluates live guardrail, tool, delegation and output requests using distributed policy. | Runtime enforcement service |
+| **Management console / control plane** | Manages tenant configuration, policy distribution, governance workflows and evidence. It is not the SDK's per-action API URL. | Management plane |
 
 ---
 
@@ -289,7 +267,7 @@ Some adapters are dependency-light at import time: Google ADK, LlamaIndex, Bedro
 
 ### Framework-version compatibility
 
-AgenticDome supports framework versions only inside the range certified by the SDK Harness. When an upstream framework release appears, **Upgrade & Certify** keeps the existing certified version as the compatibility floor, tests the new release as the ceiling, and publishes an inclusive dependency range such as `framework>=floor,<=ceiling` only when both endpoints pass the adapter and firewall release gates. Multi-package integrations such as LangGraph/LangChain are also retested at their complete certified floor set.
+AgenticDome supports framework versions inside the dependency ranges declared by the published package. Check the package metadata and compatibility table before upgrading an integration, especially for multi-package stacks such as LangGraph/LangChain.
 
 This means upgrading support for the latest framework does not silently drop customers on the previously certified version. Versions below the displayed certified floor are not claimed as supported until they are tested. Customers managing framework dependencies themselves may install the core SDK without an extra, but their framework version must still be inside the certified range for a production support claim.
 
@@ -385,7 +363,7 @@ export AGENTICDOME_PRODUCTION_MODE="false"            # production hardening (st
 | `AGENTICDOME_HANDOFF_TOKEN_TTL_S` | integer | `900` | Delegation token TTL in seconds. |
 | `AGENTICDOME_REDIS_URL` | string | empty | Optional Redis connection URL for distributed token storage. |
 | `AGENTICDOME_REDIS_KEY_PREFIX` | string | framework-specific | Redis key prefix. |
-| `AGENTICDOME_TOKEN_HMAC_SECRET` | string | empty | Optional HMAC secret for tagging stored decision-token records. |
+| `AGENTICDOME_TOKEN_HMAC_SECRET` | string | empty | Optional secret-manager value used by the SDK to protect shared delegation state. Applications should not inspect or construct that state. |
 | `AGENTICDOME_PRODUCTION_MODE` | boolean | `false` | Enables production hardening such as stable session ID enforcement. |
 | `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD` | boolean | `true` | Requires a stable session/run/trace ID when production mode is enabled. |
 | `AGENTICDOME_CLOUD_PROVIDER` | string | empty | Optional cloud/provider label added to policy context. |
@@ -492,7 +470,7 @@ For a shorter operator/developer handoff, use the [production integration playbo
 | [Google ADK](#google-adk) | `agenticdome_sdk.google_adk` | Module where `LlmAgent(...)` or ADK plugins are declared | `build_callback_kwargs()`, `create_plugin()`, or `install_on_agent(...)` | `wrap_tool_handler()` or `@firewall.secure_tool(...)` |
 | [LlamaIndex](#llamaindex) | `agenticdome_sdk.llamaindex` | Module where tools, query engines, retrievers, callbacks, or agents are assembled | `run_query_securely()`, `wrap_query_engine()`, `wrap_retriever()`, `create_node_postprocessor()`, `create_callback_handler()` | `wrap_tool_function()`, `to_function_tool()`, `@firewall.secure_tool(...)`, handoff verifiers |
 | [AWS Bedrock](#aws-bedrock) | `agenticdome_sdk.aws_bedrock` | Module calling `converse(...)`, `invoke_model(...)`, `invoke_agent(...)`, action-group Lambdas, or retrieval | `converse_securely()`, `converse_stream_securely()`, `invoke_model_securely()`, `invoke_model_with_response_stream_securely()`, `invoke_agent_securely()` | `wrap_tool_handler()`, `@firewall.secure_tool(...)`, `wrap_action_group_lambda()`, delegation verifiers |
-| [MCP host / gateway](#mcp-host--gateway) | `agenticdome_sdk.mcp_host` | The JSON-RPC gateway/proxy function that forwards MCP requests | `preflight_request()` or `forward_with_firewall()` around the forwarder | `authorize_manager_handoff()`, `verify_decision_token_if_present()`; private `_AgenticDome_*` metadata stripped before forwarding |
+| [MCP host / gateway](#mcp-host--gateway) | `agenticdome_sdk.mcp_host` | The JSON-RPC gateway/proxy function that forwards MCP requests | `preflight_request()` or `forward_with_firewall()` around the forwarder | `authorize_manager_handoff()` and `verify_decision_token_if_present()`; SDK-managed security metadata never reaches the upstream server |
 | [Custom Python](#core-sdk-client-custom-runtimes) | `agenticdome_sdk.client` | Your API handler, gateway, router, or tool executor | `guardrail_validate()` before prompts/tools; `mesh_validate()` before returning output | `a2a_authorize_tool()` and `a2a_verify_decision_token_rpc()` for delegation |
 
 In production, wire AgenticDome at **every** local boundary your process controls: prompt ingress, tool execution, delegation handoff, specialist execution, and output egress.
@@ -563,12 +541,12 @@ def lookup_customer(agent, customer_id: str):
     return crm.get_customer(customer_id)
 ```
 
-**Security flow:** (1) prompts are screened before the LLM is called; (2) tool name, clean arguments, session context, agent identity, and policy metadata are validated before execution; (3) manager→specialist delegation is authorized and can return a decision token; (4) the specialist's token is verified against the central plane and consumed once from local/Redis storage; (5) output is reviewed and can be redacted, blocked, or preserved as structured output before leaving the runtime.
+**Security flow:** (1) prompts are screened before the LLM is called; (2) tool name, clean arguments, session context, agent identity, and policy metadata are validated before execution; (3) manager→specialist delegation is authorized and can return a decision token; (4) the specialist's token is verified through the assigned runtime and consumed once using the configured SDK state store; (5) output is reviewed and can be redacted, blocked, or preserved as structured output before leaving the runtime.
 
 <details>
 <summary>CrewAI capabilities, configuration, and imports</summary>
 
-Supports: prompt screening before LLM calls · direct tool authorization · manager-to-specialist handoff authorization with explicit target metadata · specialist-side delegated execution verification via direct token metadata or one-time token-store recovery · Redis-backed token storage with `GETDEL` consume fallback and optional HMAC validation · private `_AgenticDome_*` argument stripping, sanitized tool arguments, optional schema validation · output DLP with structured-output preservation and sanitized JSON parsing · streaming sanitization via `sanitize_streaming_response()` · production mode with stable session ID requirements · local size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, and emergency deny lists.
+Supports: prompt screening before LLM calls · direct tool authorization · manager-to-specialist handoff authorization with explicit target metadata · specialist-side delegated execution verification using SDK-managed, one-time shared state · sanitized tool arguments and optional schema validation · output DLP with structured-output preservation and sanitized JSON parsing · streaming sanitization via `sanitize_streaming_response()` · production mode with stable session ID requirements · local size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, and emergency deny lists.
 
 ```bash
 export AGENTICDOME_PLATFORM="crewai"
@@ -686,7 +664,7 @@ async for safe_chunk in firewall.sanitize_streaming_response(
 <details>
 <summary>PydanticAI capabilities, version notes, and imports</summary>
 
-Supports: prompt ingress checks via legacy lifecycle hooks where available · native `Hooks` capability creation through `create_hooks()` for current PydanticAI versions · tool perimeter authorization via `@firewall.secure_tool(...)` · Pydantic/JSON-schema argument validation and sanitized-argument execution · delegation-token generation for handoff tools using clean target args before token injection · specialist decision-token verification from explicit args or one-time token-store fallback · in-memory and Redis-backed handoff-token storage with optional HMAC-tagged records · egress output DLP with correct `block_on_sensitive_output` semantics · structured-output preservation (sanitized JSON parsed back to dicts/lists) · stable session ID enforcement in production mode · local rate limits, size limits, retries, circuit breaker, audit logging, OpenTelemetry span events · streaming sanitization · identity-rich policy context from `ctx`, `deps`, or nested identity/principal objects · emergency deny lists.
+Supports: prompt ingress checks via legacy lifecycle hooks where available · native `Hooks` capability creation through `create_hooks()` for current PydanticAI versions · tool perimeter authorization via `@firewall.secure_tool(...)` · Pydantic/JSON-schema argument validation and sanitized-argument execution · manager/specialist delegation with SDK-managed, integrity-protected shared state · egress output DLP with correct `block_on_sensitive_output` semantics · structured-output preservation (sanitized JSON parsed back to dicts/lists) · stable session ID enforcement in production mode · local rate limits, size limits, retries, circuit breaker, audit logging, OpenTelemetry span events · streaming sanitization · identity-rich policy context from `ctx`, `deps`, or nested identity/principal objects · emergency deny lists.
 
 Version notes: PydanticAI lifecycle hook APIs have evolved. Current PydanticAI documents `pydantic_ai.capabilities.Hooks` for lifecycle interception across runs, model requests, tool validation/execution, output processing, and event streams. Prefer `create_hooks()` / `install_native_hooks()` on current runtimes; keep `@firewall.secure_tool(...)` on sensitive tools as a hard enforcement boundary. If legacy lifecycle decorators are available, `attach_to_agent()` attaches prompt ingress and egress DLP hooks; if not, `@firewall.secure_tool(...)` still protects tool execution. `AGENTICDOME_BLOCK_ON_SENSITIVE_OUTPUT=true` means AgenticDome may ask Mesh to block sensitive output; the SDK only blocks when the policy response verdict is `BLOCKED`.
 
@@ -815,7 +793,7 @@ state["AgenticDome"] = {
 }
 ```
 
-Specialist execution is verified when the delegated tool call reaches `authorize_transition()` or a wrapped tool node. Tokens can be carried in state, passed as `_AgenticDome_decision_token`, or recovered from Redis/in-memory storage; stored records are consumed once (Redis uses atomic `GETDEL` when available, with a pipeline fallback). Set `AGENTICDOME_TOKEN_HMAC_SECRET` to bind stored tokens to source agent, target agent, tool name, and sanitized argument hash.
+Specialist execution is verified when the delegated tool call reaches `authorize_transition()` or a wrapped tool node. The SDK carries or recovers integrity-protected delegation state and consumes it once. Applications should use the public handoff/wrapper APIs rather than create, inspect or forward the SDK's internal metadata.
 
 **Hardening helpers** — policy-control sensitive graph edges; blocked states set `AgenticDome.route` and `next_agent_id` to `security_block`:
 
@@ -841,7 +819,7 @@ Use `sanitize_retrieval_documents()` before adding retrieved chunks to model con
 <details>
 <summary>LangGraph capabilities, interception notes, and imports</summary>
 
-Supports: prompt ingress via `screen_input()` / `input_node()` · tool-call authorization via `authorize_transition()` / `transition_node()` · delegation authorization when state or tool arguments identify `target_agent_id`, `delegate_to`, `coworker`, `specialist_agent_id`, or equivalent handoff fields · specialist-side token verification from graph state, tool arguments, or token storage · one-time token consumption with optional HMAC binding · sanitized tool-argument mutation before local execution · final message and tool-output DLP via `sanitize_output()` / `output_node()` · retrieval and streaming sanitization · graph transition authorization · `security_block` routing · wrappers for existing agent and tool nodes.
+Supports: prompt ingress via `screen_input()` / `input_node()` · tool-call authorization via `authorize_transition()` / `transition_node()` · delegation authorization from documented handoff fields · specialist-side verification using SDK-managed one-time state · sanitized tool-argument mutation before local execution · final message and tool-output DLP via `sanitize_output()` / `output_node()` · retrieval and streaming sanitization · graph transition authorization · `security_block` routing · wrappers for existing agent and tool nodes.
 
 Interception notes: LangGraph is graph-native — reliable interception means inserting security nodes or wrapping nodes/tool nodes. LangChain's modern `create_agent()` supports a `middleware` parameter documented as the way to intercept model, tool, and agent-loop behavior; `as_langchain_middleware()` targets that style, and the adapter mutates sanitized tool arguments back into the tool request for local execution. For custom `StateGraph` workflows, implement middleware as graph nodes or wrappers at the boundaries you must enforce: before model input, before tool execution, before handoff execution, and before final output. Remote or provider-hosted tools that execute outside your Python process can only be guarded at the local request/response boundary.
 
@@ -967,7 +945,7 @@ secure_refund_handler = firewall.wrap_delegated_tool_handler(
 <details>
 <summary>Microsoft Agent Framework capabilities, configuration, notes, and imports</summary>
 
-Supports: prompt ingress via `screen_input()`, middleware hooks, or `run_agent_securely()` · function-tool authorization with internal argument stripping and sanitized-argument enforcement · manager-to-specialist delegation with HMAC-tagged token records and atomic Redis consumption where available · specialist-side verification via `verify_specialist_execution()` or `wrap_delegated_tool_handler()` · stable session ID enforcement for production · Entra/principal identity context propagation · output DLP with structured JSON preservation and optional response-object mutation · streaming sanitization · OpenTelemetry events and structured audit logging · local rate limits, size limits, retries, circuit breaker · optional Copilot / AI Foundry threat helper enforcement · Redis-backed multi-worker token storage · emergency deny lists.
+Supports: prompt ingress via `screen_input()`, middleware hooks, or `run_agent_securely()` · function-tool authorization with sanitized-argument enforcement · manager-to-specialist delegation and specialist verification through public wrapper APIs · stable session ID enforcement for production · Entra/principal identity context propagation · output DLP with structured JSON preservation and optional response-object mutation · streaming sanitization · OpenTelemetry events and structured audit logging · local rate limits, size limits, retries, circuit breaker · optional Copilot / AI Foundry threat helper enforcement · shared multi-worker delegation state · emergency deny lists.
 
 ```bash
 export AGENTICDOME_PLATFORM="microsoft_agent_framework_v1"
@@ -985,7 +963,7 @@ export AGENTICDOME_MSAF_OTEL_ENABLED="true"
 # Optional local emergency controls:
 # export AGENTICDOME_MSAF_EMERGENCY_BLOCK_TOOLS="payments.refund.create"
 # export AGENTICDOME_MSAF_EMERGENCY_BLOCK_AGENTS="legacy_agent"
-# Optional HMAC tag for stored decision-token records:
+# Optional integrity secret for SDK-managed shared delegation state:
 # export AGENTICDOME_TOKEN_HMAC_SECRET="change-me"
 # Optional Copilot / AI Foundry helper enforcement:
 # export AGENTICDOME_ENABLE_COPILOT_THREAT_API="true"
@@ -1246,7 +1224,7 @@ async for safe_chunk in firewall.sanitize_streaming_response(
 <details>
 <summary>Microsoft AI Foundry capabilities, notes, and imports</summary>
 
-Supports: prompt/run validation via `validate_prompt_contract()`, `before_run()`, or `run_secure()` · middleware hooks via `create_middleware()` / `install_on_client()` · local function-tool analysis via `analyze_tool_execution()`, `before_tool_call()`, or `wrap_tool_executor()` · `@firewall.secure_tool(...)` for high-risk callables · argument stripping, lightweight JSON-schema validation, sanitized-argument execution · enterprise identity context propagation for Entra IDs, roles/scopes, Foundry project IDs, and Purview/sensitivity labels · production-mode stable session ID and output-sanitization requirements · output DLP through Mesh · structured-output preservation · local rate limits, size limits, retries, circuit breaker, audit logging, OpenTelemetry span events · streaming sanitization · optional handoff authorization, token verification, in-memory/Redis token storage, HMAC-tagged records · emergency deny lists.
+Supports: prompt/run validation via `validate_prompt_contract()`, `before_run()`, or `run_secure()` · middleware hooks via `create_middleware()` / `install_on_client()` · local function-tool analysis via `analyze_tool_execution()`, `before_tool_call()`, or `wrap_tool_executor()` · `@firewall.secure_tool(...)` for high-risk callables · lightweight JSON-schema validation and sanitized-argument execution · enterprise identity context propagation for Entra IDs, roles/scopes, Foundry project IDs, and Purview/sensitivity labels · production-mode stable session ID and output-sanitization requirements · output DLP through Mesh · structured-output preservation · local rate limits, size limits, retries, circuit breaker, audit logging, OpenTelemetry span events · streaming sanitization · optional handoff authorization and SDK-managed multi-worker verification · emergency deny lists.
 
 Notes: Foundry function calling asks your application to execute local functions and return tool output — wrap that local execution before output is submitted back to Foundry. Production deployments should pass a stable `session_id`, `run_id`, `trace_id`, `conversation_id`, or `thread_id`; generated fallback IDs are for local development only. Pass Entra identity, roles/scopes, Foundry project IDs, and Purview/sensitivity labels on `ctx` or `policy_context` for identity-aware server-side policy. Hosted tools executing entirely inside a remote provider runtime can only be protected at the local request/response boundary. Threat-contract prompt and tool analysis additionally require `AGENTICDOME_BEARER_TOKEN`.
 
@@ -1304,7 +1282,7 @@ input_guardrail = firewall.create_input_guardrail()
 output_guardrail = firewall.create_output_guardrail()
 ```
 
-**Secure a function tool** — wrap the local implementation before exposing it with `@function_tool`; sanitized arguments replace originals and private metadata is stripped before the handler runs:
+**Secure a function tool** — wrap the local implementation before exposing it with `@function_tool`; sanitized arguments replace originals and SDK-managed security metadata is never passed to the business handler:
 
 ```python
 from agents import function_tool
@@ -1349,7 +1327,7 @@ secure_refund_tool = firewall.wrap_delegated_tool_handler(
 <details>
 <summary>OpenAI Agents SDK capabilities, configuration, notes, and imports</summary>
 
-Supports: prompt ingress via `screen_input()`, `run_agent_securely()`, `run_agent_stream_securely()`, or `create_input_guardrail()` · function-tool authorization via `wrap_tool_handler()` / `@firewall.secure_tool(...)` · private `_AgenticDome_*` argument stripping, sanitized arguments, optional schema validation · handoff authorization via `authorize_manager_handoff()` · specialist-side verification via `verify_specialist_execution()` and `wrap_delegated_tool_handler()` · in-memory or Redis token storage with one-time consume and optional HMAC validation · output DLP via `sanitize_output()` and `create_output_guardrail()` · streaming sanitization · structured-output preservation and sanitized JSON parsing · production mode with stable session IDs · size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, identity-rich policy context, emergency deny lists.
+Supports: prompt ingress via `screen_input()`, `run_agent_securely()`, `run_agent_stream_securely()`, or `create_input_guardrail()` · function-tool authorization via `wrap_tool_handler()` / `@firewall.secure_tool(...)` · sanitized arguments and optional schema validation · handoff authorization via `authorize_manager_handoff()` · specialist-side verification via `verify_specialist_execution()` and `wrap_delegated_tool_handler()` · SDK-managed one-time multi-worker delegation state · output DLP via `sanitize_output()` and `create_output_guardrail()` · streaming sanitization · structured-output preservation and sanitized JSON parsing · production mode with stable session IDs · size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, identity-rich policy context, emergency deny lists.
 
 ```bash
 export AGENTICDOME_PLATFORM="openai_agents_sdk"
@@ -1460,7 +1438,7 @@ export AGENTICDOME_CLAUDE_EMERGENCY_BLOCK_TOOLS=""
 export AGENTICDOME_CLAUDE_EMERGENCY_BLOCK_AGENTS=""
 ```
 
-Use `authorize_manager_handoff()` and `verify_specialist_execution()` when a manager delegates sensitive work. Configure Redis and `AGENTICDOME_TOKEN_HMAC_SECRET` when authorization and specialist execution can land on different workers. Claude hooks protect operations visible to the local SDK process; externally hosted services still require enforcement at their local gateway or MCP host.
+Use `authorize_manager_handoff()` and `verify_specialist_execution()` when a manager delegates sensitive work. Configure the documented shared store and integrity secret when authorization and specialist execution can land on different workers. Claude hooks protect operations visible to the local SDK process; externally hosted services still require enforcement at their local gateway or MCP host.
 
 Official references: [Claude Agent SDK Python](https://github.com/anthropics/claude-agent-sdk-python) · [Claude Agent SDK overview](https://platform.claude.com/docs/en/agent-sdk/overview)
 
@@ -1622,7 +1600,7 @@ async for safe_chunk in firewall.sanitize_streaming_response(
 <details>
 <summary>Agno capabilities, configuration, notes, and imports</summary>
 
-Supports: prompt ingress via `pre_hook` / `cybersec_pre_hook` · tool-call authorization via `pre_hook`, `tool_hook`, and `@firewall.secure_tool` · argument stripping, sanitized arguments, optional schema validation · delegation authorization when handoff metadata is present · specialist-side one-time token verification from hook kwargs, tool args, or token storage · optional token HMAC validation · output DLP via `post_hook` / `cybersec_post_hook` with structured-output preservation · retrieved-context sanitization for Agno knowledge/RAG pipelines · streaming sanitization · production mode with stable session IDs · size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, identity-rich policy context, emergency deny lists.
+Supports: prompt ingress via `pre_hook` / `cybersec_pre_hook` · tool-call authorization via `pre_hook`, `tool_hook`, and `@firewall.secure_tool` · sanitized arguments and optional schema validation · delegation authorization and specialist-side one-time verification through SDK-managed state · output DLP via `post_hook` / `cybersec_post_hook` with structured-output preservation · retrieved-context sanitization for Agno knowledge/RAG pipelines · streaming sanitization · production mode with stable session IDs · size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, identity-rich policy context, emergency deny lists.
 
 ```bash
 export AGENTICDOME_PLATFORM="agno"
@@ -1696,7 +1674,7 @@ firewall.install_on_agent(agent)      # attach to an existing agent
 plugin = firewall.create_plugin()     # plugin-style registration
 ```
 
-**Tool protection** — sanitized arguments replace originals and private `_AgenticDome_*` metadata is stripped before the handler runs; pass a Pydantic model, Pydantic v1 model, or JSON-schema-like dict to validate arguments:
+**Tool protection** — sanitized arguments replace originals and SDK-managed security metadata is never passed to the business handler; pass a Pydantic model, Pydantic v1 model, or JSON-schema-like dict to validate arguments:
 
 ```python
 @firewall.secure_tool(tool_name="crm.customer.read", tool_platform="crm")
@@ -1711,7 +1689,7 @@ secured_lookup = firewall.wrap_tool_handler(
 )
 ```
 
-**Multi-agent delegation** — the adapter stores a decision token against the clean target tool arguments, injects private handoff metadata into the payload, and verifies delegated execution before the specialist runs the tool:
+**Multi-agent delegation** — use the public handoff methods so the adapter manages authorization state and verifies delegated execution before the specialist runs the tool:
 
 ```python
 record = await firewall.authorize_manager_handoff(
@@ -1734,7 +1712,7 @@ await firewall.verify_delegated_execution(
 <details>
 <summary>Google ADK capabilities, configuration, notes, and imports</summary>
 
-Supports: prompt screening via `before_model` · model output sanitization via `after_model` · tool argument authorization, metadata stripping, schema validation, and sanitized-argument enforcement via `before_tool` · tool result sanitization with structured JSON preservation via `after_tool` · lifecycle audit visibility via `before_agent` / `after_agent` · explicit wrappers via `wrap_tool_handler()` / `@firewall.secure_tool(...)` · handoff authorization with `DecisionTokenStore`, `InMemoryDecisionTokenStore`, optional `RedisDecisionTokenStore` · delegated execution verification with one-time token consumption and optional HMAC validation · streaming sanitization with a sliding review buffer · rate limits, size limits, retries/backoff, circuit breaker, structured audit logs, OpenTelemetry span events, identity-rich policy context, emergency deny lists.
+Supports: prompt screening via `before_model` · model output sanitization via `after_model` · tool argument authorization, schema validation, and sanitized-argument enforcement via `before_tool` · tool result sanitization with structured JSON preservation via `after_tool` · lifecycle audit visibility via `before_agent` / `after_agent` · explicit wrappers via `wrap_tool_handler()` / `@firewall.secure_tool(...)` · manager/specialist handoff authorization with SDK-managed one-time state · streaming sanitization with a sliding review buffer · rate limits, size limits, retries/backoff, circuit breaker, structured audit logs, OpenTelemetry span events, identity-rich policy context, emergency deny lists.
 
 ```bash
 export AGENTICDOME_PLATFORM="google_adk"
@@ -1758,7 +1736,7 @@ export AGENTICDOME_GOOGLE_ADK_OTEL_ENABLED="true"
 # export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
 ```
 
-Notes: register callbacks, the plugin object, or tool wrappers — env config alone does not intercept ADK execution. Use async callback methods (`before_model`, `after_model`, `before_tool`, `after_tool`) when your ADK runner supports them; the `*_callback` sync methods are for synchronous configurations only. In production, provide stable ADK context values (`session_id`, `run_id`, `trace_id`, `conversation_id`, `request_id`) — otherwise the adapter fails closed when `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD=true`. The SDK protects the local ADK callback boundary and returned content, not execution inside remote tools/services. Include Google Cloud identity and project context in ADK state when available (`project_id`, `service_account_email`, `principal_id`, `roles`, `scopes`, `region`, `sensitivity_label`). Use Redis and `AGENTICDOME_TOKEN_HMAC_SECRET` for multi-worker or Kubernetes deployments.
+Notes: register callbacks, the plugin object, or tool wrappers — env config alone does not intercept ADK execution. Use async callback methods (`before_model`, `after_model`, `before_tool`, `after_tool`) when your ADK runner supports them; the `*_callback` sync methods are for synchronous configurations only. In production, provide stable ADK context values (`session_id`, `run_id`, `trace_id`, `conversation_id`, `request_id`) — otherwise the adapter fails closed when `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD=true`. The SDK protects the local ADK callback boundary and returned content, not execution inside remote tools/services. Include Google Cloud identity and project context when available. Use the documented shared store and integrity secret for multi-worker or Kubernetes deployments.
 
 ```python
 from agenticdome_sdk.google_adk import (
@@ -2063,7 +2041,7 @@ safe_retrieval = await firewall.sanitize_retrieval_result(
 <details>
 <summary>AWS Bedrock capabilities, configuration, notes, and imports</summary>
 
-Supports: prompt screening before `converse(...)`, `converse_stream(...)`, `invoke_model(...)`, `invoke_model_with_response_stream(...)`, and `invoke_agent(...)` · model output DLP before responses leave your application · streaming sanitization for ConverseStream and InvokeModelWithResponseStream events · provider-specific prompt/response parsing (Claude, Titan, Llama, Mistral, Converse) · local tool-use and action-group authorization · sanitized arguments, `_AgenticDome_*` stripping, optional schema validation · tool/action output review · knowledge-base retrieval sanitization at the node level · production mode with stable session IDs · AWS account, region, role, principal, agent, and knowledge-base context in policy decisions · size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, emergency deny lists · optional handoff authorization with in-memory/Redis token storage and HMAC validation.
+Supports: prompt screening before `converse(...)`, `converse_stream(...)`, `invoke_model(...)`, `invoke_model_with_response_stream(...)`, and `invoke_agent(...)` · model output DLP before responses leave your application · streaming sanitization for ConverseStream and InvokeModelWithResponseStream events · provider-specific prompt/response parsing · local tool-use and action-group authorization · sanitized arguments and optional schema validation · tool/action output review · knowledge-base retrieval sanitization at the node level · production mode with stable session IDs · AWS identity/resource context in policy decisions · size limits, rate limits, retries/backoff, circuit breaker, audit logs, OpenTelemetry events, emergency deny lists · optional manager/specialist handoff through SDK-managed shared state.
 
 ```bash
 export AGENTICDOME_PLATFORM="aws_bedrock"
@@ -2158,30 +2136,7 @@ response["result"] = await firewall.sanitize_mcp_result(
 return response
 ```
 
-**Delegated execution** — if another orchestrator already issued a decision token, pass it as private MCP arguments; the adapter verifies the token and strips private metadata before forwarding (partial handoff metadata is blocked — include both token and source agent ID):
-
-```python
-request = {
-    "jsonrpc": "2.0",
-    "id": "req-42",
-    "method": "tools/call",
-    "params": {
-        "name": "payments.refund.create",
-        "arguments": {
-            "customer_id": "cust_123",
-            "amount": 250,
-            "_AgenticDome_decision_token": decision_token,
-            "_AgenticDome_source_agent_id": "support_manager",
-        },
-    },
-}
-```
-
-The third-party MCP server receives only the business arguments after preflight succeeds:
-
-```python
-{"customer_id": "cust_123", "amount": 250}
-```
+**Delegated execution** — use the adapter's public handoff and verification methods. The SDK manages the authorization context and ensures that only approved business arguments are forwarded to the third-party MCP server. Applications should not construct or depend on the adapter's internal transport metadata.
 
 If the gateway itself owns manager-to-specialist delegation, authorize the handoff first; the issued token is stored and consumed when specialist execution reaches the gateway:
 
@@ -2199,7 +2154,7 @@ await firewall.authorize_manager_handoff(
 <details>
 <summary>MCP capabilities, configuration, notes, and imports</summary>
 
-Supports: optional upstream prompt screening from host context · `tools/call` authorization via `mcp_guardrail_validate()` · authorization for `tools/list`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, and `sampling/createMessage` · `tools/list` response filtering so low-privilege agents do not see tools they cannot use · resource, prompt, sampling, tool, and streaming-output sanitization · delegated decision-token verification when handoff metadata is present · manager-to-MCP handoff authorization with in-memory or Redis token storage · per-server policy context (server ID, URL, vendor, trust level) · sanitized tool argument forwarding · size limits, rate limiting, audit logging · `_AgenticDome_*` metadata stripping before forwarding · Mesh output sanitization for common MCP result shapes (`content[].text`, prompt messages, top-level `text`, lists, serialized structured results) · fail-closed/fail-open behavior via `AGENTICDOME_FAIL_CLOSED`.
+Supports: optional upstream prompt screening from host context · `tools/call` authorization via `mcp_guardrail_validate()` · authorization for tool, resource, prompt and sampling methods · tool-list filtering according to policy · resource, prompt, sampling, tool, and streaming-output sanitization · delegated verification through public handoff methods · per-server policy context · sanitized business-argument forwarding · size limits, rate limiting and audit logging · Mesh output sanitization for supported MCP result shapes · fail-closed/fail-open behavior via `AGENTICDOME_FAIL_CLOSED`.
 
 ```bash
 export AGENTICDOME_PLATFORM="mcp"
@@ -2443,7 +2398,7 @@ headers = client.enforcement_headers(
 )
 ```
 
-The control-plane website, provenance registry, SBOM registry, and LLM are not called on this request path. Approved provenance and policy bundles are already cached in the assigned sidecar. If the gateway is in enforce mode, a missing, expired, replayed, destination-mismatched, method-mismatched, or workload-mismatched receipt fails closed.
+Receipt verification occurs on the assigned runtime and enforcement-gateway path. In enforce mode, an absent, invalid or action-mismatched receipt fails closed. Applications should use the public SDK response and header helpers rather than depend on internal receipt representation or service topology.
 
 Framework adapters share this core client, but the application still owns the final executor boundary: pass the real destination/method and attach the returned headers where the framework invokes the external tool. Customers using an AgenticDome-managed sidecar install only the SDK; the deployment administrator operates Envoy, Tetragon/eBPF, SPIFFE, and sandbox infrastructure.
 
@@ -2469,7 +2424,7 @@ export AGENTICDOME_REDIS_URL="redis://redis.example.internal:6379/0"
 export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:runtime:handoff"
 ```
 
-Redis deployments use atomic `GETDEL` for one-time token consumption where available, with a pipeline fallback. Set `AGENTICDOME_TOKEN_HMAC_SECRET` to bind stored token records to source agent, target agent, tool name, and sanitized argument hash.
+The SDK provides integrity-protected, one-time delegation state for supported shared-store deployments. Configure `AGENTICDOME_TOKEN_HMAC_SECRET` from a secret manager and let the SDK create and consume these records; applications should not construct or modify their internal representation.
 
 ### Production checklist
 
@@ -2496,9 +2451,9 @@ Plus, for every production deployment:
 
 ---
 
-## Package Build and Verification
+## Source Installation and Verification
 
-Run the Python SDK release gate from the SDK root:
+Most customers should install the published package from PyPI. Contributors evaluating the public source can perform a network-free verification from the SDK root:
 
 ```bash
 python3 -m venv .venv
@@ -2506,96 +2461,12 @@ source .venv/bin/activate
 
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
-python -m pip install -e ".[crewai,pydanticai,langgraph,microsoft,autogen,foundry,agno,openai-agents,claude,smolagents,mcp,bedrock,google-adk,llamaindex,redis]"
-
 python -m pytest -q
-rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
 python -m build
 python -m twine check dist/*
 ```
 
-`python -m pytest -q` runs the core SDK tests and every dependency-light framework adapter test in one pass — the normal offline full-suite command. Adapter tests use fake framework/client boundaries where possible, so CI verifies authorization, delegation-token handling, sanitized tool arguments, output DLP, streaming sanitization, rate limits, and fail-open/fail-closed behavior without live third-party services. Private release automation separately validates package metadata and rejects internal-only files from both wheel and source-distribution artifacts.
-
-### Framework Test Matrix
-
-Run one framework at a time with its matching test file. For a single-framework development loop:
-
-```bash
-python -m pip install -e ".[langgraph]"
-python -m pytest -q tests/test_langgraph_integration.py
-```
-
-| Runtime / integration | Test command | Coverage focus |
-| :--- | :--- | :--- |
-| Core SDK client | `python -m pytest -q tests/test_client.py` | Request validation, headers, guardrail calls, A2A/MCP JSON-RPC calls, Mesh DLP, HTTP errors, JSON handling |
-| Attack demos | `python -m pytest -q tests/test_attack_demo.py` | Offline vulnerable-vs-protected CLI coverage, including AutoGen, Claude Agent SDK, and Hugging Face smolagents |
-| Local simulation parity | `python -m pytest -q tests/test_local_simulation.py` | No-credential/no-network mode, production refusal, broker fail-closed behavior, installed demo catalog and constructor coverage for every supported Python adapter |
-| CrewAI | `python -m pytest -q tests/test_crewai_integration.py` | Prompt/tool hooks, handoff token injection, specialist verification, output redaction, schema checks, rate limits, retries, streaming DLP |
-| PydanticAI | `python -m pytest -q tests/test_pydanticai_integration.py` | Agent hooks, secure tools, sanitized arguments, token-store fallback, production session enforcement, rate limits, retries, streaming output |
-| LangGraph / LangChain | `python -m pytest -q tests/test_langgraph_integration.py` | Graph input, transition, tool, retrieval, middleware, security routing, token consumption, output DLP, streaming events |
-| Microsoft Agent Framework | `python -m pytest -q tests/test_microsoft_agent_framework_integration.py` | Tool/run boundaries, delegated tool verification, middleware install helpers, identity context, Copilot enforcement hooks, streaming output |
-| Microsoft AutoGen | `python -m pytest -q tests/test_autogen_integration.py` | Current AgentChat team/Core interception, legacy send/receive hooks, rolling Family 2 context, session freeze, trust incident and revocation escalation |
-| Microsoft AI Foundry | `python -m pytest -q tests/test_microsoft_ai_foundry_integration.py` | Prompt threat contracts, local tool executors, run boundaries, bearer/API-key configuration, delegated execution, circuit breaker, stream DLP |
-| OpenAI Agents SDK | `python -m pytest -q tests/test_openai_agents_integration.py` | Runner wrappers, guardrail helpers, function-tool wrappers, handoff/delegated tools, HMAC token storage, schema checks, retries, streaming output |
-| Claude Agent SDK | `python -m pytest -q tests/test_claude_integration.py` | Native prompt/tool hooks, tool-output replacement, secure query responses, decision-token binding and one-time consumption |
-| Hugging Face smolagents | `python -m pytest -q tests/test_smolagents_integration.py` | Native Tool wrapper, pre-execution CodeAgent scanning, idempotent attachment, managed-agent handoff verification, output DLP |
-| Agno | `python -m pytest -q tests/test_agno_integration.py` | Agent/team hooks, tool hooks, middleware/plugin helpers, delegated specialist execution, retrieved text sanitization, schema checks, stream DLP |
-| MCP host / gateway | `python -m pytest -q tests/test_mcp_host_integration.py` | JSON-RPC preflight, tool/resource/prompt authorization, private metadata stripping, delegated token verification, response filtering, forwarder DLP |
-| AWS Bedrock | `python -m pytest -q tests/test_aws_bedrock_integration.py` | Converse/InvokeModel wrappers, Bedrock Agents streams, action-group Lambda wrappers, retrieval DLP, tool authorization, handoff tokens, retries |
-| Google ADK | `python -m pytest -q tests/test_google_adk_integration.py` | Model/tool callbacks, plugin helpers, secure tools, delegated execution, sanitized args, production sessions, rate limits, retries, stream DLP |
-| LlamaIndex | `python -m pytest -q tests/test_llamaindex_integration.py` | FunctionTool/query/retrieval wrappers, callback handlers, secure tools, delegated execution, fail-open behavior, output DLP |
-
-### Release gates
-
-**Metadata and artifact validation:**
-
-```bash
-rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
-python -m build
-python -m twine check dist/*
-```
-
-The private release pipeline performs additional package-contract and forbidden-file checks before upload.
-
-**Full offline release gate** across all supported Python integrations:
-
-```bash
-python -m pip install -e ".[dev,crewai,pydanticai,langgraph,microsoft,autogen,foundry,agno,openai-agents,claude,smolagents,mcp,bedrock,google-adk,llamaindex,redis]"
-python -m pytest -q
-rm -rf build dist *.egg-info agenticdome_sdk.egg-info agenticdome_python_sdk.egg-info
-python -m build
-python -m twine check dist/*
-```
-
-**Focused verification** — optional live tenant smoke tests:
-
-```bash
-python -m pytest -q tests/test_live_tenant.py
-```
-
-| Part | Meaning |
-| :--- | :--- |
-| `python -m pytest` | Runs `pytest` using the current Python environment |
-| `-q` | Quiet mode — compact results instead of verbose test names |
-| `tests/test_live_tenant.py` | Live AgenticDome tenant smoke tests — skipped by default, only runs when explicitly enabled |
-
-**Live tenant release gate** — against a real AgenticDome tenant:
-
-```bash
-export AGENTICDOME_API_BASE="https://www.agenticdome.io"
-export AGENTICDOME_TENANT_ID="<tenant_id>"
-export AGENTICDOME_API_KEY="<tenant_api_key>"
-export AGENTICDOME_LIVE_TENANT_TEST=1
-python -m pytest -q tests/test_live_tenant.py
-```
-
-For strict security-policy validation, add:
-
-```bash
-export AGENTICDOME_LIVE_EXPECT_STRICT=1
-```
-
-The live tenant suite performs real `guardrail_validate()` and `mesh_validate()` calls, verifies that one request can carry an originating human subject and upstream agent actor together, and queries the tenant's active threat-signature bundle through the public SDK method. With `AGENTICDOME_LIVE_EXPECT_STRICT=1`, it additionally requires sensitive output enforcement plus a signed bundle whose provenance is `agenticdome_private_collection`. Framework-specific behavior remains covered by the offline adapter test matrix above.
+The public suite verifies the package contract and supported adapter behavior without tenant credentials or live third-party services. AgenticDome operates live certification and package publication separately from customer application environments.
 
 ---
 
