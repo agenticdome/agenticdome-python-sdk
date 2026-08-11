@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.14"
+version = "1.2.15"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -141,6 +141,7 @@ all = [
 ]
 dev = [
     "pytest>=8.0.0",
+    "anyio>=4.0.0",
     "tomli>=2.0.0; python_version < '3.11'",
     "ruff>=0.5.0",
     "mypy>=1.8.0",
