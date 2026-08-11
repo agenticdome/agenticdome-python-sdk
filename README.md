@@ -5,7 +5,7 @@
 [![CI](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [MCP integration guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [Security policy](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
+[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [Framework integration guides](https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks) · [MCP integration guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [Security policy](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
 
 > **Production-grade security guardrails, DLP, tool authorization, and cryptographically verified multi-agent delegation for Python autonomous AI runtimes.**
 
@@ -44,7 +44,7 @@ agenticdome-demo --list-frameworks
 agenticdome-demo --framework all --scenario both
 ```
 
-You can also open the [framework example gallery](examples/README.md) and run the individual example matching your stack. Before editing production code, use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md) to find the exact construction file, public attachment call and local execution boundary for your framework. MCP host and gateway developers can follow the dedicated [MCP Action Firewall guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md).
+You can also open the [framework example gallery](examples/README.md) and run the individual example matching your stack. Before editing production code, choose the dedicated [framework integration guide](docs/frameworks/README.md), then use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md) for the cross-framework attachment and proof checklist. MCP host and gateway developers can follow the dedicated [MCP Action Firewall guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md).
 
 ### 5. Connect the same integration to AgenticDome
 
@@ -79,7 +79,7 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
 4. [Quickstart](#quickstart)
 5. [Installation](#installation)
 6. [Configuration](#configuration)
-7. [Choosing Your Integration Point](#choosing-your-integration-point)
+7. [Choosing Your Integration Point](#choosing-your-integration-point) — [dedicated framework guides](docs/frameworks/README.md)
 8. [Framework Integrations](#framework-integrations)
    - [CrewAI](#crewai) · [PydanticAI](#pydanticai) · [LangGraph](#langgraph) · [Microsoft Agent Framework](#microsoft-agent-framework) · [Microsoft AutoGen](#microsoft-autogen) · [Microsoft AI Foundry](#microsoft-ai-foundry) · [OpenAI Agents SDK](#openai-agents-sdk) · [Claude Agent SDK](#claude-agent-sdk) · [Hugging Face smolagents](#hugging-face-smolagents) · [Agno](#agno) · [Google ADK](#google-adk) · [LlamaIndex](#llamaindex) · [AWS Bedrock](#aws-bedrock) · [MCP Host / Gateway](#mcp-host--gateway)
 9. [Core SDK Client (Custom Runtimes)](#core-sdk-client-custom-runtimes)

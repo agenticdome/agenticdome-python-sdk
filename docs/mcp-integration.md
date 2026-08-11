@@ -276,26 +276,13 @@ when the deployment model permits it.
 7. Run SDK Assurance, then Performance Smoke, against the same tenant and
    sidecar before heavier load testing.
 
-## Performance claims
+## Performance validation
 
-Do not reuse a latency number from another environment. End-to-end latency
-depends on network placement, TLS and connection reuse, policy configuration,
-payload size, selected controls and sidecar capacity. AgenticDome's performance
-harness records the exact target, workload, request mix, error rate and
-percentiles so results can be reproduced and dated.
-
-Publish a benchmark only when its report identifies:
-
-- test date and software/release versions;
-- sidecar location and client-to-sidecar network path;
-- profile duration, concurrency, scheduled/completed requests and request mix;
-- p50, p95 and p99 end-to-end latency plus error rate;
-- whether the measurement is full request latency or estimated AgenticDome
-  overhead;
-- the policy and capabilities exercised.
-
-The public SDK does not assign fixed latency bands to particular policy paths
-or promise a universal p95 latency or throughput for every deployment.
+Latency depends on the deployed sidecar, network path, policy and workload.
+Run Performance Smoke against the same tenant and sidecar used for assurance;
+publish only the dated report produced for that environment. See the shared
+[performance evidence guide](performance-evidence.md) for the benchmark fields
+and interpretation rules.
 
 ## Scope and limitations
 

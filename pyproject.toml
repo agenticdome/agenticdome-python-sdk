@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.12"
+version = "1.2.13"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -153,6 +153,7 @@ dev = [
 Homepage = "https://www.agenticdome.io"
 Repository = "https://github.com/agenticdome/agenticdome-python-sdk"
 Documentation = "https://github.com/agenticdome/agenticdome-python-sdk#readme"
+"Framework Integration Guides" = "https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks"
 "MCP Integration Guide" = "https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md"
 Issues = "https://github.com/agenticdome/agenticdome-python-sdk/issues"
 Examples = "https://github.com/agenticdome/agenticdome-python-sdk/tree/main/examples"

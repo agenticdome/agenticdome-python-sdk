@@ -36,7 +36,7 @@ agenticdome-demo --framework all --scenario both
 
 Use the framework gallery below for an individual runnable example matching your stack.
 
-Before changing production code, open the [production integration playbook](PRODUCTION_INTEGRATION.md). It identifies the exact construction file, public SDK attachment call, protected execution boundary and full tested guide for every framework.
+Before changing production code, select the matching [framework integration guide](../docs/frameworks/README.md), then use the [production integration playbook](PRODUCTION_INTEGRATION.md) for the shared attachment and proof checklist.
 
 ### 5. Move to live tenant enforcement
 
@@ -68,21 +68,21 @@ Every entry runs the same allowed/blocked pair without importing the third-party
 
 | Integration | Install for production | Offline example | Production guide |
 | :--- | :--- | :--- | :--- |
-| CrewAI | `pip install "agenticdome-python-sdk[crewai]"` | [`frameworks/crewai.py`](frameworks/crewai.py) | [Attach before `Crew` construction](../README.md#crewai) |
-| PydanticAI | `pip install "agenticdome-python-sdk[pydanticai]"` | [`frameworks/pydanticai.py`](frameworks/pydanticai.py) | [Install agent hooks and secure tools](../README.md#pydanticai) |
-| LangGraph / LangChain | `pip install "agenticdome-python-sdk[langgraph]"` | [`frameworks/langgraph.py`](frameworks/langgraph.py) | [Add nodes, wrappers or middleware](../README.md#langgraph) |
-| Microsoft Agent Framework | `pip install "agenticdome-python-sdk[microsoft]"` | [`frameworks/microsoft_agent_framework.py`](frameworks/microsoft_agent_framework.py) | [Install agent/run and tool boundaries](../README.md#microsoft-agent-framework) |
-| Microsoft AutoGen | `pip install "agenticdome-python-sdk[autogen]"` | [`frameworks/autogen.py`](frameworks/autogen.py) | [Wrap team/Core execution](../README.md#microsoft-autogen) |
-| Microsoft AI Foundry | `pip install "agenticdome-python-sdk[foundry]"` | [`frameworks/microsoft_ai_foundry.py`](frameworks/microsoft_ai_foundry.py) | [Wrap runs and local tool executors](../README.md#microsoft-ai-foundry) |
-| OpenAI Agents SDK | `pip install "agenticdome-python-sdk[openai-agents]"` | [`frameworks/openai_agents.py`](frameworks/openai_agents.py) | [Secure Runner and function tools](../README.md#openai-agents-sdk) |
-| Anthropic Claude Agent SDK | `pip install "agenticdome-python-sdk[claude]"` | [`frameworks/claude_agent_sdk.py`](frameworks/claude_agent_sdk.py) | [Install options hooks and secure query/client](../README.md#claude-agent-sdk) |
-| Hugging Face smolagents | `pip install "agenticdome-python-sdk[smolagents]"` | [`frameworks/smolagents.py`](frameworks/smolagents.py) | [Attach agent/tool/executor boundaries](../README.md#hugging-face-smolagents) |
-| Agno | `pip install "agenticdome-python-sdk[agno]"` | [`frameworks/agno.py`](frameworks/agno.py) | [Attach Agent/Team hooks](../README.md#agno) |
-| Google ADK | `pip install "agenticdome-python-sdk[google-adk]"` | [`frameworks/google_adk.py`](frameworks/google_adk.py) | [Register callbacks or plugin](../README.md#google-adk) |
-| LlamaIndex | `pip install "agenticdome-python-sdk[llamaindex]"` | [`frameworks/llamaindex.py`](frameworks/llamaindex.py) | [Wrap tools, query and retrieval](../README.md#llamaindex) |
-| AWS Bedrock | `pip install "agenticdome-python-sdk[bedrock]"` | [`frameworks/aws_bedrock.py`](frameworks/aws_bedrock.py) | [Replace direct runtime calls with secure methods](../README.md#aws-bedrock) |
+| CrewAI | `pip install "agenticdome-python-sdk[crewai]"` | [`frameworks/crewai.py`](frameworks/crewai.py) | [CrewAI launch guide](../docs/frameworks/crewai.md) |
+| PydanticAI | `pip install "agenticdome-python-sdk[pydanticai]"` | [`frameworks/pydanticai.py`](frameworks/pydanticai.py) | [PydanticAI launch guide](../docs/frameworks/pydanticai.md) |
+| LangGraph / LangChain | `pip install "agenticdome-python-sdk[langgraph]"` | [`frameworks/langgraph.py`](frameworks/langgraph.py) | [LangGraph launch guide](../docs/frameworks/langgraph.md) |
+| Microsoft Agent Framework | `pip install "agenticdome-python-sdk[microsoft]"` | [`frameworks/microsoft_agent_framework.py`](frameworks/microsoft_agent_framework.py) | [Microsoft Agent Framework launch guide](../docs/frameworks/microsoft-agent-framework.md) |
+| Microsoft AutoGen | `pip install "agenticdome-python-sdk[autogen]"` | [`frameworks/autogen.py`](frameworks/autogen.py) | [AutoGen launch guide](../docs/frameworks/autogen.md) |
+| Microsoft AI Foundry | `pip install "agenticdome-python-sdk[foundry]"` | [`frameworks/microsoft_ai_foundry.py`](frameworks/microsoft_ai_foundry.py) | [Foundry launch guide](../docs/frameworks/microsoft-ai-foundry.md) |
+| OpenAI Agents SDK | `pip install "agenticdome-python-sdk[openai-agents]"` | [`frameworks/openai_agents.py`](frameworks/openai_agents.py) | [OpenAI Agents launch guide](../docs/frameworks/openai-agents.md) |
+| Anthropic Claude Agent SDK | `pip install "agenticdome-python-sdk[claude]"` | [`frameworks/claude_agent_sdk.py`](frameworks/claude_agent_sdk.py) | [Claude Agent SDK launch guide](../docs/frameworks/claude-agent-sdk.md) |
+| Hugging Face smolagents | `pip install "agenticdome-python-sdk[smolagents]"` | [`frameworks/smolagents.py`](frameworks/smolagents.py) | [smolagents launch guide](../docs/frameworks/smolagents.md) |
+| Agno | `pip install "agenticdome-python-sdk[agno]"` | [`frameworks/agno.py`](frameworks/agno.py) | [Agno launch guide](../docs/frameworks/agno.md) |
+| Google ADK | `pip install "agenticdome-python-sdk[google-adk]"` | [`frameworks/google_adk.py`](frameworks/google_adk.py) | [Google ADK launch guide](../docs/frameworks/google-adk.md) |
+| LlamaIndex | `pip install "agenticdome-python-sdk[llamaindex]"` | [`frameworks/llamaindex.py`](frameworks/llamaindex.py) | [LlamaIndex launch guide](../docs/frameworks/llamaindex.md) |
+| AWS Bedrock | `pip install "agenticdome-python-sdk[bedrock]"` | [`frameworks/aws_bedrock.py`](frameworks/aws_bedrock.py) | [AWS Bedrock launch guide](../docs/frameworks/aws-bedrock.md) |
 | MCP host / gateway | `pip install "agenticdome-python-sdk[mcp]"` | [`frameworks/mcp.py`](frameworks/mcp.py) · [`mcp_gateway_action_firewall.py`](mcp_gateway_action_firewall.py) | [MCP Action Firewall guide](../docs/mcp-integration.md) · [API reference](../README.md#mcp-host--gateway) |
-| Custom Python | `pip install agenticdome-python-sdk` | [`frameworks/custom_python.py`](frameworks/custom_python.py) | [Check before execution and review output](../README.md#core-sdk-client-custom-runtimes) |
+| Custom Python | `pip install agenticdome-python-sdk` | [`frameworks/custom_python.py`](frameworks/custom_python.py) | [Custom Python launch guide](../docs/frameworks/custom-python.md) |
 
 ## What the simulator proves
 

@@ -1,0 +1,51 @@
+# PydanticAI integration
+
+Use this integration where PydanticAI `Agent` objects and their tools are
+constructed. Install lifecycle hooks for prompt/output coverage and retain a
+secured wrapper on every tool that can read data or cause a side effect.
+
+## Try it without an account
+
+```bash
+pip install "agenticdome-python-sdk[pydanticai]"
+export AGENTICDOME_MODE=local_sim
+agenticdome-demo --framework pydanticai --scenario both
+```
+
+## Attach in production
+
+```python
+from agenticdome_sdk.pydantic import CyberSecFirewall
+
+firewall = CyberSecFirewall()
+firewall.install_native_hooks(agent)
+
+@agent.tool
+@firewall.secure_tool(
+    tool_name="crm.customer.read",
+    tool_platform="crm",
+)
+async def read_customer(ctx, customer_id: str):
+    return await crm.read_customer(customer_id)
+```
+
+Create the firewall after configuring the assigned sidecar URL, Runtime/SDK
+key and tenant ID. Install hooks on every agent instance; one agent's hooks do
+not cover another. `attach_to_agent()` remains the compatibility path for
+supported legacy lifecycle APIs. Register the decorated function and never a
+saved reference to the undecorated implementation.
+
+See the [PydanticAI API guide](../../README.md#pydanticai) for `FirewallConfig`,
+native capabilities, schema validation, delegation, structured output and
+streaming examples.
+
+## Launch checks
+
+- Hooks are installed in the agent factory, not only in a request handler.
+- Sensitive tools remain decorated even when lifecycle APIs change.
+- Sanitized arguments replace the model-provided arguments before execution.
+- Output policy is applied before results are returned or streamed.
+- Stable session identity and multi-worker state are configured where needed.
+
+Environment variables configure this adapter but do not attach it. Remote
+provider tools remain protectable only at the local request/response boundary.

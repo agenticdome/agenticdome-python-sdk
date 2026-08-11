@@ -212,21 +212,21 @@ def test_production_playbook_has_safe_attachment_guidance_for_every_framework():
     manifest = (sdk_root / "MANIFEST.in").read_text(encoding="utf-8")
 
     expected_guides = {
-        "crewai": "../README.md#crewai",
-        "pydanticai": "../README.md#pydanticai",
-        "langgraph": "../README.md#langgraph",
-        "microsoft-agent": "../README.md#microsoft-agent-framework",
-        "autogen": "../README.md#microsoft-autogen",
-        "foundry": "../README.md#microsoft-ai-foundry",
-        "openai-agents": "../README.md#openai-agents-sdk",
-        "claude": "../README.md#claude-agent-sdk",
-        "smolagents": "../README.md#hugging-face-smolagents",
-        "agno": "../README.md#agno",
-        "google-adk": "../README.md#google-adk",
-        "llamaindex": "../README.md#llamaindex",
-        "bedrock": "../README.md#aws-bedrock",
-        "mcp": "../README.md#mcp-host--gateway",
-        "custom-python": "../README.md#core-sdk-client-custom-runtimes",
+        "crewai": "../docs/frameworks/crewai.md",
+        "pydanticai": "../docs/frameworks/pydanticai.md",
+        "langgraph": "../docs/frameworks/langgraph.md",
+        "microsoft-agent": "../docs/frameworks/microsoft-agent-framework.md",
+        "autogen": "../docs/frameworks/autogen.md",
+        "foundry": "../docs/frameworks/microsoft-ai-foundry.md",
+        "openai-agents": "../docs/frameworks/openai-agents.md",
+        "claude": "../docs/frameworks/claude-agent-sdk.md",
+        "smolagents": "../docs/frameworks/smolagents.md",
+        "agno": "../docs/frameworks/agno.md",
+        "google-adk": "../docs/frameworks/google-adk.md",
+        "llamaindex": "../docs/frameworks/llamaindex.md",
+        "bedrock": "../docs/frameworks/aws-bedrock.md",
+        "mcp": "../docs/mcp-integration.md",
+        "custom-python": "../docs/frameworks/custom-python.md",
     }
 
     assert set(expected_guides) == set(FRAMEWORKS)

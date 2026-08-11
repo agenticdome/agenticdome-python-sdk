@@ -1,0 +1,49 @@
+# AWS Bedrock integration
+
+Replace direct application-owned Bedrock Runtime/Agent calls with the matching
+secure method. Separately wrap local tool-use handlers, action-group Lambda
+handlers and knowledge-base retrieval results.
+
+## Try it without an account
+
+```bash
+pip install "agenticdome-python-sdk[bedrock]"
+export AGENTICDOME_MODE=local_sim
+agenticdome-demo --framework bedrock --scenario both
+```
+
+## Attach in production
+
+```python
+import boto3
+from agenticdome_sdk.aws_bedrock import AgenticDomeAWSBedrockFirewall
+
+bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
+firewall = AgenticDomeAWSBedrockFirewall()
+
+response = await firewall.converse_securely(
+    bedrock_runtime_client=bedrock,
+    model_id=model_id,
+    messages=messages,
+    agent_id="support-agent",
+    session_id="stable-session-id",
+)
+```
+
+Use the corresponding secure methods for streaming, `InvokeModel` and Bedrock
+Agents. Use `wrap_tool_handler(...)`, `secure_tool(...)`, and
+`wrap_action_group_lambda(...)` at local execution boundaries.
+
+See the [AWS Bedrock API guide](../../README.md#aws-bedrock) for Converse,
+InvokeModel, streaming, Agents, action groups, tools, retrieval and handoffs.
+
+## Launch checks
+
+- No production path calls boto3 directly for a protected model operation.
+- Local tool-use and action-group handlers are independently authorized.
+- Streamed events and final responses are reviewed before delivery.
+- AWS principal, account, region and resource identifiers are propagated.
+- Retrieved knowledge-base nodes are sanitized before planner reuse.
+
+The SDK protects calls and content at the application boundary; it cannot
+instrument execution occurring solely inside AWS-managed services.
