@@ -33,6 +33,14 @@ prove both an allowed and blocked path.
 5. Prove safe, blocked, redacted and sidecar-unavailable behavior before
    production, then run SDK Assurance and Performance Smoke.
 
+For managed service, AgenticDome assigns the runtime in the customer's selected
+supported geographic region, subject to availability. Under a Sovereign
+deployment, the runtime is placed inside the contracted customer-controlled
+VPC, cloud, or on-premises boundary. Normal SDK use does not require customers
+to install Redis; Redis is optional only for Python delegation state that must
+cross application processes, workers, or pods. See
+[Runtime location and Redis responsibilities](../runtime-deployment.md).
+
 The offline simulator proves SDK control flow, not tenant enforcement. The
 public SDK does not expose AgenticDome policy algorithms, private threat
 signatures, decision-token formats or control-plane internals.

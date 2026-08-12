@@ -59,6 +59,46 @@ Other protocol messages pass through unchanged. Keep the MCP transport and SDK
 versions current, and enforce a protocol-method allowlist at the gateway when
 your threat model requires strict rejection of custom or unknown methods.
 
+## Why use AgenticDome for MCP
+
+MCP standardizes how applications expose tools, resources, prompts, and
+sampling operations. Transport authentication and OAuth can establish who may
+connect to a server. They do not, by themselves, decide whether this agent,
+acting for this human or workload, should perform this specific action with
+these arguments—or whether returned content is safe to place back into the
+agent loop.
+
+AgenticDome adds that application-layer decision at a forwarding boundary the
+customer controls:
+
+| Team | Common requirement | What AgenticDome contributes |
+| --- | --- | --- |
+| Enterprise platform | Govern internal and external MCP servers consistently | One wrapper for the supported MCP operations, carrying tenant, human/workload, agent, session, server, tool, purpose, and argument context to live policy |
+| MCP server or connector vendor | Give enterprise reviewers a concrete integration and evidence path | An optional host/gateway integration pattern that can demonstrate pre-forward authorization and post-response review without claiming to replace the vendor's own authorization, validation, logging, or secure design |
+| Central gateway team | Apply policy and collect evidence at a shared routing point | Method-specific decisions, discovery filtering, internal delegation-field removal from forwarded tool arguments, response sanitization, and consistent runtime telemetry for traffic routed through the wrapper |
+
+This is valuable in several MCP-specific failure modes:
+
+- **Poisoned tool or resource results:** supported results can be sanitized or
+  blocked before planner reuse.
+- **Misleading discovery:** `tools/list`, `resources/list`, and `prompts/list`
+  results can be filtered according to tenant policy.
+- **Delegated tool misuse:** a manager handoff can be authorized, bound to the
+  tenant, session, target agent, tool, and argument fingerprint, then verified
+  and consumed at the specialist boundary.
+- **Sensitive resource or sampling paths:** `resources/read`, `prompts/get`,
+  and `sampling/createMessage` receive their own method-level policy decisions
+  and configured result review.
+- **Framework fragmentation:** the MCP adapter uses the same tenant runtime
+  policy and evidence model as the other supported AgenticDome Python
+  integrations.
+
+The guarantee is structural, not automatic: only requests routed through the
+wrapped forwarding function are protected. AgenticDome does not certify an MCP
+vendor, transfer legal liability, discover every unregistered server by
+itself, or replace MCP authorization, user consent, secure tool design, and
+workload isolation.
+
 ## Ten-minute, zero-account rehearsal
 
 ### 1. Install
@@ -199,8 +239,10 @@ silently manufacture a special identity or bypass missing authorization.
 Where a manager agent delegates MCP execution to a specialist, use
 `authorize_manager_handoff()` before the handoff. The gateway verifies and
 consumes the corresponding decision context before forwarding matching tool
-arguments. Multi-process deployments should configure Redis for shared,
-one-time handoff state.
+arguments. Redis is not required for normal MCP authorization or output review.
+Configure customer-managed Redis only when this one-time handoff state must
+cross application processes, workers, or pods. See
+[Runtime location and Redis responsibilities](runtime-deployment.md).
 
 ## MCP OAuth and AgenticDome solve different problems
 
@@ -255,7 +297,7 @@ export AGENTICDOME_MCP_MAX_OUTPUT_CHARS="100000"
 export AGENTICDOME_MCP_MAX_TOOL_ARG_CHARS="20000"
 export AGENTICDOME_MCP_RATE_LIMIT_PER_MINUTE="0"
 
-# Recommended when delegation crosses workers or pods:
+# Optional: only when delegation state must cross processes, workers or pods.
 export AGENTICDOME_REDIS_URL="redis://redis.internal:6379/0"
 export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:mcp:handoff"
 ```

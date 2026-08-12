@@ -27,6 +27,11 @@ export AGENTICDOME_API_KEY="your-runtime-sdk-key"
 export AGENTICDOME_TENANT_ID="your-tenant-id"
 ```
 
+For managed service, the API base is assigned in the selected supported
+geographic region, subject to availability. A contracted Sovereign runtime is
+inside the customer-controlled environment. Normal SDK calls do not require
+customer-managed Redis; see [runtime location and Redis responsibilities](../runtime-deployment.md).
+
 Then import the adapter in application bootstrap **before** constructing the
 application-owned agents or crews:
 
@@ -55,7 +60,8 @@ delegation, streaming output and multi-worker state are in the
 - A blocked tool never reaches its function body.
 - Allowed and sanitized arguments are the values the real function receives.
 - Manager-to-specialist execution is verified at the specialist boundary.
-- Every worker uses stable session identity; shared delegation uses Redis.
+- Every worker uses stable session identity; configure Redis only if delegation
+  state must cross application processes, workers, or pods.
 - A sidecar outage produces the deliberately selected fail posture.
 
 AgenticDome cannot protect a raw tool or alternate execution route that bypasses

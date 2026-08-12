@@ -32,6 +32,14 @@ For multi-agent delegation, authorize the manager-to-specialist handoff and veri
 6. In multi-worker deployments, configure the documented shared token store.
 7. Test the live path against the tenant's assigned runtime sidecar before enabling production traffic.
 
+The API base comes from the tenant's deployment: a managed runtime in the
+selected supported geographic region, subject to availability, or a contracted
+Sovereign runtime inside the customer-controlled VPC, cloud, or on-premises
+boundary. Customer-managed Redis is not required for normal SDK calls. It is
+optional only when one-time delegation state must cross application processes,
+workers, or pods. See
+[Runtime location and Redis responsibilities](../docs/runtime-deployment.md).
+
 ## Framework attachment map
 
 The “first public call” column is the minimum attachment point. Follow the full guide for tool wrappers, streaming, delegation and output handling.

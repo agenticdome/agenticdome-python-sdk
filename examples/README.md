@@ -50,6 +50,12 @@ export AGENTICDOME_TENANT_ID="your_tenant_id"
 agenticdome-demo --framework langgraph --scenario both --live
 ```
 
+For managed service, the assigned sidecar is placed in the selected supported
+geographic region, subject to availability. For a contracted Sovereign
+deployment, it runs inside the customer-controlled VPC, cloud, or on-premises
+boundary. Normal SDK calls do not require customer-managed Redis; see
+[Runtime location and Redis responsibilities](../docs/runtime-deployment.md).
+
 Offline mode demonstrates SDK behaviour using a bundled baseline. Only live mode applies the customer's policy, topology, telemetry, signed decisions and runtime enforcement.
 
 ## Running examples from a cloned repository

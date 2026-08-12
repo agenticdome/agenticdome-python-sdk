@@ -154,6 +154,20 @@ Customer application                                             |
 
 The SDK must be attached in application code; setting environment variables alone does not intercept a framework. The assigned sidecar authenticates the tenant and evaluates live requests. Tools still execute in the customer's environment or selected provider unless a separate execution service has been deliberately configured.
 
+### Where the assigned runtime runs
+
+- **Managed service:** AgenticDome assigns the tenant a managed sidecar in the
+  selected supported geographic region, subject to availability and the
+  customer's plan or contract.
+- **Sovereign deployment:** the runtime is deployed within the contracted
+  customer-controlled boundary, such as a dedicated VPC, customer cloud, or
+  on-premises environment.
+
+The SDK does not choose or change runtime placement; it connects to the
+tenant-specific API base supplied during onboarding. See
+[Runtime location and Redis responsibilities](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/runtime-deployment.md) for
+the deployment boundary and customer responsibilities.
+
 ### Who does what
 
 | Persona / component | Responsibilities | Commercial model |
@@ -260,7 +274,7 @@ pip install agenticdome-python-sdk
 | LlamaIndex | `pip install "agenticdome-python-sdk[llamaindex]"` |
 | AWS Bedrock / Bedrock Agents | `pip install "agenticdome-python-sdk[bedrock]"` |
 | MCP host / gateway | `pip install "agenticdome-python-sdk[mcp]"` |
-| Redis token storage | `pip install "agenticdome-python-sdk[redis]"` |
+| Optional cross-process delegation store | `pip install "agenticdome-python-sdk[redis]"` |
 | Proof-of-possession helpers | `pip install "agenticdome-python-sdk[pop]"` |
 | All optional integrations | `pip install "agenticdome-python-sdk[all]"` |
 
@@ -314,7 +328,10 @@ export AGENTICDOME_REQUIRE_TOKEN="true"
 export AGENTICDOME_REPORT_INCIDENTS="true"
 ```
 
-For distributed multi-worker deployments, add Redis so delegation tokens move across workers:
+Redis is **not required for normal SDK policy calls** or when using an assigned
+managed sidecar. Add customer-managed Redis only when manager-to-specialist
+delegation is authorised in one application process, worker, or pod and its
+one-time handoff state must be consumed in another:
 
 ```bash
 export AGENTICDOME_REDIS_URL="redis://redis.internal:6379/0"
@@ -362,8 +379,8 @@ export AGENTICDOME_PRODUCTION_MODE="false"            # production hardening (st
 | `AGENTICDOME_REQUIRE_SESSION_ID` | boolean | framework-specific | Requires explicit session ID for strict audit mapping. |
 | `AGENTICDOME_DEFAULT_TOOL_PLATFORM` | string | `unknown` / `python` | Fallback platform for tools. |
 | `AGENTICDOME_HANDOFF_TOKEN_TTL_S` | integer | `900` | Delegation token TTL in seconds. |
-| `AGENTICDOME_REDIS_URL` | string | empty | Optional Redis connection URL for distributed token storage. |
-| `AGENTICDOME_REDIS_KEY_PREFIX` | string | framework-specific | Redis key prefix. |
+| `AGENTICDOME_REDIS_URL` | string | empty | Optional customer-application Redis URL, needed only when one-time delegation state must cross processes, workers, or pods. It is unrelated to the managed sidecar's internal backing services. |
+| `AGENTICDOME_REDIS_KEY_PREFIX` | string | framework-specific | Optional key prefix for the customer application's cross-process delegation store. |
 | `AGENTICDOME_TOKEN_HMAC_SECRET` | string | empty | Optional secret-manager value used by the SDK to protect shared delegation state. Applications should not inspect or construct that state. |
 | `AGENTICDOME_PRODUCTION_MODE` | boolean | `false` | Enables production hardening such as stable session ID enforcement. |
 | `AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD` | boolean | `true` | Requires a stable session/run/trace ID when production mode is enabled. |
@@ -1116,10 +1133,10 @@ export AGENTICDOME_PRODUCTION_MODE="true"
 export AGENTICDOME_REQUIRE_STABLE_SESSION_ID_IN_PROD="true"
 export AGENTICDOME_FOUNDRY_REQUIRE_OUTPUT_SANITIZATION_IN_PROD="true"
 
-# For distributed delegated execution:
-export AGENTICDOME_REDIS_URL="redis://redis.internal:6379/0"
-export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:foundry:handoff"
-export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-kms"
+# Optional only when delegated execution crosses processes/workers/pods:
+# export AGENTICDOME_REDIS_URL="redis://redis.internal:6379/0"
+# export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:foundry:handoff"
+# export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-kms"
 ```
 
 **Attach middleware, then secure the run boundary:**
@@ -1190,7 +1207,10 @@ def create_refund(ctx, args):
     return {"refund_id": "rfnd_123", "status": "created"}
 ```
 
-**Delegated Foundry tool execution** — the authorization can store a decision token locally or in Redis; the specialist side consumes and verifies it before executing:
+**Delegated Foundry tool execution** — authorization stores decision state in
+memory by default. Configure the optional Redis store only when the specialist
+executes in another process, worker, or pod; the specialist consumes and
+verifies the decision before executing:
 
 ```python
 await firewall.authorize_manager_handoff(
@@ -1569,7 +1589,8 @@ firewall.pre_hook(
 )
 ```
 
-The specialist side verifies a token passed in args or recovers it from Redis/in-memory storage; stored tokens are consumed once:
+The specialist side verifies a token passed in args or recovers it from the
+configured in-process or optional Redis store; stored tokens are consumed once:
 
 ```python
 firewall.pre_hook(
@@ -1621,7 +1642,7 @@ export AGENTICDOME_AGNO_OTEL_ENABLED="true"
 # export AGENTICDOME_TOKEN_HMAC_SECRET="replace-with-secret-from-your-secret-manager"
 ```
 
-Notes: environment configuration alone does not attach AgenticDome — call `attach_firewall(agent_or_team)`, register `create_hook_bundle()`, use the middleware/plugin helper, or assign `cybersec_pre_hook`, `cybersec_post_hook`, and `cybersec_tool_hook` directly. Hosted/remote tools can only be protected at the local request/response boundary. For production teams and AgentOS deployments, configure Redis so delegation tokens are available across workers and pods, and use stable `session_id`/`run_id`/`trace_id` values.
+Notes: environment configuration alone does not attach AgenticDome — call `attach_firewall(agent_or_team)`, register `create_hook_bundle()`, use the middleware/plugin helper, or assign `cybersec_pre_hook`, `cybersec_post_hook`, and `cybersec_tool_hook` directly. Hosted/remote tools can only be protected at the local request/response boundary. Use stable `session_id`/`run_id`/`trace_id` values. Configure the optional Redis store only when delegation authorization and execution cross workers or pods.
 
 Official references: [Agno SDK overview](https://docs.agno.com/features/sdk) · [Agent reference](https://docs.agno.com/reference/agents/agent)
 
@@ -2008,7 +2029,9 @@ result = await secure_refund(
 )
 ```
 
-**Multi-agent delegation** — Redis is recommended when authorization and execution can happen in different workers or pods:
+**Multi-agent delegation** — the in-process store is sufficient when
+authorization and execution stay in one process. Configure Redis only when the
+one-time delegation state must cross workers or pods:
 
 ```python
 record = await firewall.authorize_manager_handoff(
@@ -2416,9 +2439,16 @@ The middleware supports configurable fail behavior:
 - **Fail closed** (`AGENTICDOME_FAIL_CLOSED="true"`): block execution if security checks fail or the AgenticDome API is unavailable. **Use this in production.**
 - **Fail open** (`AGENTICDOME_FAIL_CLOSED="false"`): allow execution for development or non-critical environments. Do not use in production unless you have compensating controls.
 
-### Redis token store for production clusters
+### Optional Redis for cross-process delegation
 
-In-memory token storage suits local development and single-process workers. For horizontally scaled deployments, use Redis so manager handoff tokens are shared across workers:
+Most customers do not need to install or configure Redis. Prompt screening,
+tool authorization, MCP checks, output review, and calls to an assigned runtime
+sidecar do not require customer-managed Redis. The Python adapters use an
+in-process token store by default.
+
+Use Redis only when manager-to-specialist delegation is authorised in one
+application process, worker, or pod and the one-time handoff state must be
+consumed in another:
 
 ```bash
 pip install "agenticdome-python-sdk[redis]"
@@ -2427,7 +2457,12 @@ export AGENTICDOME_REDIS_URL="redis://redis.example.internal:6379/0"
 export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:runtime:handoff"
 ```
 
-The SDK provides integrity-protected, one-time delegation state for supported shared-store deployments. Configure `AGENTICDOME_TOKEN_HMAC_SECRET` from a secret manager and let the SDK create and consume these records; applications should not construct or modify their internal representation.
+This is the customer application's shared token store; it is not the Redis
+service operated behind an AgenticDome-managed sidecar. The SDK provides
+integrity-protected, one-time delegation state for supported shared-store
+deployments. Configure `AGENTICDOME_TOKEN_HMAC_SECRET` from a secret manager and
+let the SDK create and consume these records; applications should not construct
+or modify their internal representation.
 
 ### Production checklist
 

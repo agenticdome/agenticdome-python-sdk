@@ -23,6 +23,11 @@ export AGENTICDOME_API_KEY="your-runtime-sdk-key"
 export AGENTICDOME_TENANT_ID="your-tenant-id"
 ```
 
+For managed service, the API base is assigned in the selected supported
+geographic region, subject to availability. A contracted Sovereign runtime is
+inside the customer-controlled environment. Normal SDK calls do not require
+customer-managed Redis; see [runtime location and Redis responsibilities](../runtime-deployment.md).
+
 Pass the application-owned runner, agent and raw handler into an async boundary.
 Register only `secure_lookup` with the framework's function-tool mechanism:
 

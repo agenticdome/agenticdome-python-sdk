@@ -91,11 +91,14 @@ def test_every_supported_non_mcp_integration_has_a_launch_guide() -> None:
         guide = GUIDE_ROOT / filename
         assert guide.is_file(), filename
         text = guide.read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
         assert filename in index
         assert "AGENTICDOME_MODE=local_sim" in text
         assert "## Attach in production" in text
         assert "## Launch checks" in text
         assert "../../README.md#" in text
+        assert "../runtime-deployment.md" in text
+        assert "Normal SDK calls do not require customer-managed Redis" in normalized
 
 
 def test_documented_attachment_methods_exist_on_public_adapter_classes() -> None:
@@ -141,6 +144,7 @@ def test_local_markdown_links_in_launch_documentation_resolve() -> None:
         *GUIDE_ROOT.glob("*.md"),
         SDK_ROOT / "docs" / "mcp-integration.md",
         SDK_ROOT / "docs" / "performance-evidence.md",
+        SDK_ROOT / "docs" / "runtime-deployment.md",
         SDK_ROOT / "examples" / "README.md",
         SDK_ROOT / "examples" / "PRODUCTION_INTEGRATION.md",
     ]
@@ -154,6 +158,24 @@ def test_local_markdown_links_in_launch_documentation_resolve() -> None:
                 continue
             resolved = (document.parent / path_text).resolve()
             assert resolved.exists(), f"{document.relative_to(SDK_ROOT)} -> {target}"
+
+
+def test_public_deployment_guide_separates_runtime_location_and_optional_redis() -> None:
+    deployment = (SDK_ROOT / "docs" / "runtime-deployment.md").read_text(encoding="utf-8")
+    framework_index = (GUIDE_ROOT / "README.md").read_text(encoding="utf-8")
+    normalized_index = " ".join(framework_index.split())
+
+    for phrase in (
+        "selected supported geographic region",
+        "Sovereign deployment",
+        "customer-controlled boundary",
+        "No—not for normal prompt, tool, MCP, output",
+        "cross-process delegation",
+    ):
+        assert phrase in deployment
+
+    assert "runtime-deployment.md" in framework_index
+    assert "Normal SDK use does not require customers to install Redis" in normalized_index
 
 
 def test_mcp_guide_keeps_performance_methodology_out_of_the_integration_flow() -> None:
