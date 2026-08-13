@@ -81,6 +81,16 @@ def _run_demo(framework_key: str, scenario_key: str, *, live: bool) -> Dict[str,
     mode = "LIVE SIDECAR" if live else "LOCAL SIMULATION — NOT CLOUD ENFORCEMENT"
     print(f"AgenticDome demo: {framework['label']}")
     print(f"Mode: {mode}")
+    if live:
+        print(
+            "Scope: fixed onboarding input sent to the assigned runtime sidecar; "
+            f"this does not instantiate {framework['label']}."
+        )
+    else:
+        print(
+            "Scope: fixed onboarding input evaluated by the bundled deterministic baseline; "
+            f"this does not instantiate {framework['label']} or contact AgenticDome."
+        )
     print(f"Scenario: {scenario['title']}")
     print("Without AgenticDome: TOOL WOULD EXECUTE (no policy decision)")
 
@@ -102,7 +112,7 @@ def _run_demo(framework_key: str, scenario_key: str, *, live: bool) -> Dict[str,
     outcome = "TOOL WOULD EXECUTE" if verdict in {"ALLOWED", "REDACTED"} else "TOOL WOULD NOT EXECUTE"
     print(f"With AgenticDome: {verdict} — {outcome}")
     print(json.dumps(decision, indent=2, sort_keys=True))
-    print("Production integration import:")
+    print("Next step — production adapter import (not executed by this demo):")
     print(framework["import"])
     return decision
 
@@ -113,7 +123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--framework",
         choices=[*sorted(FRAMEWORKS), "all"],
         default="crewai",
-        help="Framework to demonstrate, or 'all' for complete parity coverage.",
+        help="Framework label for the fixed demo payload and integration guidance; this does not run the framework.",
     )
     parser.add_argument(
         "--scenario",
@@ -148,7 +158,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if total > 1:
         summary = ", ".join(f"{key}={value}" for key, value in sorted(verdict_totals.items()))
-        print(f"\nCompleted {total} offline framework/scenario proofs: {summary}")
+        evidence_scope = "live sidecar decision checks" if args.live else "offline SDK-flow demonstrations"
+        print(f"\nCompleted {total} {evidence_scope}: {summary}")
     return 0
 
 

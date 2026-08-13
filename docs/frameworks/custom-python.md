@@ -12,6 +12,11 @@ export AGENTICDOME_MODE=local_sim
 agenticdome-demo --framework custom-python --scenario both
 ```
 
+**Demo scope:** this command evaluates two fixed inputs with a deterministic,
+bundled public baseline. It does not contact AgenticDome, load tenant policy,
+or execute either example tool. The framework option labels this core-client
+example; it is not a live application integration test.
+
 ## Attach in production
 
 Configure the assigned runtime first. The executor remains application-owned:
@@ -22,6 +27,11 @@ export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
 export AGENTICDOME_API_KEY="your-runtime-sdk-key"
 export AGENTICDOME_TENANT_ID="your-tenant-id"
 ```
+
+Run `agenticdome-demo --framework custom-python --scenario both --live` to
+obtain real tenant-engine decisions for those fixed inputs. That checks the
+assigned sidecar; the code below is what places the client at the application's
+real execution boundary.
 
 For managed service, the API base is assigned in the selected supported
 geographic region, subject to availability. A contracted Sovereign runtime is

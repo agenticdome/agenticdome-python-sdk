@@ -35,7 +35,14 @@ No account, API key, tenant, network connection, or third-party framework packag
 agenticdome-demo --framework langgraph --scenario both
 ```
 
-Look for `ALLOWED — TOOL WOULD EXECUTE` followed by `BLOCKED — TOOL WOULD NOT EXECUTE`. These are simulations: the example does not execute either tool.
+Look for `ALLOWED — TOOL WOULD EXECUTE` followed by `BLOCKED — TOOL WOULD NOT EXECUTE`.
+
+> **Offline demonstration—not runtime evidence.** This command evaluates two
+> fixed onboarding scenarios with a deterministic, bundled public baseline. It
+> does not contact AgenticDome, load tenant policy, execute either tool, or
+> instantiate a LangGraph graph. `--framework langgraph` labels the example
+> payload and points you to the matching integration; it is not a LangGraph
+> integration test.
 
 ### 4. Select your framework
 
@@ -58,7 +65,13 @@ export AGENTICDOME_TENANT_ID="your_tenant_id"
 agenticdome-demo --framework langgraph --scenario both --live
 ```
 
-Offline simulation demonstrates the SDK decision flow using a bundled public baseline. Only live mode applies the customer's policy, topology, telemetry, signed decisions and runtime enforcement.
+With `--live`, the same fixed scenarios are sent to the actual assigned
+AgenticDome runtime sidecar, so their verdicts come from the customer's tenant
+policy and engine. The live demo still does not instantiate LangGraph or prove
+that an application has attached the framework adapter at every execution
+boundary. Use the framework guide to attach the adapter, test the real
+application path, and use AgenticDome Runtime Assurance for production
+evidence.
 
 ```python
 # The 30-second version: block a prompt-injected refund before it executes.
@@ -92,6 +105,21 @@ result = crew.kickoff()          # hostile prompts, unsafe tools, and rogue
 ## Why AgenticDome
 
 An agent can be hijacked while holding valid tokens, approved tools, and fully authorized paths. Legacy security sees a compliant request; the business sees a breach. AgenticDome adds an intent-aware enforcement layer at the exact boundaries where agents act:
+
+### Identity is necessary, but it is not the action decision
+
+Give every agent and workload a distinct principal and keep your identity
+provider authoritative for authentication, scopes, conditional access,
+credential lifecycle, and downstream entitlements. Then pass the identity the
+application has actually authenticated into AgenticDome alongside the agent,
+purpose, tool, final arguments, session, and delegation context. A valid token
+proves access authority; it does not prove that a prompt-influenced action is
+appropriate. AgenticDome complements IAM by evaluating that action at the
+application-controlled execution boundary. It does not issue enterprise
+identities or make a stolen credential safe.
+
+For the architectural rationale, see
+[An agent principal proves who—not why](https://www.agenticdome.io/research/agent-principal-identity).
 
 | Control | What it stops | Where it runs |
 | :--- | :--- | :--- |
@@ -188,15 +216,23 @@ Start with a network-free simulation, then connect the same SDK to your assigned
 
 ```bash
 pip install agenticdome-python-sdk
-# Show one ALLOWED and one BLOCKED action for LangGraph.
+# Label the fixed demonstration as LangGraph and show one ALLOWED and one BLOCKED path.
 agenticdome-demo --framework langgraph --scenario both
 
-# Or prove the same offline contract across all 15 integrations.
+# Or repeat the fixed demonstration under every supported framework label.
 agenticdome-demo --framework all --scenario both
 agenticdome-demo --list-frameworks
 ```
 
-This is visibly labelled **LOCAL SIMULATION — NOT CLOUD ENFORCEMENT**. It evaluates a small bundled demonstration policy through the real public client contract, but it does not load tenant policy, issue signed decision tokens or execution receipts, write cloud evidence, or provide runtime assurance. To exercise any wrapper inside your own process without credentials, set `AGENTICDOME_MODE=local_sim`. The SDK refuses that mode when `AGENTICDOME_PRODUCTION_MODE=true`.
+This is visibly labelled **LOCAL SIMULATION — NOT CLOUD ENFORCEMENT**. It
+evaluates two fixed inputs with a small deterministic bundled baseline through
+the public core-client response shape. The `--framework` option changes the
+payload label and integration guidance; it does not import, instantiate, or run
+the selected framework. The simulation does not load tenant policy, issue
+signed decision tokens or execution receipts, write cloud evidence, or provide
+runtime assurance. To exercise a real adapter inside your own process without
+credentials, set `AGENTICDOME_MODE=local_sim` in that application or framework
+example. The SDK refuses that mode when `AGENTICDOME_PRODUCTION_MODE=true`.
 
 Browse the public [`examples/`](examples/README.md) gallery for a runnable allowed/blocked example for CrewAI, PydanticAI, LangGraph, Microsoft Agent Framework, AutoGen, AI Foundry, OpenAI Agents, Claude, smolagents, Agno, Google ADK, LlamaIndex, Bedrock, MCP, and custom Python. Local blocked/redacted results emit safe terminal logs containing verdict metadata only—not raw prompts, arguments, keys, or secrets.
 

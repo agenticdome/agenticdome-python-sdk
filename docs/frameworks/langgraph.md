@@ -12,6 +12,11 @@ export AGENTICDOME_MODE=local_sim
 agenticdome-demo --framework langgraph --scenario both
 ```
 
+**Demo scope:** this command evaluates two fixed inputs with a deterministic,
+bundled public baseline. It does not contact AgenticDome, load tenant policy,
+execute tools, or instantiate or compile a LangGraph graph. The framework
+option is a label and guide selector, not a LangGraph integration test.
+
 ## Attach in production
 
 Configure the assigned runtime first:
@@ -22,6 +27,11 @@ export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
 export AGENTICDOME_API_KEY="your-runtime-sdk-key"
 export AGENTICDOME_TENANT_ID="your-tenant-id"
 ```
+
+Run `agenticdome-demo --framework langgraph --scenario both --live` to obtain
+real tenant-engine decisions for those fixed inputs. That checks the assigned
+sidecar, not LangGraph attachment; the code below attaches the adapter to the
+real graph and execution boundaries.
 
 For managed service, the API base is assigned in the selected supported
 geographic region, subject to availability. A contracted Sovereign runtime is

@@ -22,7 +22,11 @@ export AGENTICDOME_MODE=local_sim
 agenticdome-demo --framework langgraph --scenario both
 ```
 
-The example does not execute a real tool. It prints:
+This command uses two fixed inputs and a deterministic bundled public baseline.
+It does not contact AgenticDome, load tenant policy, execute a real tool, or
+instantiate a LangGraph graph. The framework option labels the demonstration
+payload and selects the matching integration guidance; it is not a framework
+integration test. It prints:
 
 - `ALLOWED — TOOL WOULD EXECUTE` for the normal CRM lookup.
 - `BLOCKED — TOOL WOULD NOT EXECUTE` for the prompt-injected refund.
@@ -56,7 +60,12 @@ deployment, it runs inside the customer-controlled VPC, cloud, or on-premises
 boundary. Normal SDK calls do not require customer-managed Redis; see
 [Runtime location and Redis responsibilities](../docs/runtime-deployment.md).
 
-Offline mode demonstrates SDK behaviour using a bundled baseline. Only live mode applies the customer's policy, topology, telemetry, signed decisions and runtime enforcement.
+With `--live`, the same fixed inputs are evaluated by the actual assigned
+runtime sidecar and customer tenant policy. It validates the live engine
+decision path, but it still does not instantiate the selected third-party
+framework or prove the adapter is attached inside a real application. Use the
+framework example and production guide for that integration, followed by
+Runtime Assurance for production evidence.
 
 ## Running examples from a cloned repository
 
@@ -92,7 +101,12 @@ Every entry runs the same allowed/blocked pair without importing the third-party
 
 ## What the simulator proves
 
-It proves that your SDK attachment can call the public AgenticDome decision contract and react correctly to `ALLOWED`, `BLOCKED`, and `REDACTED`. Blocked and redacted decisions are logged to the local terminal using safe metadata only; raw prompts, tool arguments, keys, and secrets are not logged.
+It proves that the installed core SDK can evaluate the public decision-contract
+shape locally and that the example control flow reacts correctly to `ALLOWED`,
+`BLOCKED`, and `REDACTED`. It does not prove that a third-party framework
+adapter is attached to your application. Blocked and redacted decisions are
+logged to the local terminal using safe metadata only; raw prompts, tool
+arguments, keys, and secrets are not logged.
 
 It does **not** load your tenant policy, contact AgenticDome, issue a signed decision or execution receipt, write telemetry, discover topology, or certify production protection. Local simulation is refused when `AGENTICDOME_PRODUCTION_MODE=true`. Connect the same integration to your assigned runtime sidecar for real enforcement.
 
@@ -111,3 +125,7 @@ Then run a live proof, for example:
 ```bash
 agenticdome-demo --framework langgraph --scenario both --live
 ```
+
+This live command tests real sidecar decisions for the fixed demo inputs. It is
+not a LangGraph execution test. Run the matching framework example and test the
+secured boundary in your application to prove framework attachment.

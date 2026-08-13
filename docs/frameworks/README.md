@@ -26,7 +26,10 @@ prove both an allowed and blocked path.
 ## Shared five-step path
 
 1. Install the matching package extra.
-2. Run `AGENTICDOME_MODE=local_sim` with one allowed and one blocked scenario.
+2. Run `AGENTICDOME_MODE=local_sim` with one allowed and one blocked fixed
+   scenario to understand the SDK decision flow. This deterministic offline
+   demo does not import or execute the selected framework and is not runtime
+   assurance evidence.
 3. Obtain the assigned runtime sidecar URL, Runtime/SDK key and tenant ID.
 4. Attach the adapter in the application construction path and remove raw
    execution routes that bypass it.
@@ -41,7 +44,12 @@ to install Redis; Redis is optional only for Python delegation state that must
 cross application processes, workers, or pods. See
 [Runtime location and Redis responsibilities](../runtime-deployment.md).
 
-The offline simulator proves SDK control flow, not tenant enforcement. The
+The offline simulator proves core SDK control flow, not framework attachment or
+tenant enforcement. The `--framework` option labels the fixed demo payload and
+selects the relevant guidance; it does not instantiate that framework. Adding
+`--live` sends those same inputs to the assigned sidecar and proves the real
+engine decision path, but application-level framework attachment must still be
+tested at the actual prompt, tool, delegation, and output boundaries. The
 public SDK does not expose AgenticDome policy algorithms, private threat
 signatures, decision-token formats or control-plane internals.
 

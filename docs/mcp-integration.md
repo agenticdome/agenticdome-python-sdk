@@ -116,9 +116,13 @@ export AGENTICDOME_MODE=local_sim
 agenticdome-demo --framework mcp --scenario both
 ```
 
-This uses a small bundled demonstration policy. It does not contact
-AgenticDome, execute either tool, load customer policy, or produce runtime
-assurance evidence.
+This uses two fixed inputs and a deterministic bundled public baseline. It does
+not contact AgenticDome, execute either tool, load customer policy, instantiate
+an MCP client/server, or produce runtime-assurance evidence. The `mcp`
+framework option labels the demo payload and selects this guide; it is not an
+MCP integration test. Add `--live` after configuring the assigned sidecar to
+obtain real tenant-engine decisions for the same fixed inputs, then test the
+host/gateway integration below on the application's actual forwarding path.
 
 ### 3. Exercise the real gateway interception shape
 
@@ -266,6 +270,30 @@ See the official MCP documentation for [authorization](https://modelcontextproto
 [security best practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices),
 and [client best practices](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices).
 
+## Sessions, stateless servers and application context
+
+MCP Streamable HTTP does not force one universal state model. A server **may**
+assign an `MCP-Session-Id` during initialization; if it does, the client must
+handle that protocol session as specified. A server can also be implemented
+without assigning a protocol session when its design does not require one.
+
+Neither choice removes the need for action context:
+
+- an MCP session secures and relates protocol interactions, but is not by
+  itself a business authorization for every tool call;
+- a stateless MCP server can scale without sticky application state, but an
+  isolated request can still be one step in a larger delegated, exfiltration,
+  loop, or resource-exhaustion sequence;
+- pass stable application `session_id`, `run_id`, `trace_id`, human/workload,
+  and agent identifiers whenever the tenant policy or behavioural controls
+  need to correlate activity.
+
+Normal AgenticDome prompt, MCP, tool, and output decisions do **not** require
+the customer application to operate Redis. The assigned runtime sidecar owns
+its runtime infrastructure. Customer-managed Redis is optional only for the
+SDK's one-time delegation state when authorization and consumption occur in
+different customer processes, workers, or pods.
+
 ## TypeScript gateway services
 
 Install the TypeScript client when a Node.js gateway owns the tool boundary:
@@ -337,6 +365,12 @@ and interpretation rules.
   assurance.
 - Policy decisions do not replace safe tool design, input validation,
   authorization, human confirmation, isolation, backups, or incident response.
+
+## Architecture reading
+
+- [MCP security is necessary; action governance is the next layer](https://www.agenticdome.io/research/mcp-protocol-security-action-governance)
+- [MCP connects agents to tools; AgenticDome governs the action](https://www.agenticdome.io/research/mcp-action-governance)
+- [Copilot Studio, MCP, and the pre-tool action decision](https://www.agenticdome.io/research/copilot-studio-mcp-action-governance)
 
 For integration questions, use the
 [public issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues).

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agenticdome_sdk import AgentGuardClient, AgentGuardError
+import agenticdome_sdk.demo as demo_module
 from agenticdome_sdk.demo import FRAMEWORKS, main as demo_main
 
 
@@ -105,6 +106,8 @@ def test_installable_demo_has_equal_framework_coverage(framework, capsys, monkey
     output = capsys.readouterr().out
     assert FRAMEWORKS[framework]["label"] in output
     assert "LOCAL SIMULATION — NOT CLOUD ENFORCEMENT" in output
+    assert f"does not instantiate {FRAMEWORKS[framework]['label']} or contact AgenticDome" in output
+    assert "production adapter import (not executed by this demo)" in output
     assert '"simulated": true' in output
 
 
@@ -180,7 +183,59 @@ def test_demo_can_prove_allowed_and_blocked_paths_for_every_framework(capsys, mo
     output = capsys.readouterr().out
     assert output.count("With AgenticDome: ALLOWED — TOOL WOULD EXECUTE") == len(FRAMEWORKS)
     assert output.count("With AgenticDome: BLOCKED — TOOL WOULD NOT EXECUTE") == len(FRAMEWORKS)
-    assert f"Completed {len(FRAMEWORKS) * 2} offline framework/scenario proofs" in output
+    assert f"Completed {len(FRAMEWORKS) * 2} offline SDK-flow demonstrations" in output
+
+
+def test_live_demo_scope_is_accurate_for_every_framework(capsys, monkeypatch):
+    class FakeLiveClient:
+        def guardrail_validate(self, **kwargs):
+            return {"verdict": "ALLOWED", "reason": "live test double"}
+
+        def close(self):
+            return None
+
+    def fake_client(live):
+        assert live is True
+        return FakeLiveClient()
+
+    monkeypatch.setattr(demo_module, "_client", fake_client)
+    assert demo_main(["--framework", "all", "--scenario", "safe_lookup", "--live"]) == 0
+    output = capsys.readouterr().out
+
+    assert output.count("fixed onboarding input sent to the assigned runtime sidecar") == len(FRAMEWORKS)
+    for framework in FRAMEWORKS.values():
+        assert f"this does not instantiate {framework['label']}" in output
+    assert f"Completed {len(FRAMEWORKS)} live sidecar decision checks" in output
+    assert "offline framework/scenario proofs" not in output
+
+
+def test_public_docs_distinguish_simulation_live_engine_and_framework_attachment():
+    sdk_root = Path(__file__).resolve().parents[1]
+    readme = (sdk_root / "README.md").read_text(encoding="utf-8")
+    examples = (sdk_root / "examples" / "README.md").read_text(encoding="utf-8")
+    framework_index = (sdk_root / "docs" / "frameworks" / "README.md").read_text(encoding="utf-8")
+    mcp_guide = (sdk_root / "docs" / "mcp-integration.md").read_text(encoding="utf-8")
+    readme_text = " ".join(readme.split())
+    examples_text = " ".join(examples.split())
+    framework_index_text = " ".join(framework_index.split())
+    mcp_guide_text = " ".join(mcp_guide.split())
+
+    assert "Offline demonstration—not runtime evidence" in readme_text
+    assert "instantiate a LangGraph graph" in readme_text
+    assert "With `--live`, the same fixed scenarios" in readme_text
+    assert "It is not a LangGraph execution test" in examples_text
+    assert "does not instantiate that framework" in framework_index_text
+    assert "framework option labels the demo payload" in mcp_guide_text
+    assert "MCP integration test" in mcp_guide_text
+
+    framework_guides = sorted((sdk_root / "docs" / "frameworks").glob("*.md"))
+    framework_guides = [path for path in framework_guides if path.name != "README.md"]
+    assert framework_guides
+    for guide in framework_guides:
+        content = guide.read_text(encoding="utf-8")
+        assert "**Demo scope:**" in content, guide.name
+        assert "two fixed inputs" in content, guide.name
+        assert "--live`" in content, guide.name
 
 
 def test_public_example_gallery_has_one_runnable_entry_per_framework():

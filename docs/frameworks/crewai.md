@@ -12,8 +12,10 @@ export AGENTICDOME_MODE=local_sim
 agenticdome-demo --framework crewai --scenario both
 ```
 
-This prints one allowed and one blocked decision without importing CrewAI,
-contacting a sidecar or executing either demonstration tool.
+**Demo scope:** this command evaluates two fixed inputs with a deterministic,
+bundled public baseline. It does not contact AgenticDome, load tenant policy,
+execute tools, or instantiate CrewAI. The framework option is a label and guide
+selector, not a CrewAI integration test.
 
 ## Attach in production
 
@@ -26,6 +28,11 @@ export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example.com"
 export AGENTICDOME_API_KEY="your-runtime-sdk-key"
 export AGENTICDOME_TENANT_ID="your-tenant-id"
 ```
+
+Run `agenticdome-demo --framework crewai --scenario both --live` to obtain real
+tenant-engine decisions for those fixed inputs. That checks the assigned
+sidecar, not CrewAI attachment; the code below attaches the adapter to the real
+application boundary.
 
 For managed service, the API base is assigned in the selected supported
 geographic region, subject to availability. A contracted Sovereign runtime is

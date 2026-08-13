@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.16"
+version = "1.2.17"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -58,11 +58,11 @@ pop = [
     "cryptography>=42.0.0"
 ]
 pydanticai = [
-    "pydantic-ai>=2.16.0,<=2.28.0",
+    "pydantic-ai>=2.16.0,<=2.29.0",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai>=2.16.0,<=2.28.0",
+    "pydantic-ai>=2.16.0,<=2.29.0",
     "anyio>=4.0.0"
 ]
 langgraph = [
@@ -92,10 +92,10 @@ mcp = [
     "mcp>=1.26.0,<=1.28.1"
 ]
 bedrock = [
-    "boto3>=1.43.54,<=1.43.69"
+    "boto3>=1.43.54,<=1.43.70"
 ]
 aws-bedrock = [
-    "boto3>=1.43.54,<=1.43.69"
+    "boto3>=1.43.54,<=1.43.70"
 ]
 llamaindex = [
     "llama-index==0.14.23"
@@ -110,10 +110,10 @@ adk = [
     "google-adk>=2.5.0,<=2.6.3"
 ]
 claude = [
-    "claude-agent-sdk>=0.2.126,<=0.2.136"
+    "claude-agent-sdk>=0.2.126,<=0.2.137"
 ]
 claude-agent-sdk = [
-    "claude-agent-sdk>=0.2.126,<=0.2.136"
+    "claude-agent-sdk>=0.2.126,<=0.2.137"
 ]
 smolagents = [
     "smolagents==1.26.0"
@@ -122,7 +122,7 @@ all = [
     "crewai>=1.15.5,<=1.15.15",
     "redis>=4.5.0",
     "cryptography>=42.0.0",
-    "pydantic-ai>=2.16.0,<=2.28.0",
+    "pydantic-ai>=2.16.0,<=2.29.0",
     "anyio>=4.0.0",
     "langgraph>=1.2.9,<=1.2.11",
     "langchain-core>=1.5.0,<=1.5.4",
@@ -133,10 +133,10 @@ all = [
     "azure-identity==1.25.3",
     "openai-agents>=0.18.3,<=0.20.0",
     "mcp>=1.26.0,<=1.28.1",
-    "boto3>=1.43.54,<=1.43.69",
+    "boto3>=1.43.54,<=1.43.70",
     "llama-index==0.14.23",
     "google-adk>=2.5.0,<=2.6.3",
-    "claude-agent-sdk>=0.2.126,<=0.2.136",
+    "claude-agent-sdk>=0.2.126,<=0.2.137",
     "smolagents==1.26.0"
 ]
 dev = [
