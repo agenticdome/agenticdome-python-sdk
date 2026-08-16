@@ -5,7 +5,7 @@
 [![CI](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [Framework integration guides](https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks) · [MCP integration guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [Security policy](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
+[Source and examples](https://github.com/agenticdome/agenticdome-python-sdk) · [Customer onboarding guide](docs/customer-onboarding.md) · [Framework integration guides](https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks) · [MCP integration guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md) · [Issue tracker](https://github.com/agenticdome/agenticdome-python-sdk/issues) · [Security policy](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md) · [PyPI package](https://pypi.org/project/agenticdome-python-sdk/)
 
 > **Production-grade security guardrails, DLP, tool authorization, and cryptographically verified multi-agent delegation for Python autonomous AI runtimes.**
 
@@ -52,6 +52,35 @@ agenticdome-demo --framework all --scenario both
 ```
 
 You can also open the [framework example gallery](examples/README.md) and run the individual example matching your stack. Before editing production code, choose the dedicated [framework integration guide](docs/frameworks/README.md), then use the [production integration playbook](examples/PRODUCTION_INTEGRATION.md) for the cross-framework attachment and proof checklist. MCP host and gateway developers can follow the dedicated [MCP Action Firewall guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md).
+
+If this is an application you intend to connect, start the local Integration
+Assistant from its repository root. It discovers likely protection points and
+keeps source code on your machine:
+
+```bash
+agenticdome init
+agenticdome verify --run-tests --output .agenticdome/verification.json
+```
+
+`init` writes the secret-free inspection and local configuration. `verify` is
+required before production because it rechecks the discovered boundaries,
+runs harmless allowed/blocked cases and, with `--run-tests`, runs detected
+application tests. If you want a suggested patch, run `agenticdome scaffold`;
+that step is optional and writes an unapplied patch for review.
+
+When `.agenticdome/inspection.json` is imported into Developer Integration,
+the Control Panel adds its detected frameworks to the workload. Frameworks,
+languages and candidate boundaries can be discovered locally; business
+purpose, sensitive actions and managed-versus-sovereign deployment remain
+explicit customer decisions and are not guessed from source code.
+
+Use **Customer Control Panel → Activate Action Firewall → Core Config** to
+choose the Developer Integration path and import the two evidence files. This
+path is for SDK, MCP, framework or custom-code integrations; Microsoft
+Discovery Scan and Copilot Studio external protection are separate optional
+paths selected from Core Config. See the
+[customer onboarding guide](docs/customer-onboarding.md) for the complete
+required-versus-optional workflow.
 
 ### 5. Connect the same integration to AgenticDome
 
