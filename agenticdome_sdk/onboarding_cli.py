@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -28,8 +29,22 @@ IGNORED_DIRECTORIES = {
     ".git", ".hg", ".svn", ".idea", ".vscode", ".tox", ".venv", "venv",
     "node_modules", "dist", "build", "coverage", "__pycache__", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".next", ".agenticdome", ".harness_runtime",
+    "tests", "test", "__tests__", "spec",
 }
 TEXT_SUFFIXES = {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".txt", ".yaml", ".yml"}
+SENSITIVE_FILE_PATTERN = re.compile(
+    r"(^|[._-])(secret|secrets|credential|credentials|password|passwords|token|tokens|"
+    r"private[_-]?key|private[_-]?keys|api[_-]?key|api[_-]?keys)([._-]|$)",
+    re.I,
+)
+SENSITIVE_FILE_SUFFIXES = {".key", ".pem", ".p12", ".pfx", ".jks", ".keystore"}
+
+
+def _installed_sdk_version() -> str:
+    try:
+        return importlib.metadata.version("agenticdome-python-sdk")
+    except importlib.metadata.PackageNotFoundError:
+        return "source-checkout"
 
 FRAMEWORK_MARKERS: Dict[str, Tuple[str, ...]] = {
     "crewai": ("crewai",),
@@ -44,7 +59,9 @@ FRAMEWORK_MARKERS: Dict[str, Tuple[str, ...]] = {
     "agno": ("agno",),
     "google-adk": ("google.adk", "google-adk"),
     "llamaindex": ("llama_index", "llama-index"),
-    "bedrock": ("bedrock-agent", "boto3", "bedrock-runtime"),
+    # boto3 alone is not evidence of Bedrock: many Python services install it
+    # only for S3, SES, DynamoDB or other AWS APIs.
+    "bedrock": ("bedrock-agent", "bedrock-runtime", "agenticdome_sdk.aws_bedrock"),
     "mcp": ("from mcp", "import mcp", "@modelcontextprotocol", "model-context-protocol"),
     "openclaw": ("openclaw", "agenticdome-openclaw-security"),
     "custom-python": ("fastapi", "django", "flask", "celery"),
@@ -52,11 +69,12 @@ FRAMEWORK_MARKERS: Dict[str, Tuple[str, ...]] = {
 
 BOUNDARY_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
     "prompt_ingress": (
-        re.compile(r"\b(prompt|user_input|user_message|messages?)\b", re.I),
+        re.compile(r"\b(screen_input|validate_input|screen_prompt|guard_prompt)\s*\(", re.I),
+        re.compile(r"\b(user_input|user_query|user_message)\s*(?::[^=]+)?=", re.I),
         re.compile(r"@(app|router)\.(post|put|patch)\b", re.I),
     ),
     "tool_execution": (
-        re.compile(r"\b(call_tool|invoke_tool|execute_tool|run_tool|tools/call|function_tool)\b", re.I),
+        re.compile(r"\b(call_tool|invoke_tool|execute_tool|run_tool|tools/call|function_tool|authorize_tool_call)\b", re.I),
         re.compile(r"\b(authorize_tool|policy\.authorize|tool_registry\.dispatch|gateway\.execute)\s*\(", re.I),
         re.compile(r"\.dispatch\s*\(.*\btool_name\s*=", re.I),
         re.compile(r"(^|\s)@tool\b", re.I),
@@ -68,9 +86,34 @@ BOUNDARY_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
         re.compile(r"\b(retrieve|retriever|vectorstore|query_engine|knowledge_base)\b", re.I),
     ),
     "output_egress": (
-        re.compile(r"\b(stream|streaming|final_output|tool_result|response_model)\b", re.I),
+        re.compile(
+            r"\b(sanitize_output|sanitize_streaming_response|sanitize_streaming_events|"
+            r"mesh_validate|review_output|output_guardrails|_sanitize_agent_result)\s*\(",
+            re.I,
+        ),
+        re.compile(r"\b(final_output|tool_result)\s*(?::[^=]+)?=", re.I),
+        re.compile(r"\bresponse_model\s*=", re.I),
     ),
 }
+
+
+def _is_sensitive_file(path: Path) -> bool:
+    name = path.name.lower()
+    return (
+        name == ".env"
+        or name.startswith(".env.")
+        or path.suffix.lower() in SENSITIVE_FILE_SUFFIXES
+        or bool(SENSITIVE_FILE_PATTERN.search(name))
+    )
+
+
+def _is_backup_file(path: Path) -> bool:
+    name = path.name.lower()
+    stem = path.stem.lower()
+    return (
+        name.endswith(("~", ".bak", ".orig", ".rej"))
+        or stem.endswith(("_copy", "-copy", "_backup", "-backup"))
+    )
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -88,8 +131,9 @@ def _candidate_files(root: Path) -> Iterable[Path]:
             if count >= MAX_FILES:
                 return
             path = Path(current) / name
-            lowered_name = name.lower()
-            sensitive_name = lowered_name == ".env" or "secret" in lowered_name or "credential" in lowered_name
+            if _is_backup_file(path):
+                continue
+            sensitive_name = _is_sensitive_file(path)
             if path.suffix.lower() not in TEXT_SUFFIXES and not sensitive_name:
                 continue
             try:
@@ -122,6 +166,7 @@ def _framework_evidence_text(path: Path, text: str) -> str:
             line.strip().lower()
             for line in text.splitlines()
             if re.match(r"^\s*(from|import)\s+[A-Za-z_]", line)
+            or re.search(r"\bclient\s*\(\s*['\"]bedrock(?:-runtime|-agent-runtime)?['\"]", line, re.I)
         ]
         return "\n".join(lines)
     if path.suffix.lower() in {".js", ".jsx", ".ts", ".tsx"}:
@@ -151,8 +196,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
             languages.add("typescript/javascript")
 
-        lowered_name = path.name.lower()
-        if lowered_name == ".env" or "secret" in lowered_name or "credential" in lowered_name:
+        if _is_sensitive_file(path):
             secret_file_count += 1
             continue
 
@@ -559,6 +603,11 @@ def _print(value: Any, as_json: bool = False) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agenticdome", description="Local-first AgenticDome integration assistant.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="%(prog)s " + _installed_sdk_version(),
+    )
     parser.add_argument(
         "--path",
         default=".",

@@ -66,6 +66,58 @@ def test_framework_names_in_prose_do_not_become_installed_frameworks(tmp_path):
     assert frameworks == {"langgraph", "custom-python"}
 
 
+def test_boto3_alone_does_not_claim_aws_bedrock(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\nboto3\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "from fastapi import FastAPI\napp = FastAPI()\n",
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+    frameworks = {item["key"] for item in report["frameworks"]}
+
+    assert "custom-python" in frameworks
+    assert "bedrock" not in frameworks
+
+
+def test_bedrock_runtime_client_is_unambiguous_framework_evidence(tmp_path):
+    (tmp_path / "runtime.py").write_text(
+        'import boto3\nclient = boto3.client("bedrock-runtime")\n',
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+
+    assert "bedrock" in {item["key"] for item in report["frameworks"]}
+
+
+def test_common_message_variables_are_not_all_reported_as_prompt_ingress(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "messages = []\nmessages.append({'role': 'system'})\n"
+        "user_query = request.query\n"
+        "decision = firewall.screen_input(text=user_query)\n"
+        "reviewed = firewall.sanitize_output(output=result)\n",
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+
+    assert report["boundary_counts"]["prompt_ingress"] == 2
+    assert report["boundary_counts"]["output_egress"] == 1
+
+
+def test_secret_like_filenames_and_private_key_artifacts_are_never_read(tmp_path):
+    (tmp_path / "app.py").write_text("user_query = request.query\n", encoding="utf-8")
+    (tmp_path / "api-token.json").write_text('{"value":"must-never-appear"}', encoding="utf-8")
+    (tmp_path / "service.pem").write_text("must-never-appear", encoding="utf-8")
+
+    report = inspect_repository(tmp_path)
+    serialized = json.dumps(report)
+
+    assert report["potential_secret_files_excluded"] == 2
+    assert "must-never-appear" not in serialized
+
+
 def test_guarded_dispatcher_is_a_tool_execution_boundary(tmp_path):
     (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
     (tmp_path / "tools.py").write_text(
@@ -120,6 +172,20 @@ def test_command_inspect_json_is_installable(tmp_path, capsys):
     assert main(["--path", str(tmp_path), "inspect", "--json"]) == 0
     output = capsys.readouterr().out
     assert SCHEMA in output
+
+
+def test_command_reports_installed_sdk_version(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "agenticdome_sdk.onboarding_cli.importlib.metadata.version",
+        lambda package: "9.8.7",
+    )
+
+    try:
+        main(["--version"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert capsys.readouterr().out.strip() == "agenticdome 9.8.7"
 
 
 def test_command_inspect_output_prints_summary_not_full_report(tmp_path, capsys):

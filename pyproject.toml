@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.18"
+version = "1.2.19"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -58,16 +58,16 @@ pop = [
     "cryptography>=42.0.0"
 ]
 pydanticai = [
-    "pydantic-ai>=2.16.0,<=2.31.0",
+    "pydantic-ai>=2.16.0,<=2.31.1",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai>=2.16.0,<=2.31.0",
+    "pydantic-ai>=2.16.0,<=2.31.1",
     "anyio>=4.0.0"
 ]
 langgraph = [
     "langgraph>=1.2.9,<=1.2.11",
-    "langchain-core>=1.5.0,<=1.5.5",
+    "langchain-core>=1.5.0,<=1.5.6",
     "langchain-openai==1.3.5",
     "anyio>=4.0.0"
 ]
@@ -86,16 +86,16 @@ agno = [
     "agno>=2.8.0,<=2.9.0"
 ]
 openai-agents = [
-    "openai-agents>=0.18.3,<=0.21.0"
+    "openai-agents>=0.18.3,<=0.21.1"
 ]
 mcp = [
     "mcp>=1.26.0,<=1.28.1"
 ]
 bedrock = [
-    "boto3>=1.43.54,<=1.43.72"
+    "boto3>=1.43.54,<=1.43.73"
 ]
 aws-bedrock = [
-    "boto3>=1.43.54,<=1.43.72"
+    "boto3>=1.43.54,<=1.43.73"
 ]
 llamaindex = [
     "llama-index==0.14.23"
@@ -104,10 +104,10 @@ llama-index = [
     "llama-index==0.14.23"
 ]
 google-adk = [
-    "google-adk>=2.5.0,<=2.7.0"
+    "google-adk>=2.5.0,<=2.7.1"
 ]
 adk = [
-    "google-adk>=2.5.0,<=2.7.0"
+    "google-adk>=2.5.0,<=2.7.1"
 ]
 claude = [
     "claude-agent-sdk>=0.2.126,<=0.2.139"
@@ -122,20 +122,20 @@ all = [
     "crewai>=1.15.5,<=1.15.16",
     "redis>=4.5.0",
     "cryptography>=42.0.0",
-    "pydantic-ai>=2.16.0,<=2.31.0",
+    "pydantic-ai>=2.16.0,<=2.31.1",
     "anyio>=4.0.0",
     "langgraph>=1.2.9,<=1.2.11",
-    "langchain-core>=1.5.0,<=1.5.5",
+    "langchain-core>=1.5.0,<=1.5.6",
     "langchain-openai==1.3.5",
     "autogen-agentchat==0.7.5",
     "agno>=2.8.0,<=2.9.0",
     "azure-ai-projects>=2.3.0,<=2.4.0",
     "azure-identity==1.25.3",
-    "openai-agents>=0.18.3,<=0.21.0",
+    "openai-agents>=0.18.3,<=0.21.1",
     "mcp>=1.26.0,<=1.28.1",
-    "boto3>=1.43.54,<=1.43.72",
+    "boto3>=1.43.54,<=1.43.73",
     "llama-index==0.14.23",
-    "google-adk>=2.5.0,<=2.7.0",
+    "google-adk>=2.5.0,<=2.7.1",
     "claude-agent-sdk>=0.2.126,<=0.2.139",
     "smolagents==1.26.0"
 ]
