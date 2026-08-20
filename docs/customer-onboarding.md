@@ -22,10 +22,11 @@ screen or operator silently controls all three.
 
 | Surface | Owner | What belongs there |
 |---|---|---|
-| Customer repository and CI | Customer developer | Source inspection, framework discovery, generated patch review, application tests and offline decisions. Source is not uploaded by the CLI. |
+| Customer repository and CI | Customer developer | Local source parsing, framework discovery, source-free IR generation, generated patch review and application tests. Source is not uploaded by the CLI. |
 | Customer Control Panel | Customer tenant administrator | Core Config pathway choice, business purpose, sensitive-tool inventory, managed-region or sovereign request, secret-free inspection evidence and tenant-scoped runtime verification. |
 | AgenticDome Admin | AgenticDome platform operator | Managed sidecar allocation, sovereign provisioning coordination, configuration propagation, fleet health and operational exceptions. |
 | SDK Harness | AgenticDome release operator | Full SDK/framework release certification and package publication. This is not exposed as a customer deployment control. |
+| Assigned sidecar and private Copilot Core | AgenticDome security boundary | Tenant/scoped-key proof, rate limiting, signed hook-catalog binding, private flow/dominance/bypass reasoning and signed-plan verification. The reasoning code is not shipped in the public SDK or sidecar image. |
 
 Customers cannot change tenant-to-sidecar assignments from onboarding. An
 AgenticDome operator fulfils a managed-region request in Runtime Sidecars. For
@@ -49,10 +50,12 @@ For a Developer Integration:
 The same discovery logic feeds planning, the optional scaffold and final
 verification. It does not silently apply code changes.
 
-The copilot-like part is the local Integration Assistant: `init` discovers and
-plans, and the optional `scaffold` command proposes a patch. `verify` is the
-required evidence gate rather than a code generator. The Customer Control
-Panel explains and records the journey; it does not inspect the repository.
+The thin local Integration Assistant collects generic structure and renders a
+reviewable scaffold. Authenticated `plan` sends only source-free structural IR
+through the assigned sidecar to the private Integration Copilot Core, which
+performs the protected flow and placement reasoning. `verify` is the required
+evidence gate rather than a code generator. The Customer Control Panel explains
+and records the journey; it does not inspect the repository.
 
 ## Step 1: start the local Integration Assistant
 
@@ -118,16 +121,27 @@ The Control Panel returns the assigned API base when provisioning is complete.
 Runtime/SDK API keys remain in the key-management path and secret managers;
 they are never included in the downloadable onboarding configuration.
 
-## Step 3: optionally generate a reviewable scaffold
+## Step 3: obtain a private plan and optionally generate a reviewable scaffold
 
 ```bash
+python -m pip install --upgrade agenticdome-python-sdk
+export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example"
+export AGENTICDOME_TENANT_ID="your_tenant_id"
+export AGENTICDOME_COPILOT_API_KEY="your_dedicated_copilot_key"
+agenticdome plan
 agenticdome scaffold
 git apply --stat .agenticdome/scaffold/agenticdome.patch
 ```
 
-This is an optional accelerator. Its inputs are the Step 1
-`.agenticdome/config.json` plus a fresh local inspection from the same workload
-root. It writes `integration-plan.json`, a review README, a secret-free
+Create the dedicated Integration Copilot key from the tenant API Keys page.
+It has a single purpose and is rejected by ordinary sidecar runtime APIs.
+The local collector sends only relative structural metadata through the
+assigned sidecar. The sidecar proves tenant and key scope, rate-limits the
+request, supplies its signed SDK Harness catalog, and verifies the private
+Core's signed response. The CLI rejects a catalog digest that differs from its
+installed SDK and binds cached results to the tenant, sidecar origin and IR.
+
+Scaffolding is an optional accelerator. It writes `integration-plan.json`, a review README, a secret-free
 environment example, Python and/or TypeScript wrapper code, and
 `agenticdome.patch` under `.agenticdome/scaffold`. The patch represents those
 review files; it does not edit application source. Copy or adapt the wrapper at

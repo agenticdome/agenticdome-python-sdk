@@ -4,6 +4,9 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from agenticdome_sdk import onboarding_cli
 from agenticdome_sdk.onboarding_cli import (
     CONFIG_SCHEMA,
     SCHEMA,
@@ -15,6 +18,37 @@ from agenticdome_sdk.onboarding_cli import (
     verify_project,
 )
 
+REAL_COPILOT_ANALYSIS = onboarding_cli._copilot_semantic_analysis
+
+
+def _private_analysis(*, points=None, bypasses=None, confidence="high"):
+    return {
+        "schema": "agenticdome.semantic-analysis.v2",
+        "ir_schema": "agenticdome.copilot-ir.v1",
+        "ir_sha256": "test-bound-by-stub",
+        "source_upload": False,
+        "analysis_mode": "private_bounded_interprocedural_flow",
+        "confidence": confidence,
+        "engines": {"python": {"engine": "python-ast", "available": True, "files_parsed": 1}},
+        "attachment_points": list(points or []),
+        "bypass_risks": list(bypasses or []),
+        "coverage": {},
+        "execution_paths": [],
+        "symbols_indexed": 1,
+        "call_edges": 0,
+        "protected_sinks": 0,
+        "limitations": [],
+    }
+
+
+@pytest.fixture(autouse=True)
+def private_copilot_stub(monkeypatch):
+    monkeypatch.setattr(
+        onboarding_cli,
+        "_copilot_semantic_analysis",
+        lambda root, ir, required: _private_analysis() if required else onboarding_cli._pending_semantic_analysis(ir),
+    )
+
 
 def _project(tmp_path: Path) -> Path:
     (tmp_path / "pyproject.toml").write_text(
@@ -23,8 +57,10 @@ def _project(tmp_path: Path) -> Path:
     (tmp_path / "app.py").write_text(
         """from langgraph.graph import StateGraph
 user_input = input('Request: ')
+screen_input(user_input, agent_id='agent', session_id='session')
+authorize_tool(user_input, agent_id='agent', session_id='session', tool_name='crm.lookup', tool_args={})
 result = call_tool('crm.lookup', {'id': '123'})
-final_output = str(result)
+final_output = review_output(str(result), agent_id='agent', session_id='session', platform='langgraph')
 """,
         encoding="utf-8",
     )
@@ -44,6 +80,7 @@ def test_inspection_is_local_redacted_and_finds_framework_and_boundaries(tmp_pat
     serialized = json.dumps(report)
     assert str(root) not in serialized
     assert "must-never-appear" not in serialized
+    assert "crm.lookup" not in serialized
     assert report["boundary_counts"]["prompt_ingress"] > 0
     assert report["boundary_counts"]["tool_execution"] > 0
     assert report["boundary_counts"]["output_egress"] > 0
@@ -151,6 +188,8 @@ def test_init_and_scaffold_generate_review_material_without_editing_application(
     assert (root / "app.py").read_text(encoding="utf-8") == original
     assert not (root / "agenticdome_integration.py").exists()
     ast.parse((root / ".agenticdome" / "scaffold" / "agenticdome_integration.py").read_text(encoding="utf-8"))
+    assert (root / ".agenticdome" / "scaffold" / "semantic-analysis.json").exists()
+    assert (root / ".agenticdome" / "scaffold" / "SEMANTIC-REVIEW.md").exists()
 
 
 def test_plan_and_local_verification_cover_allowed_and_blocked_paths(tmp_path, monkeypatch):
@@ -165,6 +204,175 @@ def test_plan_and_local_verification_cover_allowed_and_blocked_paths(tmp_path, m
     assert result["framework_runtime_instantiated"] is False
     assert [item["case"] for item in result["decision_cases"]] == ["allowed", "blocked"]
     assert all(item["passed"] for item in result["decision_cases"])
+
+
+def test_inspection_emits_source_free_ir_for_private_copilot(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.post('/run')\n"
+        "def run_agent(request):\n"
+        "    result = call_tool('payments.refund', {'amount': 10})\n"
+        "    return result\n",
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+    semantic = report["semantic_analysis"]
+    ir = report["copilot_ir"]
+
+    assert semantic["analysis_mode"] == "pending_private_copilot"
+    assert ir["schema"] == "agenticdome.copilot-ir.v1"
+    assert ir["source_upload"] is False
+    assert ir["privacy"] == {
+        "source_text": False,
+        "string_literals": False,
+        "absolute_paths": False,
+        "environment_values": False,
+    }
+    serialized = json.dumps(ir)
+    assert "payments.refund" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_private_copilot_cache_is_bound_to_tenant_sidecar_ir_and_catalog(tmp_path, monkeypatch):
+    ir = {
+        "schema": "agenticdome.copilot-ir.v1",
+        "source_upload": False,
+        "engines": {},
+        "functions": [],
+    }
+    ir_digest = onboarding_cli._ir_sha256(ir)
+    catalog = onboarding_cli.catalog_digest()
+    calls = []
+    state = {"tenant": "tenant-1"}
+
+    class Response:
+        def __init__(self, tenant):
+            self.tenant = tenant
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "schema": "agenticdome.copilot-plan.v1",
+                "tenant_id": self.tenant,
+                "semantic_analysis": {
+                    **_private_analysis(),
+                    "ir_sha256": ir_digest,
+                },
+                "catalog_binding": {
+                    "digest": catalog,
+                    "sidecar_verified": True,
+                    "generated_at": 1,
+                    "expires_at": 4_102_444_800,
+                    "published_packages": {
+                        "agenticdome-sdk": {"registry": "npm", "version": "9.9.9"},
+                    },
+                },
+            }).encode("utf-8")
+
+    def urlopen(request, timeout):
+        calls.append((request.full_url, request.get_header("Idempotency-key"), timeout))
+        return Response(state["tenant"])
+
+    monkeypatch.setenv("AGENTICDOME_API_BASE", "https://sidecar.example")
+    monkeypatch.setenv("AGENTICDOME_COPILOT_API_KEY", "scoped-secret")
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
+    monkeypatch.setattr(onboarding_cli.urllib.request, "urlopen", urlopen)
+
+    first = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    second = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    assert first == second
+    assert len(calls) == 1
+    assert calls[0][0] == "https://sidecar.example/integration-copilot/v1/analyze"
+    assert len(calls[0][1]) == 64
+    assert onboarding_cli._active_copilot_catalog_binding(tmp_path)["published_packages"]["agenticdome-sdk"]["version"] == "9.9.9"
+
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-2")
+    state["tenant"] = "tenant-2"
+    REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    assert len(calls) == 2
+
+
+def test_normal_runtime_key_does_not_trigger_optional_copilot_network_call(tmp_path, monkeypatch):
+    ir = {"schema": "agenticdome.copilot-ir.v1", "source_upload": False, "engines": {}, "functions": []}
+    monkeypatch.setenv("AGENTICDOME_API_BASE", "https://sidecar.example")
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
+    monkeypatch.setenv("AGENTICDOME_API_KEY", "normal-runtime-secret")
+    monkeypatch.delenv("AGENTICDOME_COPILOT_API_KEY", raising=False)
+    monkeypatch.setattr(
+        onboarding_cli.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("ordinary runtime credentials must not invoke Copilot"),
+    )
+
+    semantic = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=False)
+    assert semantic["analysis_mode"] == "pending_private_copilot"
+
+
+def test_semantic_gate_observes_guard_before_final_executor(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "def execute(request):\n"
+        "    authorize_tool('refund', agent_id='a', session_id='s', tool_name='payments.refund', tool_args={})\n"
+        "    result = call_tool('payments.refund', {'amount': 10})\n"
+        "    return review_output(result, agent_id='a', session_id='s', platform='custom')\n",
+        encoding="utf-8",
+    )
+
+    point = {
+        "boundary": "tool_execution", "path": "app.py", "line": 3, "symbol": "execute",
+        "semantic_role": "tool_execution", "confidence": "high", "confidence_score": 0.98,
+        "protection_observed": True,
+    }
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(onboarding_cli, "_copilot_semantic_analysis", lambda root, ir, required: _private_analysis(points=[point]))
+        plan = integration_plan(tmp_path)
+    tool_point = next(
+        item for item in plan["semantic_analysis"]["attachment_points"]
+        if item["boundary"] == "tool_execution"
+    )
+
+    assert tool_point["protection_observed"] is True
+    assert plan["semantic_gate"]["high_severity_bypasses"] == 0
+
+
+def test_conditional_guard_does_not_falsely_dominate_unconditional_executor(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "def execute(request, should_check):\n"
+        "    if should_check:\n"
+        "        authorize_tool('refund', agent_id='a', session_id='s', tool_name='payments.refund', tool_args={})\n"
+        "    result = call_tool('payments.refund', {'amount': 10})\n"
+        "    return review_output(result, agent_id='a', session_id='s', platform='custom')\n",
+        encoding="utf-8",
+    )
+
+    point = {
+        "boundary": "tool_execution", "path": "app.py", "line": 4, "symbol": "execute",
+        "semantic_role": "tool_execution", "confidence": "high", "confidence_score": 0.98,
+        "protection_observed": False,
+    }
+    bypass = {
+        "boundary": "tool_execution", "path": "app.py", "line": 4, "symbol": "execute",
+        "severity": "high", "required_guard": "tool_guard", "confidence_score": 0.98,
+    }
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(onboarding_cli, "_copilot_semantic_analysis", lambda root, ir, required: _private_analysis(points=[point], bypasses=[bypass]))
+        plan = integration_plan(tmp_path)
+    tool_point = next(
+        item for item in plan["semantic_analysis"]["attachment_points"]
+        if item["boundary"] == "tool_execution"
+    )
+
+    assert tool_point["protection_observed"] is False
+    assert plan["semantic_gate"]["high_severity_bypasses"] == 1
 
 
 def test_command_inspect_json_is_installable(tmp_path, capsys):
@@ -273,3 +481,78 @@ def test_typescript_project_gets_typescript_scaffold_not_python_only(tmp_path):
     assert (scaffold / "agenticdome_integration.ts").exists()
     assert not (scaffold / "agenticdome_integration.py").exists()
     assert 'from "agenticdome-sdk"' in (scaffold / "agenticdome_integration.ts").read_text(encoding="utf-8")
+    assert (scaffold / "FRAMEWORK-HOOKS.md").exists()
+    hook_plan = json.loads((scaffold / "framework-hooks.json").read_text(encoding="utf-8"))
+    assert hook_plan["hook_catalog"]["schema"] == "agenticdome.hook-catalog.v1"
+    assert hook_plan["framework_hook_plans"][0]["adapter"]["native_hooks"] == [
+        "before_agent_run", "before_tool_call", "tool_result_persist",
+    ]
+
+
+def test_typescript_without_local_compiler_labels_ir_collection_fallback(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{"dependencies":{"agenticdome-sdk":"0.5.2"}}', encoding="utf-8"
+    )
+    (tmp_path / "agent.ts").write_text(
+        "authorizeTool('refund', 'agent', 'session', 'custom', 'payments.refund', {});\n"
+        "const result = callTool('payments.refund', {});\n"
+        "const reviewed = reviewOutput(result, 'agent', 'session', 'custom');\n"
+        "return reviewed;\n",
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+    semantic = report["semantic_analysis"]
+
+    assert semantic["confidence"] == "unavailable"
+    assert semantic["engines"]["typescript"]["engine"] == "typescript-structural-fallback"
+    assert report["copilot_ir"]["collector_mode"] == "generic_ast_metadata_only"
+
+
+def test_certified_python_version_produces_exact_hook_plan(tmp_path, monkeypatch):
+    def not_installed(_package):
+        raise __import__("importlib.metadata").metadata.PackageNotFoundError
+
+    monkeypatch.setattr("agenticdome_sdk.onboarding_cli.importlib.metadata.version", not_installed)
+    (tmp_path / "requirements.txt").write_text("langgraph==1.2.10\nlangchain-core==1.5.4\n", encoding="utf-8")
+    (tmp_path / "agent.py").write_text(
+        "from langgraph.graph import StateGraph\nuser_query = request.query\n",
+        encoding="utf-8",
+    )
+
+    plan = integration_plan(tmp_path)
+    hook = next(row for row in plan["framework_hook_plans"] if row["framework"] == "langgraph")
+
+    assert hook["status"] == "ready_for_attachment"
+    assert hook["exactness"] == "certified_package_and_symbols"
+    assert hook["adapter"]["class"] == "AgenticDomeLangGraphFirewall"
+    assert "as_langchain_middleware" in hook["adapter"]["attachment_methods"]
+    assert {row["status"] for row in hook["packages"]} == {"certified"}
+
+
+def test_out_of_range_framework_version_is_blocked(tmp_path):
+    (tmp_path / "requirements.txt").write_text("crewai==9.0.0\n", encoding="utf-8")
+    (tmp_path / "agent.py").write_text("from crewai import Agent\n", encoding="utf-8")
+
+    plan = integration_plan(tmp_path)
+    hook = next(row for row in plan["framework_hook_plans"] if row["framework"] == "crewai")
+
+    assert hook["status"] == "blocked"
+    assert hook["exactness"] == "blocked_version_mismatch"
+    assert hook["packages"][0]["status"] == "outside_certified_range"
+
+
+def test_mcp_typescript_uses_published_core_contract(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"dependencies": {"@modelcontextprotocol/sdk": "latest", "agenticdome-sdk": "0.5.2"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "server.ts").write_text('import { Server } from "@modelcontextprotocol/sdk";\n', encoding="utf-8")
+
+    plan = integration_plan(tmp_path)
+    hook = next(row for row in plan["framework_hook_plans"] if row["framework"] == "mcp")
+
+    assert hook["contract_key"] == "mcp-ts"
+    assert hook["language"] == "typescript"
+    assert hook["status"] == "ready_for_attachment"
+    assert hook["adapter"]["attachment_methods"] == ["mcpToolCall", "mcpGuardrailValidate", "mcpListTools"]

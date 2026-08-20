@@ -17,8 +17,22 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from .hook_catalog import (
+    CATALOG_SCHEMA,
+    CATALOG_VERIFIED_AT,
+    FRAMEWORK_HOOK_CATALOG,
+    PUBLISHED_AGENTICDOME_PACKAGES,
+    catalog_digest,
+    certification_label,
+    framework_contract,
+    version_satisfies_certification,
+)
+from .copilot_ir import collect_repository_ir
 
 
 SCHEMA = "agenticdome.onboarding-report.v1"
@@ -152,6 +166,148 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def _ir_sha256(ir: Dict[str, Any]) -> str:
+    canonical = json.dumps(ir, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _pending_semantic_analysis(ir: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema": "agenticdome.semantic-analysis.v2",
+        "ir_schema": ir.get("schema"),
+        "ir_sha256": _ir_sha256(ir),
+        "source_upload": False,
+        "analysis_mode": "pending_private_copilot",
+        "confidence": "unavailable",
+        "engines": ir.get("engines", {}),
+        "attachment_points": [],
+        "bypass_risks": [],
+        "coverage": {},
+        "execution_paths": [],
+        "symbols_indexed": 0,
+        "call_edges": 0,
+        "protected_sinks": 0,
+        "limitations": [
+            "Run the authenticated Integration Copilot plan command against the assigned sidecar to obtain private flow reasoning.",
+            "The local collector emits structural metadata only and does not contain AgenticDome placement or bypass algorithms.",
+        ],
+    }
+
+
+def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool) -> Dict[str, Any]:
+    ir_digest = _ir_sha256(ir)
+    api_base = os.getenv("AGENTICDOME_API_BASE", "").strip().rstrip("/")
+    api_key = os.getenv("AGENTICDOME_COPILOT_API_KEY", "").strip()
+    tenant_id = os.getenv("AGENTICDOME_TENANT_ID", "").strip()
+    if not api_base or not api_key or not tenant_id:
+        if required:
+            raise SystemExit(
+                "Integration Copilot planning requires AGENTICDOME_API_BASE, "
+                "AGENTICDOME_TENANT_ID and an integration_copilot-scoped "
+                "AGENTICDOME_COPILOT_API_KEY."
+            )
+        return _pending_semantic_analysis(ir)
+
+    expected_catalog_digest = catalog_digest()
+    cached_path = _agenticdome_dir(root) / "copilot-analysis.json"
+    if cached_path.exists():
+        cached = _load_json(cached_path)
+        semantic = cached.get("semantic_analysis")
+        cached_binding = cached.get("catalog_binding")
+        if (
+            cached.get("tenant_id") == tenant_id
+            and cached.get("api_base") == api_base
+            and isinstance(cached_binding, dict)
+            and cached_binding.get("digest") == expected_catalog_digest
+            and cached_binding.get("sidecar_verified") is True
+            and isinstance(semantic, dict)
+            and semantic.get("ir_sha256") == ir_digest
+        ):
+            return semantic
+
+    body = json.dumps({
+        "schema": "agenticdome.copilot-request.v1",
+        "ir": ir,
+        "catalog_binding": {
+            "schema": CATALOG_SCHEMA,
+            "digest": expected_catalog_digest,
+            "verified_at": CATALOG_VERIFIED_AT,
+        },
+    }, separators=(",", ":")).encode("utf-8")
+    idempotency_key = hashlib.sha256(
+        f"{tenant_id}\n{api_base}\n{ir_digest}\n{expected_catalog_digest}".encode("utf-8")
+    ).hexdigest()
+    request = urllib.request.Request(
+        api_base + "/integration-copilot/v1/analyze",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-API-Key": api_key,
+            "X-Tenant-Id": tenant_id,
+            "Idempotency-Key": idempotency_key,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - tenant sidecar URL is explicit configuration
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = str(payload.get("detail") or "")[:240] if isinstance(payload, dict) else ""
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        raise SystemExit(f"Integration Copilot sidecar request failed ({exc.code}): {detail or exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Integration Copilot sidecar request failed safely: {exc}") from exc
+
+    if not isinstance(result, dict) or result.get("schema") != "agenticdome.copilot-plan.v1":
+        raise SystemExit("Integration Copilot returned an unsupported response contract.")
+    if str(result.get("tenant_id") or "") != tenant_id:
+        raise SystemExit("Integration Copilot tenant binding did not match the requested tenant.")
+    semantic = result.get("semantic_analysis")
+    if not isinstance(semantic, dict) or semantic.get("ir_sha256") != ir_digest:
+        raise SystemExit("Integration Copilot response is not bound to the submitted structural IR.")
+    response_binding = result.get("catalog_binding")
+    if (
+        not isinstance(response_binding, dict)
+        or response_binding.get("digest") != expected_catalog_digest
+        or response_binding.get("sidecar_verified") is not True
+    ):
+        raise SystemExit(
+            "Integration Copilot's signed hook catalog does not match this installed SDK. "
+            "Update the SDK and rerun the Copilot."
+        )
+    _write_json(cached_path, {
+        "schema": "agenticdome.copilot-cache.v1",
+        "source_upload": False,
+        "tenant_id": tenant_id,
+        "api_base": api_base,
+        "semantic_analysis": semantic,
+        "catalog_binding": response_binding,
+    })
+    return semantic
+
+
+def _active_copilot_catalog_binding(root: Path) -> Dict[str, Any]:
+    cached_path = _agenticdome_dir(root) / "copilot-analysis.json"
+    if not cached_path.exists():
+        return {}
+    cached = _load_json(cached_path)
+    binding = cached.get("catalog_binding")
+    if (
+        cached.get("tenant_id") != os.getenv("AGENTICDOME_TENANT_ID", "").strip()
+        or cached.get("api_base") != os.getenv("AGENTICDOME_API_BASE", "").strip().rstrip("/")
+        or not isinstance(binding, dict)
+        or binding.get("digest") != catalog_digest()
+        or binding.get("sidecar_verified") is not True
+    ):
+        return {}
+    return binding
+
+
 def _framework_evidence_text(path: Path, text: str) -> str:
     """Return dependency/import evidence, excluding prose and string mentions."""
     name = path.name.lower()
@@ -186,6 +342,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
     boundaries: List[Dict[str, Any]] = []
     scanned_files = 0
     secret_file_count = 0
+    semantic_paths: List[Path] = []
 
     for path in _candidate_files(root):
         scanned_files += 1
@@ -213,6 +370,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
 
         if suffix not in {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx"}:
             continue
+        semantic_paths.append(path)
         for line_number, line in enumerate(text.splitlines(), start=1):
             for boundary, patterns in BOUNDARY_PATTERNS.items():
                 if any(pattern.search(line) for pattern in patterns):
@@ -233,6 +391,10 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
     if "python" in languages and not detected:
         detected.append({"key": "custom-python", "evidence_files": []})
 
+    copilot_ir = collect_repository_ir(root, semantic_paths)
+    semantic = _copilot_semantic_analysis(root, copilot_ir, required=False)
+
+    boundaries = sorted(boundaries, key=lambda item: (item["path"], item["line"], item["boundary"]))[:500]
     boundary_counts = {
         key: sum(1 for item in boundaries if item["boundary"] == key)
         for key in BOUNDARY_PATTERNS
@@ -249,8 +411,10 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
         "potential_secret_files_excluded": secret_file_count,
         "boundaries": boundaries,
         "boundary_counts": boundary_counts,
+        "copilot_ir": copilot_ir,
+        "semantic_analysis": semantic,
         "limitations": [
-            "Static discovery identifies candidate attachment points; it does not prove runtime coverage.",
+            "The local CLI collects generic AST/compiler metadata; proprietary flow reasoning runs through the assigned sidecar.",
             "No source content, secrets, environment values, or absolute paths are included.",
         ],
     }
@@ -305,6 +469,182 @@ def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
     return config
 
 
+def _manifest_dependency_specs(root: Path) -> Dict[str, Dict[str, str]]:
+    """Read dependency declarations without including source or secret values."""
+    inventory: Dict[str, Dict[str, str]] = {}
+    known_packages = {
+        package.lower(): package
+        for contract in FRAMEWORK_HOOK_CATALOG.values()
+        for package in contract.get("packages", {})
+    }
+
+    package_json = root / "package.json"
+    if package_json.exists():
+        try:
+            package_data = json.loads(package_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            package_data = {}
+        if isinstance(package_data, dict):
+            for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+                dependencies = package_data.get(section)
+                if not isinstance(dependencies, dict):
+                    continue
+                for name, spec in dependencies.items():
+                    canonical = known_packages.get(str(name).lower())
+                    if canonical:
+                        inventory[canonical] = {"declared": str(spec), "source": "package.json:" + section}
+
+    python_manifests = [root / "pyproject.toml", root / "requirements.txt", root / "setup.cfg"]
+    python_manifests.extend(sorted(root.glob("requirements-*.txt"))[:20])
+    for manifest in python_manifests:
+        if not manifest.exists() or _is_sensitive_file(manifest):
+            continue
+        text = _read_text(manifest)
+        for lowered, canonical in known_packages.items():
+            match = re.search(
+                r"(?im)(?:^|[\s\"'])" + re.escape(lowered) + r"(?:\[[^\]]+\])?\s*([!<>=~^].*?)?(?:[,;\"'\s]|$)",
+                text,
+            )
+            if match and canonical not in inventory:
+                inventory[canonical] = {
+                    "declared": (match.group(1) or "present").strip().rstrip(","),
+                    "source": manifest.name,
+                }
+
+    for package in sorted(known_packages.values()):
+        try:
+            installed = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        inventory.setdefault(package, {})["installed"] = installed
+        inventory[package]["installed_source"] = "active_python_environment"
+
+    for package in ("agenticdome-sdk", "agenticdome-openclaw-security", "openclaw"):
+        node_manifest = root / "node_modules" / package / "package.json"
+        if not node_manifest.exists():
+            continue
+        try:
+            value = json.loads(node_manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict) and value.get("version"):
+            inventory.setdefault(package, {})["installed"] = str(value["version"])
+            inventory[package]["installed_source"] = "node_modules"
+    return inventory
+
+
+def _exact_version_from_spec(spec: str) -> Optional[str]:
+    match = re.fullmatch(r"\s*(?:==|===)?\s*(\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?)\s*", str(spec or ""))
+    return match.group(1) if match else None
+
+
+def _hook_plans(root: Path, report: Dict[str, Any], frameworks: Sequence[str]) -> List[Dict[str, Any]]:
+    inventory = _manifest_dependency_specs(root)
+    languages = set(report.get("languages", []))
+    requested = list(dict.fromkeys(str(item) for item in frameworks))
+    if "typescript/javascript" in languages and not any(item in {"openclaw", "mcp", "typescript"} for item in requested):
+        requested.append("typescript")
+
+    plans: List[Dict[str, Any]] = []
+    for framework in requested:
+        language = "typescript" if framework == "openclaw" else None
+        if framework == "mcp" and "typescript/javascript" in languages and "python" not in languages:
+            language = "typescript"
+        contract = framework_contract(framework, language)
+        if not contract:
+            plans.append({
+                "framework": framework,
+                "status": "blocked",
+                "exactness": "unsupported",
+                "required_actions": ["Select a framework contract supported by this published SDK."],
+            })
+            continue
+
+        package_rows: List[Dict[str, Any]] = []
+        mismatch = False
+        unknown = False
+        for package, certification in contract.get("packages", {}).items():
+            observed = inventory.get(package, {})
+            installed = observed.get("installed")
+            declared = observed.get("declared")
+            declared_exact = _exact_version_from_spec(str(declared or ""))
+            registry_version = PUBLISHED_AGENTICDOME_PACKAGES.get(package, {}).get("version")
+            declared_latest = str(declared or "").strip().lower() in {"latest", "*"}
+            comparable = declared_exact or installed or (registry_version if declared_latest else None)
+            compatible = version_satisfies_certification(str(comparable), certification) if comparable else None
+            environment_conflict = bool(declared_exact and installed and declared_exact != installed)
+            # An explicit declared version outside the certified range must
+            # fail closed even when this machine happens to have a different,
+            # certified version installed. The project manifest describes the
+            # customer runtime that the generated integration will target.
+            if compatible is False:
+                mismatch = True
+                status = "outside_certified_range"
+            elif environment_conflict:
+                unknown = True
+                status = "manifest_environment_conflict"
+            elif compatible is True:
+                status = "certified"
+            else:
+                unknown = True
+                status = "version_unresolved"
+            published = registry_version
+            package_rows.append({
+                "package": package,
+                "installed_version": installed,
+                "declared_spec": declared,
+                "certified_versions": certification_label(certification),
+                "published_version": published,
+                "status": status,
+                "evidence": (
+                    "manifest_and_environment_disagree"
+                    if environment_conflict
+                    else observed.get("source") or observed.get("installed_source") or ("verified_registry_latest" if declared_latest and registry_version else "not_found")
+                ),
+            })
+
+        if mismatch:
+            exactness = "blocked_version_mismatch"
+            status = "blocked"
+        elif unknown:
+            exactness = "certified_symbols_version_unresolved"
+            status = "review_required"
+        else:
+            exactness = "certified_package_and_symbols"
+            status = "ready_for_attachment"
+
+        candidate_boundaries = report.get("boundaries", [])
+        required_actions = []
+        if mismatch:
+            required_actions.append("Align the framework package with the certified range before applying generated hooks.")
+        elif unknown:
+            required_actions.append("Resolve/install the declared framework version, then rerun the Copilot before applying hooks.")
+        required_actions.extend([
+            "Attach the listed adapter methods only at the candidate execution boundaries after human review.",
+            "Run native framework compatibility tests and AgenticDome verification before production promotion.",
+        ])
+        plans.append({
+            "framework": "mcp" if framework == "mcp" else framework,
+            "contract_key": "mcp-ts" if framework == "mcp" and language == "typescript" else framework,
+            "label": contract["label"],
+            "language": contract["language"],
+            "status": status,
+            "exactness": exactness,
+            "adapter": {
+                "module": contract.get("adapter_module"),
+                "class": contract.get("adapter_class"),
+                "attachment_methods": contract.get("attachment_methods", []),
+                "native_hooks": contract.get("native_hooks", []),
+            },
+            "runtime": contract.get("runtime", {}),
+            "packages": package_rows,
+            "candidate_boundaries": candidate_boundaries,
+            "documentation": contract.get("docs"),
+            "required_actions": required_actions,
+        })
+    return plans
+
+
 def integration_plan(root: Path) -> Dict[str, Any]:
     report = inspect_repository(root)
     config_path = _agenticdome_dir(root) / "config.json"
@@ -315,16 +655,70 @@ def integration_plan(root: Path) -> Dict[str, Any]:
         "sensitive_tools": [],
         "deployment": {"preference": "managed", "region": "auto"},
     }
-    counts = report["boundary_counts"]
+    semantic = _copilot_semantic_analysis(root, report.get("copilot_ir", {}), required=True)
+    active_catalog_binding = _active_copilot_catalog_binding(root)
+    existing_boundaries = {
+        (item["boundary"], item["path"], item["line"])
+        for item in report["boundaries"]
+    }
+    for point in semantic.get("attachment_points", []):
+        key = (point.get("boundary"), point.get("path"), point.get("line"))
+        if key in existing_boundaries or key[0] not in BOUNDARY_PATTERNS:
+            continue
+        report["boundaries"].append({
+            "boundary": key[0],
+            "path": key[1],
+            "line": key[2],
+            "reason": "Copilot semantic " + str(point.get("semantic_role", key[0])).replace("_", " ") + " attachment point",
+            "confidence": point.get("confidence"),
+            "confidence_score": point.get("confidence_score"),
+            "analysis": "private_copilot",
+        })
+        existing_boundaries.add(key)
+    report["boundaries"] = sorted(
+        report["boundaries"], key=lambda item: (item["path"], item["line"], item["boundary"])
+    )[:500]
+    counts = {
+        key: sum(1 for item in report["boundaries"] if item["boundary"] == key)
+        for key in BOUNDARY_PATTERNS
+    }
     required = ["prompt_ingress", "tool_execution", "output_egress"]
     gaps = [boundary for boundary in required if not counts.get(boundary)]
+    frameworks = config.get("frameworks", [])
+    hook_plans = _hook_plans(root, report, frameworks)
+    semantic_bypasses = semantic.get("bypass_risks", []) if isinstance(semantic, dict) else []
     return {
         "schema": "agenticdome.integration-plan.v1",
+        "hook_catalog": {
+            "schema": CATALOG_SCHEMA,
+            "digest": catalog_digest(),
+            "verified_at": CATALOG_VERIFIED_AT,
+            "installed_python_sdk": _installed_sdk_version(),
+            "published_packages": active_catalog_binding.get("published_packages")
+            if isinstance(active_catalog_binding.get("published_packages"), dict)
+            else PUBLISHED_AGENTICDOME_PACKAGES,
+            "sidecar_binding": {
+                "verified": active_catalog_binding.get("sidecar_verified") is True,
+                "generated_at": active_catalog_binding.get("generated_at"),
+                "expires_at": active_catalog_binding.get("expires_at"),
+            },
+            "source": "same versioned contract consumed by Admin SDK Harness and bound into the sidecar Copilot request",
+        },
         "languages": report["languages"],
-        "frameworks": config.get("frameworks", []),
+        "frameworks": frameworks,
+        "framework_hook_plans": hook_plans,
         "business_purpose": config.get("business_purpose"),
         "deployment": config.get("deployment", {}),
         "candidate_boundaries": report["boundaries"],
+        "semantic_analysis": semantic,
+        "semantic_gate": {
+            "confidence": semantic.get("confidence", "unavailable") if isinstance(semantic, dict) else "unavailable",
+            "symbols_indexed": int(semantic.get("symbols_indexed", 0)) if isinstance(semantic, dict) else 0,
+            "call_edges": int(semantic.get("call_edges", 0)) if isinstance(semantic, dict) else 0,
+            "unresolved_bypasses": len(semantic_bypasses),
+            "high_severity_bypasses": sum(1 for item in semantic_bypasses if item.get("severity") == "high"),
+            "production_ready": not semantic_bypasses and semantic.get("confidence") in {"high", "partial"},
+        },
         "coverage": {"counts": counts, "required": required, "gaps": gaps},
         "recommended_order": [
             "Screen untrusted prompt/input before model or planner execution.",
@@ -334,7 +728,94 @@ def integration_plan(root: Path) -> Dict[str, Any]:
             "Review/redact output before streaming, returning, logging or persistence.",
         ],
         "safe_change_policy": "Generate an unapplied patch; review and test before applying it to application code.",
+        "claim_boundary": "Exact symbols are catalog-certified only for resolved package versions. The private Copilot reasons over source-free AST/compiler metadata to rank insertion locations and flag observable bypasses; reflection, generated code and unexercised runtime paths remain human-reviewed until compatibility and workload tests pass.",
     }
+
+
+def _semantic_review_markdown(plan: Dict[str, Any]) -> str:
+    semantic = plan.get("semantic_analysis", {})
+    gate = plan.get("semantic_gate", {})
+    lines = [
+        "# AgenticDome semantic integration review",
+        "",
+        "This report contains structural metadata only. It contains no source snippets, literals, credentials or absolute paths.",
+        "",
+        "- Analysis mode: `{}`".format(semantic.get("analysis_mode", "unavailable")),
+        "- Confidence: **{}**".format(gate.get("confidence", "unavailable")),
+        "- Symbols indexed: {}".format(gate.get("symbols_indexed", 0)),
+        "- Interprocedural call edges: {}".format(gate.get("call_edges", 0)),
+        "- Unresolved bypasses: {}".format(gate.get("unresolved_bypasses", 0)),
+        "",
+        "## Ranked attachment points",
+        "",
+    ]
+    for item in semantic.get("attachment_points", [])[:100]:
+        state = "guard observed" if item.get("protection_observed") else "guard not proven"
+        lines.append(
+            "- `{path}:{line}` · **{boundary}** · `{symbol}` · {confidence} ({score:.0%}) · {state}".format(
+                path=item.get("path"), line=item.get("line"), boundary=item.get("boundary"),
+                symbol=item.get("symbol"), confidence=item.get("confidence"),
+                score=float(item.get("confidence_score", 0)), state=state,
+            )
+        )
+    lines.extend(["", "## Unresolved bypass risks", ""])
+    bypasses = semantic.get("bypass_risks", [])
+    if not bypasses:
+        lines.append("No statically observable bypass remains. Runtime and workload tests are still required.")
+    for item in bypasses[:100]:
+        lines.append(
+            "- `{path}:{line}` · **{severity}** · {boundary} · `{symbol}` · required `{guard}`".format(
+                path=item.get("path"), line=item.get("line"), severity=item.get("severity"),
+                boundary=item.get("boundary"), symbol=item.get("symbol"), guard=item.get("required_guard"),
+            )
+        )
+    lines.extend([
+        "", "## Claim boundary", "",
+        str(plan.get("claim_boundary", "Semantic evidence requires workload and runtime verification.")),
+    ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _framework_hooks_markdown(plan: Dict[str, Any]) -> str:
+    lines = [
+        "# AgenticDome framework hook plan",
+        "",
+        "This file uses the same versioned hook contract as the Admin SDK Harness.",
+        "It does not claim that candidate source locations were automatically proven safe.",
+        "",
+        "Catalog: `{schema}` · `{digest}` · verified `{date}`".format(
+            schema=plan["hook_catalog"]["schema"],
+            digest=plan["hook_catalog"]["digest"],
+            date=plan["hook_catalog"]["verified_at"],
+        ),
+        "",
+    ]
+    for item in plan.get("framework_hook_plans", []):
+        lines.extend([
+            "## " + str(item.get("label") or item.get("framework")),
+            "",
+            "Status: **{status}** (`{exactness}`)".format(status=item.get("status"), exactness=item.get("exactness")),
+            "",
+        ])
+        adapter = item.get("adapter", {})
+        if adapter.get("module"):
+            lines.append("- Adapter module: `" + str(adapter["module"]) + "`")
+        if adapter.get("class"):
+            lines.append("- Adapter class: `" + str(adapter["class"]) + "`")
+        if adapter.get("attachment_methods"):
+            lines.append("- Certified attachment methods: " + ", ".join("`" + str(value) + "`" for value in adapter["attachment_methods"]))
+        if adapter.get("native_hooks"):
+            lines.append("- Native hooks: " + ", ".join("`" + str(value) + "`" for value in adapter["native_hooks"]))
+        for package in item.get("packages", []):
+            observed = package.get("installed_version") or package.get("declared_spec") or "unresolved"
+            lines.append("- Package `{name}`: observed `{observed}`; certified `{certified}`; {status}".format(
+                name=package.get("package"), observed=observed,
+                certified=package.get("certified_versions"), status=package.get("status"),
+            ))
+        lines.extend(["", "Required before production:", ""])
+        lines.extend("1. " + str(action) for action in item.get("required_actions", []))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _scaffold_files(config: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, str]:
@@ -445,6 +926,26 @@ https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks
     files = {
         ".env.agenticdome.example": env_example,
         "README.md": readme,
+        "FRAMEWORK-HOOKS.md": _framework_hooks_markdown(plan),
+        "SEMANTIC-REVIEW.md": _semantic_review_markdown(plan),
+        "semantic-analysis.json": json.dumps(
+            {
+                "semantic_analysis": plan.get("semantic_analysis", {}),
+                "semantic_gate": plan.get("semantic_gate", {}),
+                "claim_boundary": plan.get("claim_boundary"),
+            },
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        "framework-hooks.json": json.dumps(
+            {
+                "hook_catalog": plan.get("hook_catalog", {}),
+                "framework_hook_plans": plan.get("framework_hook_plans", []),
+                "claim_boundary": plan.get("claim_boundary"),
+            },
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
     }
     languages = set(plan.get("languages", []))
     if "python" in languages or not languages:
@@ -576,6 +1077,11 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
         "results": [],
         "clarification": "Use --run-tests for the production onboarding gate.",
     }
+    semantic_gate = plan.get("semantic_gate", {})
+    semantic_ready = (
+        semantic_gate.get("confidence") in {"high", "partial"}
+        and int(semantic_gate.get("unresolved_bypasses", 0)) == 0
+    )
     result = {
         "schema": "agenticdome.verification-result.v1",
         "mode": "live_sidecar_fixed_payload" if live else "local_sim_fixed_payload",
@@ -583,11 +1089,20 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
         "framework_runtime_instantiated": False,
         "decision_cases": outcomes,
         "static_coverage": plan["coverage"],
+        "semantic_gate": {
+            "confidence": semantic_gate.get("confidence", "unavailable"),
+            "symbols_indexed": int(semantic_gate.get("symbols_indexed", 0)),
+            "call_edges": int(semantic_gate.get("call_edges", 0)),
+            "unresolved_bypasses": int(semantic_gate.get("unresolved_bypasses", 0)),
+            "high_severity_bypasses": int(semantic_gate.get("high_severity_bypasses", 0)),
+            "passed": semantic_ready,
+        },
         "application_tests": application_tests,
         "ready": all(item["passed"] for item in outcomes)
             and not plan["coverage"]["gaps"]
+            and (not run_tests or semantic_ready)
             and (not run_tests or application_tests["passed"] is True),
-        "clarification": "Decision cases use fixed payloads; run application tests to prove native framework attachment.",
+        "clarification": "Decision cases use fixed payloads. Production verification also requires no statically observable semantic bypass and passing workload tests; dynamic paths still require runtime coverage.",
     }
     canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
     result["report_sha256"] = hashlib.sha256(canonical).hexdigest()

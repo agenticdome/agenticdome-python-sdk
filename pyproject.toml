@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenticdome-python-sdk"
-version = "1.2.19"
+version = "1.2.21"
 description = "Official Python SDK for AgenticDome security guardrails, DLP, tool authorization, and multi-agent delegation enforcement."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -49,7 +49,7 @@ dependencies = [
 
 [project.optional-dependencies]
 crewai = [
-    "crewai>=1.15.5,<=1.15.16"
+    "crewai>=1.15.5,<=1.15.17"
 ]
 redis = [
     "redis>=4.5.0"
@@ -58,16 +58,16 @@ pop = [
     "cryptography>=42.0.0"
 ]
 pydanticai = [
-    "pydantic-ai>=2.16.0,<=2.31.1",
+    "pydantic-ai>=2.16.0,<=2.32.1",
     "anyio>=4.0.0"
 ]
 pydantic = [
-    "pydantic-ai>=2.16.0,<=2.31.1",
+    "pydantic-ai>=2.16.0,<=2.32.1",
     "anyio>=4.0.0"
 ]
 langgraph = [
     "langgraph>=1.2.9,<=1.2.11",
-    "langchain-core>=1.5.0,<=1.5.6",
+    "langchain-core>=1.5.0,<=1.6.0",
     "langchain-openai==1.3.5",
     "anyio>=4.0.0"
 ]
@@ -86,22 +86,22 @@ agno = [
     "agno>=2.8.0,<=2.9.0"
 ]
 openai-agents = [
-    "openai-agents>=0.18.3,<=0.21.1"
+    "openai-agents>=0.18.3,<=0.22.0"
 ]
 mcp = [
     "mcp>=1.26.0,<=1.28.1"
 ]
 bedrock = [
-    "boto3>=1.43.54,<=1.43.73"
+    "boto3>=1.43.54,<=1.43.75"
 ]
 aws-bedrock = [
-    "boto3>=1.43.54,<=1.43.73"
+    "boto3>=1.43.54,<=1.43.75"
 ]
 llamaindex = [
-    "llama-index==0.14.23"
+    "llama-index>=0.14.23,<=0.14.24"
 ]
 llama-index = [
-    "llama-index==0.14.23"
+    "llama-index>=0.14.23,<=0.14.24"
 ]
 google-adk = [
     "google-adk>=2.5.0,<=2.7.1"
@@ -110,33 +110,33 @@ adk = [
     "google-adk>=2.5.0,<=2.7.1"
 ]
 claude = [
-    "claude-agent-sdk>=0.2.126,<=0.2.139"
+    "claude-agent-sdk>=0.2.126,<=0.2.142"
 ]
 claude-agent-sdk = [
-    "claude-agent-sdk>=0.2.126,<=0.2.139"
+    "claude-agent-sdk>=0.2.126,<=0.2.142"
 ]
 smolagents = [
     "smolagents==1.26.0"
 ]
 all = [
-    "crewai>=1.15.5,<=1.15.16",
+    "crewai>=1.15.5,<=1.15.17",
     "redis>=4.5.0",
     "cryptography>=42.0.0",
-    "pydantic-ai>=2.16.0,<=2.31.1",
+    "pydantic-ai>=2.16.0,<=2.32.1",
     "anyio>=4.0.0",
     "langgraph>=1.2.9,<=1.2.11",
-    "langchain-core>=1.5.0,<=1.5.6",
+    "langchain-core>=1.5.0,<=1.6.0",
     "langchain-openai==1.3.5",
     "autogen-agentchat==0.7.5",
     "agno>=2.8.0,<=2.9.0",
     "azure-ai-projects>=2.3.0,<=2.4.0",
     "azure-identity==1.25.3",
-    "openai-agents>=0.18.3,<=0.21.1",
+    "openai-agents>=0.18.3,<=0.22.0",
     "mcp>=1.26.0,<=1.28.1",
-    "boto3>=1.43.54,<=1.43.73",
-    "llama-index==0.14.23",
+    "boto3>=1.43.54,<=1.43.75",
+    "llama-index>=0.14.23,<=0.14.24",
     "google-adk>=2.5.0,<=2.7.1",
-    "claude-agent-sdk>=0.2.126,<=0.2.139",
+    "claude-agent-sdk>=0.2.126,<=0.2.142",
     "smolagents==1.26.0"
 ]
 dev = [
@@ -168,6 +168,9 @@ agenticdome = "agenticdome_sdk.onboarding_cli:main"
 where = ["."]
 include = ["agenticdome_sdk*"]
 exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+agenticdome_sdk = ["*.cjs"]
 
 [tool.ruff]
 line-length = 120
