@@ -199,7 +199,7 @@ def test_direct_tool_analysis_strips_internal_args():
     asyncio.run(fw.analyze_tool_execution(
         payload={
             "sessionId": "s1",
-            "tool": {"name": "crm.lookup", "arguments": {"customer_id": "c1", "_AgenticDome_decision_token": "secret", "decision_token": "secret"}},
+            "tool": {"name": "crm.lookup", "arguments": {"customer_id": "c1", "_agenticdome_decision_token": "secret", "decision_token": "secret"}},
         },
         agent_id="agent-a",
     ))

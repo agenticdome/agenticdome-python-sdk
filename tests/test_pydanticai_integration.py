@@ -161,7 +161,7 @@ def test_direct_tool_uses_sanitized_args_and_strips_private_args():
     def query_tool(run_ctx, *, limit, **kwargs):
         return {"limit": limit, "private": kwargs}
 
-    result = query_tool(ctx(), limit=10000, _AgenticDome_private="x")
+    result = query_tool(ctx(), limit=10000, _agenticdome_private="x")
 
     assert result == {"limit": 100, "private": {}}
     assert client.calls[0][1]["tool_args"] == {"limit": 10000}
@@ -187,7 +187,7 @@ def test_manager_handoff_stores_clean_args_before_token_injection():
         {"target_agent_id": "specialist", "target_tool_name": "lookup", "target_tool_args": {"q": "x"}},
     ))
 
-    assert clean_args["target_tool_args"]["_AgenticDome_decision_token"] == "tok-1"
+    assert clean_args["target_tool_args"]["_agenticdome_decision_token"] == "tok-1"
     assert client.calls[0][1]["tool_args"] == {"q": "x"}
     stored = firewall.token_store.get(session_id="s1", target_agent_id="specialist", tool_name="lookup", tool_args={"q": "x"})
     assert stored is not None

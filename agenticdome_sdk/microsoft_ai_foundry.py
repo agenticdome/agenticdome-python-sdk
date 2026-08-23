@@ -15,16 +15,16 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, AsyncIterator, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim, is_local_sim_mode
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -299,7 +299,7 @@ class MicrosoftAIFoundryConfigurationError(MicrosoftAIFoundryFirewallError):
 class AgenticDomeMicrosoftAIFoundryFirewall:
     """Threat-contract-first firewall for Azure AI Foundry local boundaries."""
 
-    def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
+    def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgenticDomeClient] = None) -> None:
         self.config = config or load_config()
         if not is_local_sim_mode() and not (
             credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id)
@@ -311,7 +311,7 @@ class AgenticDomeMicrosoftAIFoundryFirewall:
                 "AGENTICDOME_TENANT_ID, and AGENTICDOME_BEARER_TOKEN."
             )
 
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id or None,
@@ -441,8 +441,8 @@ class AgenticDomeMicrosoftAIFoundryFirewall:
         return {
             key: value
             for key, value in (args or {}).items()
-            if not str(key).startswith("_AgenticDome_")
-            and str(key) not in {"decision_token", "source_agent_id", "AgenticDome_decision_token", "AgenticDome_source_agent_id"}
+            if not str(key).startswith("_agenticdome_")
+            and str(key) not in {"decision_token", "source_agent_id", "agenticdome_decision_token", "agenticdome_source_agent_id"}
         }
 
     def _sanitized_args(self, payload: Any) -> Optional[Dict[str, Any]]:

@@ -43,6 +43,48 @@ def _tail(value: str) -> str:
     return str(value or "").rsplit(".", 1)[-1].lower()
 
 
+def _target_refs(node: ast.AST) -> List[str]:
+    """Return bounded structural target names without values or source text."""
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        value = _dotted_name(node)
+        return [value] if value else []
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [item for child in node.elts for item in _target_refs(child)][:50]
+    return []
+
+
+def _value_refs(node: ast.AST | None) -> List[str]:
+    """Describe value lineage using names/call symbols only.
+
+    Literals, operators and source fragments are deliberately omitted. The
+    private Core needs only enough structure to distinguish a returned model
+    result from an unrelated/static return.
+    """
+    if node is None:
+        return []
+    if isinstance(node, ast.Call):
+        value = _dotted_name(node.func)
+        nested = [item for child in node.args for item in _value_refs(child)]
+        nested.extend(item for keyword in node.keywords for item in _value_refs(keyword.value))
+        if isinstance(node.func, ast.Attribute):
+            nested.extend(_value_refs(node.func.value))
+        return list(dict.fromkeys((["call:" + value] if value else []) + nested))[:50]
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        value = _dotted_name(node)
+        return (["ref:" + value] if value else [])[:50]
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return list(dict.fromkeys(item for child in node.elts for item in _value_refs(child)))[:50]
+    if isinstance(node, ast.Dict):
+        return list(dict.fromkeys(item for child in node.values for item in _value_refs(child)))[:50]
+    if isinstance(node, ast.IfExp):
+        return list(dict.fromkeys(_value_refs(node.body) + _value_refs(node.orelse)))[:50]
+    if isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)):
+        return _value_refs(node.value)
+    if isinstance(node, ast.Subscript):
+        return _value_refs(node.value)
+    return []
+
+
 def _literal_enum(node: ast.AST | None, allowed: set[str]) -> str:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         value = node.value.strip().lower()
@@ -79,7 +121,9 @@ class _PythonIRVisitor(ast.NodeVisitor):
     def __init__(self, path: str) -> None:
         self.path = path
         self.stack: List[str] = ["<module>"]
+        self.class_stack: List[str] = []
         self.flow_stack: List[str] = []
+        self.result_context: List[Tuple[int, List[str]]] = []
         self.functions: Dict[str, Dict[str, Any]] = {
             "<module>": {
                 "symbol": "<module>",
@@ -89,7 +133,7 @@ class _PythonIRVisitor(ast.NodeVisitor):
                 "events": [],
             }
         }
-        self.features = {"functions": 0, "calls": 0, "returns": 0}
+        self.features = {"functions": 0, "calls": 0, "returns": 0, "raises": 0}
 
     @property
     def current(self) -> Dict[str, Any]:
@@ -98,7 +142,12 @@ class _PythonIRVisitor(ast.NodeVisitor):
     def _visit_function(self, node: ast.AST) -> None:
         name = str(getattr(node, "name", "anonymous"))
         parent = self.stack[-1]
-        symbol = name if parent == "<module>" else parent + "." + name
+        if parent != "<module>":
+            symbol = parent + "." + name
+        elif self.class_stack:
+            symbol = ".".join(self.class_stack + [name])
+        else:
+            symbol = name
         decorators = [_dotted_name(item) for item in getattr(node, "decorator_list", [])]
         parameters = [arg.arg.lower() for arg in getattr(getattr(node, "args", None), "args", [])]
         self.functions[symbol] = {
@@ -120,14 +169,22 @@ class _PythonIRVisitor(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
         self._visit_function(node)
 
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        self.class_stack.append(str(node.name))
+        for statement in node.body:
+            self.visit(statement)
+        self.class_stack.pop()
+
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         self.features["calls"] += 1
+        result_targets = self.result_context[-1][1] if self.result_context and self.result_context[-1][0] == id(node) else []
         self.current["events"].append({
             "event": "call",
             "callee": _dotted_name(node.func),
             "line": int(getattr(node, "lineno", self.current["line"])),
             "flow_scope": list(self.flow_stack),
             "hints": _call_hints(node),
+            "result_targets": result_targets[:50],
         })
         self.generic_visit(node)
 
@@ -140,19 +197,52 @@ class _PythonIRVisitor(ast.NodeVisitor):
             "callee": "return",
             "line": int(getattr(node, "lineno", self.current["line"])),
             "flow_scope": list(self.flow_stack),
+            "value_refs": _value_refs(node.value),
+        })
+
+    def visit_Raise(self, node: ast.Raise) -> None:  # noqa: N802
+        self.features["raises"] += 1
+        if node.exc is not None:
+            self.visit(node.exc)
+        self.current["events"].append({
+            "event": "raise",
+            "callee": "raise",
+            "line": int(getattr(node, "lineno", self.current["line"])),
+            "flow_scope": list(self.flow_stack),
         })
 
     def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
-        role = "user_input" if any(_tail(_dotted_name(target)) in {"user_input", "user_query", "user_message"} for target in node.targets) else ""
-        if role:
-            self.current["events"].append({
-                "event": "assignment",
-                "assignment_role": role,
-                "callee": "assignment",
-                "line": int(getattr(node, "lineno", self.current["line"])),
-                "flow_scope": list(self.flow_stack),
-            })
-        self.generic_visit(node)
+        targets = list(dict.fromkeys(item for target in node.targets for item in _target_refs(target)))[:50]
+        role = "user_input" if any(_tail(target) in {"user_input", "user_query", "user_message"} for target in targets) else ""
+        self.current["events"].append({
+            "event": "assignment",
+            "assignment_role": role,
+            "callee": "assignment",
+            "line": int(getattr(node, "lineno", self.current["line"])),
+            "flow_scope": list(self.flow_stack),
+            "target_refs": targets,
+            "value_refs": _value_refs(node.value),
+        })
+        self.result_context.append((id(node.value), targets))
+        self.visit(node.value)
+        self.result_context.pop()
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        targets = _target_refs(node.target)[:50]
+        role = "user_input" if any(_tail(target) in {"user_input", "user_query", "user_message"} for target in targets) else ""
+        self.current["events"].append({
+            "event": "assignment",
+            "assignment_role": role,
+            "callee": "assignment",
+            "line": int(getattr(node, "lineno", self.current["line"])),
+            "flow_scope": list(self.flow_stack),
+            "target_refs": targets,
+            "value_refs": _value_refs(node.value),
+        })
+        if node.value is not None:
+            self.result_context.append((id(node.value), targets))
+            self.visit(node.value)
+            self.result_context.pop()
 
     def _visit_branch(self, node: ast.AST, arms: Sequence[Tuple[str, Sequence[ast.stmt]]]) -> None:
         test = getattr(node, "test", None)
@@ -189,7 +279,7 @@ def _collect_python(root: Path, paths: Sequence[Path]) -> Tuple[List[Dict[str, A
     functions: List[Dict[str, Any]] = []
     parsed = 0
     parse_errors = 0
-    features = {"functions": 0, "calls": 0, "returns": 0}
+    features = {"functions": 0, "calls": 0, "returns": 0, "raises": 0}
     for path in paths[:MAX_IR_FILES]:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=path.name)

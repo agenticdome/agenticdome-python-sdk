@@ -73,7 +73,7 @@ def test_preflight_unknown_method_passthrough():
 def test_preflight_authorizes_tools_call_and_strips_internal_args():
     client = FakeClient()
     firewall = make_firewall(client=client)
-    request = tools_call({"query": "alice", "_AgenticDome_private": "secret"})
+    request = tools_call({"query": "alice", "_agenticdome_private": "secret"})
 
     result = asyncio.run(
         firewall.preflight_request(
@@ -130,8 +130,8 @@ def test_decision_token_is_verified_and_stripped_before_forwarding():
     request = tools_call(
         {
             "customer_id": "c1",
-            "_AgenticDome_decision_token": "tok",
-            "_AgenticDome_source_agent_id": "manager",
+            "_agenticdome_decision_token": "tok",
+            "_agenticdome_source_agent_id": "manager",
         }
     )
 
@@ -147,7 +147,7 @@ def test_decision_token_is_verified_and_stripped_before_forwarding():
 
 def test_partial_decision_token_blocks_request():
     firewall = make_firewall()
-    request = tools_call({"customer_id": "c1", "_AgenticDome_decision_token": "tok"})
+    request = tools_call({"customer_id": "c1", "_agenticdome_decision_token": "tok"})
 
     result = asyncio.run(firewall.preflight_request(mcp_request=request, context={"session_id": "s1"}))
 

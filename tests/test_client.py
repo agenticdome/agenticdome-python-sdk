@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pytest
 
 from agenticdome_sdk.client import (
-    AgentGuardClient,
-    AgentGuardHTTPError,
+    AgenticDomeClient,
+    AgenticDomeHTTPError,
 )
 
 
@@ -43,12 +43,12 @@ def make_response(status_code=200, payload=None, text=None):
 )
 def test_client_requires_api_base_key_and_tenant(field, kwargs):
     with pytest.raises(ValueError, match=field):
-        AgentGuardClient(**kwargs)
+        AgenticDomeClient(**kwargs)
 
 
 @pytest.fixture
 def client():
-    return AgentGuardClient(
+    return AgenticDomeClient(
         api_base="https://api.example.test",
         api_key="test-api-key",
         tenant_id="tenant-1",
@@ -287,7 +287,7 @@ def test_protocol_proof_and_management_endpoints(mock_request, client):
 @patch("agenticdome_sdk.client.requests.Session.request")
 def test_protected_routes_prefer_service_token_and_fall_back_to_bearer(mock_request):
     mock_request.return_value = make_response(200, {"ok": True})
-    service_client = AgentGuardClient(
+    service_client = AgenticDomeClient(
         api_base="https://api.example.test",
         api_key="test-api-key",
         tenant_id="tenant-1",
@@ -299,7 +299,7 @@ def test_protected_routes_prefer_service_token_and_fall_back_to_bearer(mock_requ
     assert service_kwargs["headers"]["X-Service-Token"] == "service-secret"
 
     with patch.dict("os.environ", {"AGENTICDOME_SERVICE_TOKEN": "", "SERVICE_SECRET": ""}):
-        bearer_client = AgentGuardClient(
+        bearer_client = AgenticDomeClient(
             api_base="https://api.example.test",
             api_key="test-api-key",
             tenant_id="tenant-1",
@@ -414,7 +414,7 @@ def test_mesh_validate(mock_request, client):
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")
-def test_http_error_raises_agentguard_http_error(mock_request, client):
+def test_http_error_raises_agenticdome_http_error(mock_request, client):
     mock_request.return_value = make_response(
         403,
         {
@@ -422,7 +422,7 @@ def test_http_error_raises_agentguard_http_error(mock_request, client):
         },
     )
 
-    with pytest.raises(AgentGuardHTTPError) as exc_info:
+    with pytest.raises(AgenticDomeHTTPError) as exc_info:
         client.guardrail_validate(
             text="hello",
             agent_id="agent-1",

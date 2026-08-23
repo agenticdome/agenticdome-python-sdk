@@ -16,16 +16,16 @@ from inspect import isawaitable
 from threading import Lock
 from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
-from .client import AgentGuardClient
+from .client import AgenticDomeClient
 from ._mode import credentials_or_local_sim
 
 try:
-    from .exceptions import AgentGuardHTTPError
+    from .exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover - compatibility with older package layouts
     try:
-        from .client import AgentGuardHTTPError
+        from .client import AgenticDomeHTTPError
     except Exception:  # pragma: no cover
-        class AgentGuardHTTPError(Exception):
+        class AgenticDomeHTTPError(Exception):
             pass
 
 
@@ -44,7 +44,7 @@ logger.setLevel(logging.INFO)
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.getenv(name) or os.getenv(name.replace("AGENTICDOME_", "AgenticDome_"), default)
+    return os.getenv(name) or os.getenv(name.replace("AGENTICDOME_", "agenticdome_"), default)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -342,7 +342,7 @@ class AgenticDomeMCPHostFirewall:
         self,
         config: Optional[FirewallConfig] = None,
         *,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or load_config()
@@ -352,7 +352,7 @@ class AgenticDomeMCPHostFirewall:
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
             )
 
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id,
@@ -444,12 +444,12 @@ class AgenticDomeMCPHostFirewall:
         return {
             k: v
             for k, v in (tool_args or {}).items()
-            if not str(k).startswith("_AgenticDome_")
+            if not str(k).startswith("_agenticdome_")
             and str(k) not in {
                 "decision_token",
                 "source_agent_id",
-                "AgenticDome_decision_token",
-                "AgenticDome_source_agent_id",
+                "agenticdome_decision_token",
+                "agenticdome_source_agent_id",
             }
         }
 
@@ -689,7 +689,7 @@ class AgenticDomeMCPHostFirewall:
             return response
         except MCPToolBlocked:
             raise
-        except (AgentGuardHTTPError, Exception) as exc:
+        except (AgenticDomeHTTPError, Exception) as exc:
             self._fail_or_raise(f"AgenticDome upstream prompt screening failed: {exc}", exc=exc)
             return {}
 
@@ -757,7 +757,7 @@ class AgenticDomeMCPHostFirewall:
             return response
         except MCPToolBlocked:
             raise
-        except (AgentGuardHTTPError, Exception) as exc:
+        except (AgenticDomeHTTPError, Exception) as exc:
             self._fail_or_raise(f"AgenticDome MCP handoff authorization failed: {exc}", exc=exc)
             return {}
 
@@ -775,15 +775,15 @@ class AgenticDomeMCPHostFirewall:
         target_agent_id = self._target_agent_id(context)
         token = self._safe_str(
             context.get("decision_token")
-            or tool_args.get("_AgenticDome_decision_token")
-            or tool_args.get("AgenticDome_decision_token")
+            or tool_args.get("_agenticdome_decision_token")
+            or tool_args.get("agenticdome_decision_token")
             or tool_args.get("decision_token")
             or ""
         )
         source_agent_id = self._safe_str(
             context.get("source_agent_id")
-            or tool_args.get("_AgenticDome_source_agent_id")
-            or tool_args.get("AgenticDome_source_agent_id")
+            or tool_args.get("_agenticdome_source_agent_id")
+            or tool_args.get("agenticdome_source_agent_id")
             or tool_args.get("source_agent_id")
             or ""
         )
@@ -859,7 +859,7 @@ class AgenticDomeMCPHostFirewall:
             return result
         except MCPToolBlocked:
             raise
-        except (AgentGuardHTTPError, Exception) as exc:
+        except (AgenticDomeHTTPError, Exception) as exc:
             self._fail_or_raise(f"AgenticDome decision-token verification failed: {exc}", exc=exc)
             return None
 
@@ -908,7 +908,7 @@ class AgenticDomeMCPHostFirewall:
 
         try:
             return await self._to_thread(call, **common_kwargs)
-        except (AgentGuardHTTPError, Exception) as exc:
+        except (AgenticDomeHTTPError, Exception) as exc:
             self._fail_or_raise(f"AgenticDome MCP authorization failed: {exc}", exc=exc)
             return {"verdict": "ALLOWED", "reason": "fail-open"}
 
@@ -1001,7 +1001,7 @@ class AgenticDomeMCPHostFirewall:
 
             sanitized_text = env.get("text") or env.get("sanitized_text") or response.get("text") or response.get("sanitized_text")
             return self._safe_str(sanitized_text) if sanitized_text is not None else bounded_text
-        except (AgentGuardHTTPError, Exception) as exc:
+        except (AgenticDomeHTTPError, Exception) as exc:
             logger.warning("AgenticDome MCP output sanitization failed. reason=%s", exc)
             if self.config.fail_closed:
                 raise MCPToolBlocked("AgenticDome MCP output sanitization failed") from exc
@@ -1238,7 +1238,7 @@ class AgenticDomeMCPHostFirewall:
             return mcp_request
         except MCPToolBlocked as exc:
             return self.jsonrpc_error(rid, -32000, f"AgenticDome Blocked: {exc}", data={"method": method})
-        except (AgentGuardHTTPError, Exception) as exc:
+        except (AgenticDomeHTTPError, Exception) as exc:
             if self.config.fail_closed:
                 return self.jsonrpc_error(rid, -32000, f"AgenticDome Blocked: {exc}", data={"method": method})
             logger.warning("AgenticDome MCP preflight failed open. reason=%s", exc)

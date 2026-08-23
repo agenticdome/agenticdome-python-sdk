@@ -164,7 +164,7 @@ def test_direct_tool_authorization_strips_internal_args():
         agent_id="agent-a",
         session_id="s1",
         tool_name="payments.refund",
-        tool_args={"amount": 10, "_AgenticDome_decision_token": "secret"},
+        tool_args={"amount": 10, "_agenticdome_decision_token": "secret"},
     ))
 
     call = fw.client.calls[0][1]

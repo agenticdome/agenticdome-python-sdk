@@ -121,7 +121,7 @@ def test_pre_hook_authorizes_tool_call_and_strips_private_args():
         input="read crm",
         session_id="s1",
         tool_name="crm.customer.read",
-        tool_args={"customer_id": "cust_123", "_AgenticDome_decision_token": "secret"},
+        tool_args={"customer_id": "cust_123", "_agenticdome_decision_token": "secret"},
         tool_platform="crm",
     ) is True
 
@@ -136,7 +136,7 @@ def test_direct_authorize_tool_strips_private_args():
         agent=Agent(),
         kwargs={"session_id": "s1"},
         tool_name="crm.customer.read",
-        tool_args={"customer_id": "cust_123", "_AgenticDome_source_agent_id": "manager"},
+        tool_args={"customer_id": "cust_123", "_agenticdome_source_agent_id": "manager"},
     )
 
     assert client.calls[0][1]["tool_args"] == {"customer_id": "cust_123"}
@@ -144,7 +144,7 @@ def test_direct_authorize_tool_strips_private_args():
 
 def test_pre_hook_applies_sanitized_tool_args_to_kwargs():
     fw, client = make_firewall()
-    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"customer_id": "safe", "_AgenticDome_decision_token": "drop"}}}
+    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"customer_id": "safe", "_agenticdome_decision_token": "drop"}}}
     args = {"customer_id": "unsafe"}
 
     fw.pre_hook(Agent(), session_id="s1", tool_name="crm.customer.read", tool_args=args)
@@ -178,7 +178,7 @@ def test_manager_delegation_authorizes_and_stores_token_with_hmac():
         tool_args={
             "target_agent_id": "payments_specialist",
             "target_tool_name": "payments.refund.create",
-            "target_tool_args": {"amount": 250, "_AgenticDome_decision_token": "old"},
+            "target_tool_args": {"amount": 250, "_agenticdome_decision_token": "old"},
         },
         tool_platform="payments",
     ) is True

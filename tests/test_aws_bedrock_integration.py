@@ -240,15 +240,15 @@ def test_wrap_tool_handler_authorizes_tool_strips_internal_args_and_preserves_st
     firewall, client = make_firewall()
 
     def lookup(ctx, args):
-        assert "_AgenticDome_decision_token" not in args
+        assert "_agenticdome_decision_token" not in args
         return {"customer_id": args["customer_id"], "status": "active"}
 
     secured = firewall.wrap_tool_handler(tool_name="crm.customer.read", handler=lookup, tool_platform="crm")
-    result = asyncio.run(secured(SimpleNamespace(agent_id="agent-a", session_id="s1"), {"customer_id": "cust_123", "_AgenticDome_decision_token": "secret"}))
+    result = asyncio.run(secured(SimpleNamespace(agent_id="agent-a", session_id="s1"), {"customer_id": "cust_123", "_agenticdome_decision_token": "secret"}))
 
     assert result == {"customer_id": "cust_123", "status": "active"}
     assert client.calls[0][1]["direction"] == "delegated_execution"
-    assert "_AgenticDome_decision_token" not in client.calls[0][1]["tool_args"]
+    assert "_agenticdome_decision_token" not in client.calls[0][1]["tool_args"]
 
 
 def test_direct_tool_authorization_strips_internal_args():
@@ -256,7 +256,7 @@ def test_direct_tool_authorization_strips_internal_args():
 
     asyncio.run(firewall.authorize_tool_call(
         tool_name="crm.customer.read",
-        tool_args={"customer_id": "cust_123", "_AgenticDome_source_agent_id": "manager"},
+        tool_args={"customer_id": "cust_123", "_agenticdome_source_agent_id": "manager"},
         agent_id="agent-a",
         session_id="s1",
         text="tool",
@@ -388,7 +388,7 @@ def test_handoff_stores_clean_args_and_verify_uses_fallback():
         source_agent_id="manager",
         target_agent_id="specialist",
         target_tool_name="crm.lookup",
-        target_tool_args={"customer_id": "1", "_AgenticDome_decision_token": "old"},
+        target_tool_args={"customer_id": "1", "_agenticdome_decision_token": "old"},
         session_id="s1",
     ))
     client.calls.clear()

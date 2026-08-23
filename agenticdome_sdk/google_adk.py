@@ -17,16 +17,16 @@ from inspect import isawaitable
 from threading import Lock
 from typing import Any, AsyncIterator, Awaitable, Callable, Deque, Dict, Iterable, Optional, Tuple
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:  # pragma: no cover
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -271,14 +271,14 @@ def _build_token_store(config: FirewallConfig) -> DecisionTokenStore:
 class AgenticDomeGoogleADKFirewall:
     """AgenticDome firewall for Google ADK model/tool callback boundaries."""
 
-    def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
+    def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgenticDomeClient] = None) -> None:
         self.config = config or load_config()
         if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
             raise GoogleADKConfigurationError(
                 "AgenticDome Google ADK firewall misconfigured. Set AGENTICDOME_API_BASE, "
                 "AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
             )
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id,
@@ -433,7 +433,7 @@ class AgenticDomeGoogleADKFirewall:
         return {
             key: value
             for key, value in (args or {}).items()
-            if not str(key).startswith("_AgenticDome_")
+            if not str(key).startswith("_agenticdome_")
             and not str(key).startswith("_decision_")
             and str(key) not in {"decision_token", "source_agent_id"}
         }
@@ -772,7 +772,7 @@ class AgenticDomeGoogleADKFirewall:
         return self._strip_internal_args(tool_args)
 
     def _token_from_args(self, tool_args: Dict[str, Any]) -> str:
-        for key in ("_AgenticDome_decision_token", "decision_token", "delegation_token", "handoff_token"):
+        for key in ("_agenticdome_decision_token", "decision_token", "delegation_token", "handoff_token"):
             value = tool_args.get(key)
             if value:
                 return self._safe_str(value)
@@ -954,12 +954,12 @@ class AgenticDomeGoogleADKFirewall:
                 handoff_reason=self._safe_str(tool_args.get("reason") or tool_args.get("task") or ""),
             )
             if isinstance(args, dict) and record.decision_token:
-                args["_AgenticDome_decision_token"] = record.decision_token
-                args["_AgenticDome_source_agent_id"] = agent_id
+                args["_agenticdome_decision_token"] = record.decision_token
+                args["_agenticdome_source_agent_id"] = agent_id
                 for nested_key in ("target_tool_args", "delegated_tool_args", "specialist_tool_args"):
                     if isinstance(args.get(nested_key), dict):
-                        args[nested_key]["_AgenticDome_decision_token"] = record.decision_token
-                        args[nested_key]["_AgenticDome_source_agent_id"] = agent_id
+                        args[nested_key]["_agenticdome_decision_token"] = record.decision_token
+                        args[nested_key]["_agenticdome_source_agent_id"] = agent_id
             return None
         stored_record = self.token_store.get(session_id=self._session_id(tool_context), target_agent_id=agent_id, tool_name=tool_name, tool_args=self._strip_internal_args(tool_args))
         if self._token_from_args(tool_args) or stored_record is not None:
@@ -968,7 +968,7 @@ class AgenticDomeGoogleADKFirewall:
                 tool_name=tool_name,
                 tool_args=tool_args,
                 tool_context=tool_context,
-                source_agent_id=self._safe_str(tool_args.get("_AgenticDome_source_agent_id") or tool_args.get("source_agent_id") or ""),
+                source_agent_id=self._safe_str(tool_args.get("_agenticdome_source_agent_id") or tool_args.get("source_agent_id") or ""),
             )
             return None
         response = await self.authorize_tool_call(tool_name=tool_name, tool_args=tool_args, tool_context=tool_context, tool_schema=getattr(tool, "args_schema", None) or getattr(tool, "schema", None))

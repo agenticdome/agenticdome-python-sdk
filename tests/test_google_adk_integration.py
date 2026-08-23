@@ -94,12 +94,12 @@ def test_before_tool_authorizes_tool_and_strips_internal_args():
     fw, client = make_firewall()
     tool = SimpleNamespace(name="crm.lookup")
 
-    result = asyncio.run(fw.before_tool(tool, {"customer_id": "cust_123", "_AgenticDome_decision_token": "secret"}, SimpleNamespace(agent_name="agent-a", session_id="s1")))
+    result = asyncio.run(fw.before_tool(tool, {"customer_id": "cust_123", "_agenticdome_decision_token": "secret"}, SimpleNamespace(agent_name="agent-a", session_id="s1")))
 
     assert result is None
     call = client.calls[0][1]
     assert call["direction"] == "delegated_execution"
-    assert "_AgenticDome_decision_token" not in call["tool_args"]
+    assert "_agenticdome_decision_token" not in call["tool_args"]
 
 
 def test_direct_tool_authorization_strips_internal_metadata():
@@ -107,7 +107,7 @@ def test_direct_tool_authorization_strips_internal_metadata():
 
     asyncio.run(fw.authorize_tool_call(
         tool_name="crm.lookup",
-        tool_args={"customer_id": "cust_123", "_AgenticDome_source_agent_id": "manager"},
+        tool_args={"customer_id": "cust_123", "_agenticdome_source_agent_id": "manager"},
         tool_context=SimpleNamespace(agent_name="agent-a", session_id="s1"),
     ))
 
@@ -136,7 +136,7 @@ def test_before_tool_uses_token_store_fallback_without_private_args():
 
 def test_before_tool_applies_sanitized_args_in_place():
     fw, client = make_firewall()
-    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"query": "safe", "_AgenticDome_decision_token": "drop"}}}
+    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"query": "safe", "_agenticdome_decision_token": "drop"}}}
     args = {"query": "unsafe"}
 
     asyncio.run(fw.before_tool(SimpleNamespace(name="search"), args, SimpleNamespace(agent_name="agent-a", session_id="s1")))
@@ -244,14 +244,14 @@ def test_handoff_stores_clean_args_and_injects_token():
     args = {
         "target_agent_id": "specialist",
         "target_tool_name": "filesystem.read",
-        "target_tool_args": {"path": "/tmp/a", "_AgenticDome_decision_token": "old"},
+        "target_tool_args": {"path": "/tmp/a", "_agenticdome_decision_token": "old"},
     }
 
     asyncio.run(fw.before_tool("handoff", args, SimpleNamespace(agent_name="manager", session_id="s1")))
     record = fw.token_store.consume(session_id="s1", target_agent_id="specialist", tool_name="filesystem.read", tool_args={"path": "/tmp/a"})
 
-    assert args["_AgenticDome_decision_token"] == "token-1"
-    assert args["target_tool_args"]["_AgenticDome_decision_token"] == "token-1"
+    assert args["_agenticdome_decision_token"] == "token-1"
+    assert args["target_tool_args"]["_agenticdome_decision_token"] == "token-1"
     assert record is not None
     assert record.decision_token == "token-1"
 

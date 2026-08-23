@@ -14,16 +14,16 @@ from inspect import isawaitable
 from threading import Lock
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:  # pragma: no cover
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -280,7 +280,7 @@ class AgenticDomeLlamaIndexFirewall:
         self,
         *,
         config: Optional[FirewallConfig] = None,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or load_config()
@@ -289,7 +289,7 @@ class AgenticDomeLlamaIndexFirewall:
                 "AgenticDome LlamaIndex firewall misconfigured. Set AGENTICDOME_API_BASE, "
                 "AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
             )
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id,
@@ -335,12 +335,12 @@ class AgenticDomeLlamaIndexFirewall:
     def _strip_private_args(args: Dict[str, Any]) -> Dict[str, Any]:
         private_keys = {
             "decision_token",
-            "AgenticDome_decision_token",
-            "_AgenticDome_decision_token",
+            "agenticdome_decision_token",
+            "_agenticdome_decision_token",
             "_decision_token",
             "source_agent_id",
-            "AgenticDome_source_agent_id",
-            "_AgenticDome_source_agent_id",
+            "agenticdome_source_agent_id",
+            "_agenticdome_source_agent_id",
             "_source_agent_id",
         }
         return {key: value for key, value in (args or {}).items() if key not in private_keys}

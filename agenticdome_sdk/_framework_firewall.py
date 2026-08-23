@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from threading import Lock, Thread
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Tuple, Type
 
-from .client import AgentGuardClient
+from .client import AgenticDomeClient
 from ._mode import credentials_or_local_sim
 
 
@@ -184,7 +184,7 @@ class FrameworkFirewallBase:
         self,
         config: FrameworkFirewallConfig,
         *,
-        client: Optional[AgentGuardClient],
+        client: Optional[AgenticDomeClient],
         token_store: Optional[DecisionTokenStore],
         denied_error: Type[Exception],
         configuration_error: Type[Exception],
@@ -194,7 +194,7 @@ class FrameworkFirewallBase:
         if not credentials_or_local_sim(config.api_base, config.api_key, config.tenant_id):
             raise configuration_error("Missing AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, or AGENTICDOME_TENANT_ID.")
         self.config = config
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=config.api_base,
             api_key=config.api_key,
             tenant_id=config.tenant_id,
@@ -253,7 +253,7 @@ class FrameworkFirewallBase:
     @staticmethod
     def strip_private_args(value: Dict[str, Any]) -> Dict[str, Any]:
         private = {"_decision_token", "decision_token", "_source_agent_id", "source_agent_id"}
-        return {k: v for k, v in value.items() if not str(k).startswith("_AgenticDome_") and k not in private}
+        return {k: v for k, v in value.items() if not str(k).startswith("_agenticdome_") and k not in private}
 
     @staticmethod
     def envelope(payload: Any) -> Dict[str, Any]:

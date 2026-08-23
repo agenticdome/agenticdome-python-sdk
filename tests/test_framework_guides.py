@@ -73,7 +73,7 @@ GUIDES = {
         "AgenticDomeAWSBedrockFirewall",
         ("converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"),
     ),
-    "custom-python.md": ("agenticdome_sdk.client", "AgentGuardClient", ("guardrail_validate", "mesh_validate")),
+    "custom-python.md": ("agenticdome_sdk.client", "AgenticDomeClient", ("guardrail_validate", "mesh_validate")),
 }
 
 

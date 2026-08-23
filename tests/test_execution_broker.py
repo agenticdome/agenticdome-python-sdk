@@ -1,8 +1,8 @@
-from agenticdome_sdk.client import AgentGuardClient, AgentGuardError
+from agenticdome_sdk.client import AgenticDomeClient, AgenticDomeError
 
 
 def _client(mode="enforce"):
-    return AgentGuardClient(
+    return AgenticDomeClient(
         "https://sidecar.example",
         api_key="test-key",
         tenant_id="tenant-1",
@@ -86,7 +86,7 @@ def test_enforced_broker_fails_closed_without_consumed_receipt(monkeypatch):
             tool_name="crm.lookup",
             tool_args={"id": "123"},
         )
-    except AgentGuardError as exc:
+    except AgenticDomeError as exc:
         assert "atomically consumed" in str(exc)
     else:
         raise AssertionError("missing broker receipt did not fail closed")

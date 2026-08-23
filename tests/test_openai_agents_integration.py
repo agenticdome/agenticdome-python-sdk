@@ -133,7 +133,7 @@ def test_direct_tool_authorization_strips_private_args():
         agent_id="agent-a",
         source_agent_id=None,
         tool_name="crm.lookup",
-        tool_args={"customer_id": "cust_123", "_AgenticDome_decision_token": "secret"},
+        tool_args={"customer_id": "cust_123", "_agenticdome_decision_token": "secret"},
         text="lookup",
     ))
 
@@ -142,7 +142,7 @@ def test_direct_tool_authorization_strips_private_args():
 
 def test_wrap_tool_handler_applies_sanitized_args():
     fw, client = make_firewall()
-    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"customer_id": "safe", "_AgenticDome_decision_token": "drop"}}}
+    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"customer_id": "safe", "_agenticdome_decision_token": "drop"}}}
 
     def handler(ctx, args):
         return {"customer_id": args["customer_id"]}
@@ -175,7 +175,7 @@ def test_authorize_manager_handoff_stores_token_with_hmac():
         manager_agent_id="manager",
         specialist_agent_id="specialist",
         tool_name="refund.create",
-        tool_args={"amount": 250, "_AgenticDome_decision_token": "old"},
+        tool_args={"amount": 250, "_agenticdome_decision_token": "old"},
         text="delegate refund",
         tool_platform="payments",
     ))

@@ -27,16 +27,16 @@ except Exception as exc:  # pragma: no cover
         "Install with: pip install 'agenticdome-python-sdk[pydanticai]'"
     ) from exc
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -490,7 +490,7 @@ def _strip_private_args(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: value
         for key, value in kwargs.items()
-        if not str(key).startswith("_AgenticDome_")
+        if not str(key).startswith("_agenticdome_")
         and not str(key).startswith("_decision_")
         and str(key) not in {"decision_token", "source_agent_id"}
     }
@@ -549,7 +549,7 @@ class CyberSecFirewall:
     - Output DLP sanitization
     """
 
-    def __init__(self, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
+    def __init__(self, config: Optional[FirewallConfig] = None, client: Optional[AgenticDomeClient] = None) -> None:
         self.config = config or FirewallConfig()
 
         configured = credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id)
@@ -562,7 +562,7 @@ class CyberSecFirewall:
         if client is not None:
             self.client = client
         else:
-            self.client = AgentGuardClient(
+            self.client = AgenticDomeClient(
                 api_base=self.config.api_base,
                 api_key=self.config.api_key,
                 tenant_id=self.config.tenant_id,
@@ -1060,8 +1060,8 @@ class CyberSecFirewall:
             self._validate_tool_schema(tool_name=name, tool_args=clean, schema=tool_schema)
             return clean, False
 
-        token = kwargs.pop("_AgenticDome_decision_token", None) or kwargs.pop("_decision_token", None)
-        source_agent_id = kwargs.pop("_AgenticDome_source_agent_id", None) or kwargs.pop(
+        token = kwargs.pop("_agenticdome_decision_token", None) or kwargs.pop("_decision_token", None)
+        source_agent_id = kwargs.pop("_agenticdome_source_agent_id", None) or kwargs.pop(
             "_source_agent_id",
             None,
         )
@@ -1145,11 +1145,11 @@ class CyberSecFirewall:
             decision_token = self._decision_token(response)
 
             if decision_token:
-                clean_kwargs["_AgenticDome_decision_token"] = decision_token
-                clean_kwargs["_AgenticDome_source_agent_id"] = agent_id
+                clean_kwargs["_agenticdome_decision_token"] = decision_token
+                clean_kwargs["_agenticdome_source_agent_id"] = agent_id
 
-                target_args["_AgenticDome_decision_token"] = decision_token
-                target_args["_AgenticDome_source_agent_id"] = agent_id
+                target_args["_agenticdome_decision_token"] = decision_token
+                target_args["_agenticdome_source_agent_id"] = agent_id
 
                 if "target_tool_args" in clean_kwargs or "skill_args" not in clean_kwargs:
                     clean_kwargs["target_tool_args"] = target_args

@@ -38,16 +38,16 @@ register_after_tool_call_hook = _preserve_hook_function(register_after_tool_call
 register_before_llm_call_hook = _preserve_hook_function(register_before_llm_call_hook)
 register_before_tool_call_hook = _preserve_hook_function(register_before_tool_call_hook)
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -173,11 +173,11 @@ CONFIG = FirewallConfig(
 )
 
 
-CLIENT: Optional[AgentGuardClient] = None
+CLIENT: Optional[AgenticDomeClient] = None
 
 if credentials_or_local_sim(CONFIG.api_base, CONFIG.api_key, CONFIG.tenant_id):
     try:
-        CLIENT = AgentGuardClient(
+        CLIENT = AgenticDomeClient(
             api_base=CONFIG.api_base,
             api_key=CONFIG.api_key,
             tenant_id=CONFIG.tenant_id,
@@ -185,7 +185,7 @@ if credentials_or_local_sim(CONFIG.api_base, CONFIG.api_key, CONFIG.tenant_id):
         )
     except TypeError:
         # Compatibility for alternate constructors.
-        CLIENT = AgentGuardClient(  # type: ignore
+        CLIENT = AgenticDomeClient(  # type: ignore
             CONFIG.api_base,
             {
                 "api_key": CONFIG.api_key,
@@ -544,10 +544,10 @@ def _ctx_agent_id(ctx: Any) -> str:
 
 def _ctx_source_agent_id(ctx: Any, tool_args: Dict[str, Any]) -> Optional[str]:
     value = (
-        tool_args.get("_AgenticDome_source_agent_id")
+        tool_args.get("_agenticdome_source_agent_id")
         or tool_args.get("_source_agent_id")
         or tool_args.get("source_agent_id")
-        or tool_args.get("AgenticDome_source_agent_id")
+        or tool_args.get("agenticdome_source_agent_id")
         or _safe_getattr(ctx, "source_agent_id")
     )
     return str(value) if value else None
@@ -555,10 +555,10 @@ def _ctx_source_agent_id(ctx: Any, tool_args: Dict[str, Any]) -> Optional[str]:
 
 def _ctx_decision_token(tool_args: Dict[str, Any]) -> Optional[str]:
     value = (
-        tool_args.get("_AgenticDome_decision_token")
+        tool_args.get("_agenticdome_decision_token")
         or tool_args.get("_decision_token")
         or tool_args.get("decision_token")
-        or tool_args.get("AgenticDome_decision_token")
+        or tool_args.get("agenticdome_decision_token")
     )
     return str(value) if value else None
 
@@ -587,19 +587,19 @@ def _without_agenticdome_private_keys(args: Dict[str, Any]) -> Dict[str, Any]:
     private_keys = {
         "_decision_token",
         "_source_agent_id",
-        "_AgenticDome_decision_token",
-        "_AgenticDome_source_agent_id",
+        "_agenticdome_decision_token",
+        "_agenticdome_source_agent_id",
         "decision_token",
         "source_agent_id",
-        "AgenticDome_decision_token",
-        "AgenticDome_source_agent_id",
+        "agenticdome_decision_token",
+        "agenticdome_source_agent_id",
     }
 
     return {
         key: value
         for key, value in (args or {}).items()
         if key not in private_keys
-        and not key.startswith("_AgenticDome_")
+        and not key.startswith("_agenticdome_")
         and not key.startswith("_decision_")
     }
 
@@ -927,7 +927,7 @@ def _extract_prompt(context: Any) -> str:
 # ---------------------------------------------------------------------
 
 @register_before_tool_call_hook
-def AgenticDome_before_tool_call(context: Any) -> bool:
+def agenticdome_before_tool_call(context: Any) -> bool:
     """
     CrewAI before-tool hook.
 
@@ -1065,12 +1065,12 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
                 )
 
                 # Inject into router-level args.
-                tool_args["_AgenticDome_decision_token"] = decision_token
-                tool_args["_AgenticDome_source_agent_id"] = agent_id
+                tool_args["_agenticdome_decision_token"] = decision_token
+                tool_args["_agenticdome_source_agent_id"] = agent_id
 
                 # Inject into nested specialist args.
-                target_args["_AgenticDome_decision_token"] = decision_token
-                target_args["_AgenticDome_source_agent_id"] = agent_id
+                target_args["_agenticdome_decision_token"] = decision_token
+                target_args["_agenticdome_source_agent_id"] = agent_id
 
                 if "target_tool_args" in tool_args or "skill_args" not in tool_args:
                     tool_args["target_tool_args"] = target_args
@@ -1128,7 +1128,7 @@ def AgenticDome_before_tool_call(context: Any) -> bool:
 
 
 @register_after_tool_call_hook
-def AgenticDome_after_tool_call(context: Any) -> Any:
+def agenticdome_after_tool_call(context: Any) -> Any:
     """
     CrewAI after-tool hook for output DLP and sanitization.
     """
@@ -1225,7 +1225,7 @@ def AgenticDome_after_tool_call(context: Any) -> Any:
 
 
 @register_before_llm_call_hook
-def AgenticDome_before_llm_call(context: Any) -> bool:
+def agenticdome_before_llm_call(context: Any) -> bool:
     """
     CrewAI before-LLM hook for prompt ingress screening.
     """
@@ -1350,7 +1350,7 @@ class AgenticDomeCrewAIFirewall:
         self,
         *,
         config: Optional[FirewallConfig] = None,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or CONFIG
@@ -1370,13 +1370,13 @@ class AgenticDomeCrewAIFirewall:
             CONFIG, CLIENT, TOKEN_STORE = old
 
     def before_tool_call(self, context: Any) -> bool:
-        return self._with_scope(AgenticDome_before_tool_call, context)
+        return self._with_scope(agenticdome_before_tool_call, context)
 
     def after_tool_call(self, context: Any) -> Any:
-        return self._with_scope(AgenticDome_after_tool_call, context)
+        return self._with_scope(agenticdome_after_tool_call, context)
 
     def before_llm_call(self, context: Any) -> bool:
-        return self._with_scope(AgenticDome_before_llm_call, context)
+        return self._with_scope(agenticdome_before_llm_call, context)
 
     def attach(self, crew_or_agent: Any) -> Any:
         ident = id(crew_or_agent)
@@ -1458,7 +1458,7 @@ __all__ = [
     "sanitize_streaming_response",
     "attach_firewall",
     "unregister_firewall",
-    "AgenticDome_before_tool_call",
-    "AgenticDome_after_tool_call",
-    "AgenticDome_before_llm_call",
+    "agenticdome_before_tool_call",
+    "agenticdome_after_tool_call",
+    "agenticdome_before_llm_call",
 ]

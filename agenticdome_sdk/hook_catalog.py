@@ -11,35 +11,65 @@ import copy
 import hashlib
 import json
 import re
+from importlib import metadata as importlib_metadata
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
 CATALOG_SCHEMA = "agenticdome.hook-catalog.v1"
-CATALOG_VERIFIED_AT = "2026-08-19"
+CATALOG_VERIFIED_AT = "2026-08-23"
+_SDK_ROOT = Path(__file__).resolve().parents[2]
 
-# Registry responses and published archives were checked on CATALOG_VERIFIED_AT.
-# Source-manifest versions are intentionally not recorded as published releases.
+
+def _json_manifest_version(relative_path: str, fallback: str) -> str:
+    manifest = _SDK_ROOT / relative_path
+    try:
+        return str(json.loads(manifest.read_text(encoding="utf-8"))["version"]).strip() or fallback
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+
+def _python_manifest_version(fallback: str) -> str:
+    manifest = _SDK_ROOT / "python" / "pyproject.toml"
+    try:
+        match = re.search(r"(?m)^version\s*=\s*\"([^\"]+)\"", manifest.read_text(encoding="utf-8"))
+        if match:
+            return match.group(1).strip()
+    except OSError:
+        pass
+    try:
+        return importlib_metadata.version("agenticdome-python-sdk")
+    except importlib_metadata.PackageNotFoundError:
+        return fallback
+
+
+def _published_package(registry: str, package: str, version: str) -> Dict[str, str]:
+    if registry == "pypi":
+        url = f"https://pypi.org/project/{package}/{version}/"
+    else:
+        url = f"https://www.npmjs.com/package/{package}/v/{version}"
+    return {"registry": registry, "version": version, "url": url}
+
+
+_PYTHON_SDK_VERSION = _python_manifest_version("1.2.21")
+_TYPESCRIPT_SDK_VERSION = _json_manifest_version("js/agentguard_sdk/src/package.json", "0.6.2")
+_OPENCLAW_PLUGIN_VERSION = _json_manifest_version(
+    "openclaw/ts/openclaw-agenticdome-security/package.json", "1.0.1"
+)
+_OPENCLAW_RUNTIME_MIN_VERSION = "2026.7.1-2"
+_OPENCLAW_RUNTIME_MAX_VERSION = "2026.7.1-2"
+_OPENCLAW_RUNTIME_VERSION = _OPENCLAW_RUNTIME_MAX_VERSION
+_OPENCLAW_NODE_RANGE = ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+
+# The source checkout derives these values from the exact manifests that the
+# release harness publishes. Installed wheels retain the certified fallbacks.
 PUBLISHED_AGENTICDOME_PACKAGES: Dict[str, Dict[str, str]] = {
-    "agenticdome-python-sdk": {
-        "registry": "pypi",
-        "version": "1.2.19",
-        "url": "https://pypi.org/project/agenticdome-python-sdk/1.2.19/",
-    },
-    "agenticdome-sdk": {
-        "registry": "npm",
-        "version": "0.5.2",
-        "url": "https://www.npmjs.com/package/agenticdome-sdk/v/0.5.2",
-    },
-    "agenticdome-openclaw-security": {
-        "registry": "npm",
-        "version": "1.0.0",
-        "url": "https://www.npmjs.com/package/agenticdome-openclaw-security/v/1.0.0",
-    },
-    "openclaw": {
-        "registry": "npm",
-        "version": "2026.7.1-2",
-        "url": "https://www.npmjs.com/package/openclaw/v/2026.7.1-2",
-    },
+    "agenticdome-python-sdk": _published_package("pypi", "agenticdome-python-sdk", _PYTHON_SDK_VERSION),
+    "agenticdome-sdk": _published_package("npm", "agenticdome-sdk", _TYPESCRIPT_SDK_VERSION),
+    "agenticdome-openclaw-security": _published_package(
+        "npm", "agenticdome-openclaw-security", _OPENCLAW_PLUGIN_VERSION
+    ),
+    "openclaw": _published_package("npm", "openclaw", _OPENCLAW_RUNTIME_VERSION),
 }
 
 
@@ -109,7 +139,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.pydanticai",
         "CyberSecFirewall",
         ["install_native_hooks", "secure_tool"],
-        packages={"pydantic-ai": {"min":"2.16.0","max":"2.32.1"}},
+        packages={"pydantic-ai": {"min":"2.16.0","max":"2.33.0"}},
         native_modules=[{"module": "pydantic_ai", "attrs": ["Agent", "RunContext"]}],
         adapter_attrs=[
             {
@@ -169,7 +199,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "AgenticDomeMicrosoftAIFoundryFirewall",
         ["install_on_client", "wrap_tool_executor", "run_secure"],
         packages={
-            "azure-ai-projects": {"min": "2.3.0", "max": "2.4.0"},
+            "azure-ai-projects": {"min":"2.3.0","max":"2.5.0"},
             "azure-identity": {"exact": "1.25.3"},
         },
         native_modules=[
@@ -194,7 +224,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.claude",
         "AgenticDomeClaudeFirewall",
         ["install_on_options", "secure_query", "run_client_securely", "secure_sdk_tool"],
-        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.142"}},
+        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.144"}},
         native_modules=[
             {
                 "module": "claude_agent_sdk",
@@ -255,13 +285,13 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.aws_bedrock",
         "AgenticDomeAWSBedrockFirewall",
         ["converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"],
-        packages={"boto3": {"min":"1.43.54","max":"1.43.75"}},
+        packages={"boto3": {"min":"1.43.54","max":"1.43.78"}},
         native_modules=[{"module": "boto3", "attrs": ["client"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.aws_bedrock", "call": "wrap_tool_handler"},
         docs="docs/frameworks/aws-bedrock.md",
     ),
     "mcp": _python_contract(
-        "Model Context Protocol (Python)",
+        "MCP Host / Gateway Firewall (Python)",
         "agenticdome_sdk.integrations.mcp",
         "AgenticDomeMCPFirewall",
         [
@@ -282,7 +312,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
     "custom-python": _python_contract(
         "Custom Python",
         "agenticdome_sdk",
-        "AgentGuardClient",
+        "AgenticDomeClient",
         ["guardrail_validate", "mesh_validate"],
         docs="docs/frameworks/custom-python.md",
     ),
@@ -291,7 +321,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "language": "typescript",
         "registry": "npm",
         "agenticdome_package": "agenticdome-sdk",
-        "packages": {"agenticdome-sdk": {"exact": "0.5.2"}},
+        "packages": {"agenticdome-sdk": {"exact": PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]}},
         "runtime": {"node": ">=18"},
         "adapter_module": "agenticdome-sdk",
         "adapter_class": "AgenticDomeClient",
@@ -305,11 +335,14 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "registry": "npm",
         "agenticdome_package": "agenticdome-openclaw-security",
         "packages": {
-            "agenticdome-openclaw-security": {"exact": "1.0.0"},
-            "agenticdome-sdk": {"exact": "0.5.2"},
-            "openclaw": {"exact": "2026.7.1-2"},
+            "agenticdome-openclaw-security": {"exact": PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-openclaw-security"]["version"]},
+            "agenticdome-sdk": {"exact": PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]},
+            "openclaw": {
+                "min": _OPENCLAW_RUNTIME_MIN_VERSION,
+                "max": _OPENCLAW_RUNTIME_MAX_VERSION,
+            },
         },
-        "runtime": {"node": ">=22.19"},
+        "runtime": {"node": _OPENCLAW_NODE_RANGE},
         "adapter_module": "agenticdome-openclaw-security",
         "adapter_class": "OpenClawFirewall",
         "attachment_methods": ["protectedExecute", "sanitizeOutput"],
@@ -317,16 +350,24 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "docs": "agenticdome-openclaw-security package README",
     },
     "mcp-ts": {
-        "label": "Model Context Protocol (TypeScript)",
+        "label": "MCP API Client Surface (TypeScript)",
         "language": "typescript",
         "registry": "npm",
         "agenticdome_package": "agenticdome-sdk",
-        "packages": {"agenticdome-sdk": {"exact": "0.5.2"}},
+        "packages": {"agenticdome-sdk": {"exact": PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]}},
         "runtime": {"node": ">=18"},
         "adapter_module": "agenticdome-sdk",
         "adapter_class": "AgenticDomeClient",
         "attachment_methods": ["mcpToolCall", "mcpGuardrailValidate", "mcpListTools"],
-        "native_hooks": ["tools/call", "tools/list"],
+        "native_hooks": [],
+        "protocol_methods": ["tools/call", "tools/list"],
+        "integration_scope": "transport_neutral_client",
+        "external_sdk": {
+            "package": "@modelcontextprotocol/sdk",
+            "relationship": "not_a_dependency",
+            "certification": "not_applicable",
+            "note": "agenticdome-sdk sends MCP policy requests through its own transport-neutral client API; customer MCP transports may use @modelcontextprotocol/sdk independently.",
+        },
         "docs": "agenticdome-sdk package README (MCP section)",
     },
 }
@@ -337,7 +378,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
 _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
     "crewai": {
         "native_modules": {"crewai.hooks": ["register_after_tool_call_hook", "register_before_llm_call_hook", "register_before_tool_call_hook"]},
-        "adapter_attrs": ["AgenticDome_before_tool_call", "AgenticDome_after_tool_call", "AgenticDome_before_llm_call", "AgenticDomeCrewAIFirewall", "attach_firewall"],
+        "adapter_attrs": ["agenticdome_before_tool_call", "agenticdome_after_tool_call", "agenticdome_before_llm_call", "AgenticDomeCrewAIFirewall", "attach_firewall"],
     },
     "pydanticai": {
         "native_modules": {"pydantic_ai.capabilities": ["Hooks"]},
@@ -412,30 +453,30 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
         "firewall_methods": ["screen_upstream_prompt", "authorize_mcp_tool_call", "authorize_mcp_method", "sanitize_text", "sanitize_mcp_result"],
     },
     "custom-python": {
-        "adapter_attrs": ["AgentGuardClient"],
+        "adapter_attrs": ["AgenticDomeClient"],
         "firewall_methods": ["guardrail_validate", "mesh_validate"],
     },
 }
 
 _PACKAGE_CERTIFICATION_DATES: Dict[str, Dict[str, str]] = {
     "crewai": {"crewai":"2026-08-20"},
-    "pydanticai": {"pydantic-ai": "2026-08-20"},
+    "pydanticai": {"pydantic-ai": "2026-08-22"},
     "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-08-20"},
     "autogen": {"autogen-agentchat": "2026-07-26"},
-    "foundry": {"azure-ai-projects": "2026-08-01", "azure-identity": "2026-07-10"},
-    "openai-agents": {"openai-agents": "2026-08-20"},
-    "claude": {"claude-agent-sdk": "2026-08-20"},
+    "foundry": {"azure-ai-projects": "2026-08-22", "azure-identity": "2026-07-10"},
+    "openai-agents": {"openai-agents": "2026-08-22"},
+    "claude": {"claude-agent-sdk": "2026-08-23"},
     "smolagents": {"smolagents": "2026-07-23"},
     "agno": {"agno": "2026-08-16"},
     "google-adk": {"google-adk": "2026-08-18"},
     "llamaindex": {"llama-index": "2026-08-20"},
-    "bedrock": {"boto3": "2026-08-20"},
+    "bedrock": {"boto3": "2026-08-23"},
     "mcp": {"mcp": "2026-07-10"},
 }
 
 _PACKAGE_CERTIFICATION_NOTES: Dict[str, Dict[str, str]] = {
     "mcp": {
-        "mcp": "CrewAI 1.15.2 constrains mcp to ~=1.26.0 when both extras are installed in one runtime.",
+        "mcp": "CrewAI 1.15.x combined installs currently constrain mcp to the 1.28.x line; certify newer MCP releases in an isolated MCP runtime before extending this range.",
     },
 }
 
@@ -463,6 +504,15 @@ for _framework_key, _module_name in _SDK_ADAPTER_MODULES.items():
 # The public adapter is named "Host" because it protects the process consuming
 # MCP servers, while the shorter catalog key remains `mcp` for project detection.
 FRAMEWORK_HOOK_CATALOG["mcp"]["adapter_class"] = "AgenticDomeMCPHostFirewall"
+FRAMEWORK_HOOK_CATALOG["mcp"].update({
+    "integration_scope": "external_sdk_host_gateway",
+    "external_sdk": {
+        "package": "mcp",
+        "relationship": "certified_dependency",
+        "certification": "version_range",
+        "note": "The Python harness installs and verifies the external PyPI mcp package, its native imports, and the AgenticDome host/gateway firewall adapter.",
+    },
+})
 
 
 FRAMEWORK_ALIASES = {
@@ -537,6 +587,8 @@ def harness_compatibility_manifest() -> Dict[str, Dict[str, Any]]:
             certified_packages[package] = row
         manifest[harness_key] = {
             "label": contract["label"],
+            "integration_scope": contract.get("integration_scope"),
+            "external_sdk": copy.deepcopy(contract.get("external_sdk") or {}),
             "packages": list(contract.get("packages", {}).keys()),
             "certified_packages": certified_packages,
             "native_modules": copy.deepcopy(checks.get("native_modules", {})),

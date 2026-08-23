@@ -13,7 +13,7 @@ from types import MethodType
 from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Optional
 
 from ._framework_firewall import DecisionTokenStore, FrameworkFirewallBase, FrameworkFirewallConfig
-from .client import AgentGuardClient
+from .client import AgenticDomeClient
 
 
 logger = logging.getLogger("agenticdome.autogen")
@@ -245,7 +245,7 @@ class AgenticDomeAutoGenFirewall(FrameworkFirewallBase):
         self,
         config: Optional[FirewallConfig] = None,
         *,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         resolved = config or load_config()
@@ -411,7 +411,7 @@ class AgenticDomeAutoGenFirewall(FrameworkFirewallBase):
             raise
 
     async def ainspect_message(self, message: Any, **kwargs: Any) -> Any:
-        # AgentGuardClient is intentionally synchronous. Keeping one enforcement
+        # AgenticDomeClient is intentionally synchronous. Keeping one enforcement
         # path here avoids ordering races between consecutive AutoGen team events.
         return self.inspect_message(message, **kwargs)
 

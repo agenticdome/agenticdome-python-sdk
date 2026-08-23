@@ -42,8 +42,9 @@ For a Developer Integration:
    tool, delegation, retrieval and output boundaries without uploading source.
 2. **Required — confirm workload intent.** Record business purpose, sensitive
    actions and deployment preference in the Customer Control Panel.
-3. **Optional helper — generate a scaffold.** Review a suggested patch, or use
-   the framework guide and integrate manually.
+3. **Required plan; optional scaffold.** Run the tenant-bound Integration
+   Copilot plan. Review a suggested scaffold, or use the framework guide and
+   integrate manually.
 4. **Required — verify before production.** Recheck coverage, run application
    tests, import the evidence and prove exact tenant/runtime binding.
 
@@ -66,7 +67,6 @@ cd /path/to/one-deployable-agent-workload
 python -m pip install agenticdome-python-sdk
 agenticdome init
 agenticdome inspect --output agenticdome-inspection.json
-agenticdome verify --run-tests --output .agenticdome/verification.json
 ```
 
 Upload `agenticdome-inspection.json` in Step 1 of the Control Panel. The JSON
@@ -79,6 +79,8 @@ application. It normally contains that service's `pyproject.toml`,
 assistant separately inside each independently deployed agent service; do not
 scan the top-level monorepo unless it genuinely represents one deployment.
 Each workload keeps its own `.agenticdome` evidence beside its own CI tests.
+Run verification only after Step 3 has produced a signed, catalog-bound
+Integration Copilot plan and the application attachment tests exist.
 
 `agenticdome init` creates `.agenticdome/config.json` and
 `.agenticdome/inspection.json`. The scanner:
@@ -130,6 +132,8 @@ export AGENTICDOME_TENANT_ID="your_tenant_id"
 export AGENTICDOME_COPILOT_API_KEY="your_dedicated_copilot_key"
 agenticdome plan
 agenticdome scaffold
+agenticdome inspect --output agenticdome-inspection.json
+agenticdome verify --run-tests --output .agenticdome/verification.json
 git apply --stat .agenticdome/scaffold/agenticdome.patch
 ```
 
@@ -141,7 +145,8 @@ request, supplies its signed SDK Harness catalog, and verifies the private
 Core's signed response. The CLI rejects a catalog digest that differs from its
 installed SDK and binds cached results to the tenant, sidecar origin and IR.
 
-Scaffolding is an optional accelerator. It writes `integration-plan.json`, a review README, a secret-free
+The tenant-bound plan is required for certified verification. Scaffolding is
+an optional accelerator. It writes `integration-plan.json`, a review README, a secret-free
 environment example, Python and/or TypeScript wrapper code, and
 `agenticdome.patch` under `.agenticdome/scaffold`. The patch represents those
 review files; it does not edit application source. Copy or adapt the wrapper at

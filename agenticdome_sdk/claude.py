@@ -13,7 +13,7 @@ from ._framework_firewall import (
     InMemoryDecisionTokenStore,
     RedisDecisionTokenStore,
 )
-from .client import AgentGuardClient
+from .client import AgenticDomeClient
 
 import logging
 
@@ -114,7 +114,7 @@ class AgenticDomeClaudeFirewall(FrameworkFirewallBase):
         self,
         config: Optional[FirewallConfig] = None,
         *,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         super().__init__(

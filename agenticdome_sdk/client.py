@@ -27,11 +27,11 @@ def _sdk_version() -> str:
         return "source"
 
 
-class AgentGuardError(Exception):
+class AgenticDomeError(Exception):
     """Base SDK exception."""
 
 
-class AgentGuardHTTPError(AgentGuardError):
+class AgenticDomeHTTPError(AgenticDomeError):
     """Raised when the API returns a non-2xx response."""
 
     def __init__(self, status_code: int, message: str, response_text: str = ""):
@@ -41,9 +41,9 @@ class AgentGuardHTTPError(AgentGuardError):
         super().__init__(f"[{status_code}] {message}")
 
 
-class AgentGuardClient:
+class AgenticDomeClient:
     """
-    Official Python SDK for AgentGuard Intelligence Engine and Action Firewall.
+    Official Python SDK for the AgenticDome Action Firewall.
 
     Supports:
     - SaaS scans
@@ -408,7 +408,7 @@ class AgentGuardClient:
                 message = payload.get("detail") or payload.get("message") or payload.get("error") or response.text
             except Exception:
                 message = response.text
-            raise AgentGuardHTTPError(response.status_code, message, response.text)
+            raise AgenticDomeHTTPError(response.status_code, message, response.text)
 
         if not response.text.strip():
             return {}
@@ -416,7 +416,7 @@ class AgentGuardClient:
         try:
             return response.json()
         except Exception as exc:
-            raise AgentGuardError(f"Failed to decode JSON response from {url}: {exc}") from exc
+            raise AgenticDomeError(f"Failed to decode JSON response from {url}: {exc}") from exc
 
     def _protected_request(
         self,
@@ -757,7 +757,7 @@ class AgentGuardClient:
             verified = bool(broker.get("verified")) and bool(broker.get("token_consumed"))
             must_enforce = self.execution_broker_mode == "enforce" or execution_broker is True
             if must_enforce and not verified:
-                raise AgentGuardError(
+                raise AgenticDomeError(
                     "AgenticDome execution broker did not return a verified, atomically consumed decision"
                 )
         return response
@@ -767,7 +767,7 @@ class AgentGuardClient:
         """Build headers for an AgenticDome egress gateway from a broker result."""
         receipt = str(result.get("execution_receipt") or "").strip()
         if not receipt:
-            raise AgentGuardError("Broker result does not contain an execution receipt")
+            raise AgenticDomeError("Broker result does not contain an execution receipt")
         headers = {"X-AgenticDome-Execution-Receipt": receipt}
         if workload_id is not None:
             normalized = str(workload_id).strip()
@@ -780,7 +780,7 @@ class AgentGuardClient:
         """Return signed-runtime prerequisite and layered-enforcement readiness."""
         return self._request("GET", "/health/readiness")
 
-    # Backward compatibility alias
+    # Convenience wrapper
     def guardrail_check(
         self,
         text: str,
@@ -830,7 +830,7 @@ class AgentGuardClient:
         Preferred contract:
           - top-level platform is strongly recommended and matches your newer API model
 
-        Backward compatibility:
+        Platform resolution:
           - if platform is omitted but policy_context.platform exists, that value is used
         """
         effective_platform = self._normalize_optional_string(platform) or self._normalize_optional_string(
@@ -1645,7 +1645,3 @@ class AgentGuardClient:
 
     def close(self) -> None:
         self.session.close()
-
-
-# Backward compatibility alias
-GuardrailClient = AgentGuardClient

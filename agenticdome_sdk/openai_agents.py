@@ -16,16 +16,16 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, AsyncIterator, Awaitable, Callable, Deque, Dict, Optional, Tuple
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -413,7 +413,7 @@ class AgenticDomeOpenAIAgentsFirewall:
         self,
         config: Optional[FirewallConfig] = None,
         *,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or load_config()
@@ -421,7 +421,7 @@ class AgenticDomeOpenAIAgentsFirewall:
             raise OpenAIAgentsFirewallConfigurationError(
                 "Missing AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, or AGENTICDOME_TENANT_ID."
             )
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id,
@@ -751,7 +751,7 @@ class AgenticDomeOpenAIAgentsFirewall:
         return {
             key: value
             for key, value in (tool_args or {}).items()
-            if not str(key).startswith("_AgenticDome_")
+            if not str(key).startswith("_agenticdome_")
             and key not in {"_decision_token", "_source_agent_id", "decision_token", "source_agent_id"}
         }
 
@@ -1099,10 +1099,10 @@ class AgenticDomeOpenAIAgentsFirewall:
             session_id = self._ctx_session_id(ctx)
             decision_token = decision_token_getter(ctx, clean_args) if decision_token_getter else None
             if not decision_token:
-                decision_token = self._safe_str(tool_args.get("_AgenticDome_decision_token") or tool_args.get("_decision_token") or self._ctx_attr(ctx, "decision_token")) or None
+                decision_token = self._safe_str(tool_args.get("_agenticdome_decision_token") or tool_args.get("_decision_token") or self._ctx_attr(ctx, "decision_token")) or None
             source_agent_id = source_agent_id_getter(ctx, clean_args) if source_agent_id_getter else None
             if not source_agent_id:
-                source_agent_id = self._safe_str(tool_args.get("_AgenticDome_source_agent_id") or tool_args.get("_source_agent_id") or self._ctx_attr(ctx, "source_agent_id")) or None
+                source_agent_id = self._safe_str(tool_args.get("_agenticdome_source_agent_id") or tool_args.get("_source_agent_id") or self._ctx_attr(ctx, "source_agent_id")) or None
             await self.verify_specialist_execution(
                 session_id=session_id,
                 specialist_agent_id=agent_id,

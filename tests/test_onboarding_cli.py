@@ -21,9 +21,10 @@ from agenticdome_sdk.onboarding_cli import (
 REAL_COPILOT_ANALYSIS = onboarding_cli._copilot_semantic_analysis
 
 
-def _private_analysis(*, points=None, bypasses=None, confidence="high"):
+def _private_analysis(*, points=None, bypasses=None, reviews=None, confidence="high"):
     return {
         "schema": "agenticdome.semantic-analysis.v2",
+        "analysis_revision": onboarding_cli.COPILOT_ANALYSIS_REVISION,
         "ir_schema": "agenticdome.copilot-ir.v1",
         "ir_sha256": "test-bound-by-stub",
         "source_upload": False,
@@ -32,6 +33,7 @@ def _private_analysis(*, points=None, bypasses=None, confidence="high"):
         "engines": {"python": {"engine": "python-ast", "available": True, "files_parsed": 1}},
         "attachment_points": list(points or []),
         "bypass_risks": list(bypasses or []),
+        "review_findings": list(reviews or []),
         "coverage": {},
         "execution_paths": [],
         "symbols_indexed": 1,
@@ -234,6 +236,33 @@ def test_inspection_emits_source_free_ir_for_private_copilot(tmp_path):
     serialized = json.dumps(ir)
     assert "payments.refund" not in serialized
     assert str(tmp_path) not in serialized
+    function = next(item for item in ir["functions"] if item["symbol"] == "run_agent")
+    tool_call = next(item for item in function["events"] if item.get("callee") == "call_tool")
+    returned = next(item for item in function["events"] if item.get("event") == "return")
+    assert tool_call["result_targets"] == ["result"]
+    assert returned["value_refs"] == ["ref:result"]
+
+
+def test_ir_preserves_class_qualified_wrapper_and_fail_closed_raise(tmp_path):
+    (tmp_path / "gateway.py").write_text(
+        "class ActionGateway:\n"
+        "    def execute(self, handler):\n"
+        "        try:\n"
+        "            self.policy.authorize(tool_name='safe')\n"
+        "        except Exception:\n"
+        "            raise\n"
+        "        return handler()\n",
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+    wrapper = next(
+        item for item in report["copilot_ir"]["functions"]
+        if item["symbol"] == "ActionGateway.execute"
+    )
+
+    assert any(item["event"] == "raise" for item in wrapper["events"])
+    assert any(item["callee"] == "self.policy.authorize" for item in wrapper["events"])
 
 
 def test_private_copilot_cache_is_bound_to_tenant_sidecar_ir_and_catalog(tmp_path, monkeypatch):
@@ -373,6 +402,30 @@ def test_conditional_guard_does_not_falsely_dominate_unconditional_executor(tmp_
 
     assert tool_point["protection_observed"] is False
     assert plan["semantic_gate"]["high_severity_bypasses"] == 1
+
+
+def test_indirect_output_is_review_required_not_claimed_as_bypass(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "def endpoint(request):\n    return run_agent(request)\n",
+        encoding="utf-8",
+    )
+    review = {
+        "boundary": "output_egress", "path": "app.py", "line": 2, "symbol": "endpoint",
+        "severity": "medium", "required_guard": "output_guard", "confidence_score": 0.88,
+        "disposition": "review_required",
+    }
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            onboarding_cli,
+            "_copilot_semantic_analysis",
+            lambda root, ir, required: _private_analysis(reviews=[review]),
+        )
+        plan = integration_plan(tmp_path)
+
+    assert plan["semantic_gate"]["unresolved_bypasses"] == 0
+    assert plan["semantic_gate"]["review_required"] == 1
+    assert plan["semantic_gate"]["production_ready"] is False
 
 
 def test_command_inspect_json_is_installable(tmp_path, capsys):
@@ -544,7 +597,7 @@ def test_out_of_range_framework_version_is_blocked(tmp_path):
 
 def test_mcp_typescript_uses_published_core_contract(tmp_path):
     (tmp_path / "package.json").write_text(
-        json.dumps({"dependencies": {"@modelcontextprotocol/sdk": "latest", "agenticdome-sdk": "0.5.2"}}),
+        json.dumps({"dependencies": {"@modelcontextprotocol/sdk": "latest", "agenticdome-sdk": onboarding_cli.PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]}}),
         encoding="utf-8",
     )
     (tmp_path / "server.ts").write_text('import { Server } from "@modelcontextprotocol/sdk";\n', encoding="utf-8")

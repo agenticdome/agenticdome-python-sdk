@@ -59,6 +59,21 @@ Other protocol messages pass through unchanged. Keep the MCP transport and SDK
 versions current, and enforce a protocol-method allowlist at the gateway when
 your threat model requires strict rejection of custom or unknown methods.
 
+## Supported external MCP package range
+
+The `agenticdome-python-sdk[mcp]` extra currently installs
+`mcp>=1.26.0,<=1.28.1`. This is the certified range of the external PyPI `mcp`
+package; it is not the AgenticDome SDK version. MCP 2.0 removed the certified
+`mcp.server.fastmcp` import surface, while CrewAI 1.15.5 declares
+`mcp~=1.28.1` for combined installations. The upper bound therefore remains
+intentional until isolated MCP 2.x certification passes native imports,
+AgenticDome adapter checks, the preserved 1.x floor, and package release gates.
+
+The firewall accepts plain JSON-RPC dictionaries and does not need external MCP
+types at runtime. A project may install the dependency-light base SDK beside a
+separately managed transport, but that does not create a formal AgenticDome MCP
+2.x support claim.
+
 ## Why use AgenticDome for MCP
 
 MCP standardizes how applications expose tools, resources, prompts, and
@@ -341,6 +356,10 @@ when the deployment model permits it.
 3. Confirm safe live traffic is allowed against the assigned tenant sidecar.
 4. Confirm returned secrets/PII are handled according to tenant policy.
 5. Test sidecar unavailability with the selected fail-open/fail-closed posture.
+   Request/preflight failures follow `AGENTICDOME_FAIL_CLOSED`. The current
+   `forward_with_firewall()` convenience path returns the original response
+   after an unexpected non-policy result-review error, so applications that
+   require fail-closed output handling must catch and block that path explicitly.
 6. Verify stable human/workload, agent, session, server and tool attribution in
    runtime evidence.
 7. Run SDK Assurance, then Performance Smoke, against the same tenant and

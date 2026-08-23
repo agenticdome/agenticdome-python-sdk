@@ -23,7 +23,7 @@ FRAMEWORKS: Dict[str, Dict[str, str]] = {
     "llamaindex": {"label": "LlamaIndex", "extra": "llamaindex", "import": "from agenticdome_sdk.llamaindex import AgenticDomeLlamaIndexFirewall"},
     "bedrock": {"label": "AWS Bedrock", "extra": "bedrock", "import": "from agenticdome_sdk.aws_bedrock import AgenticDomeAWSBedrockFirewall"},
     "mcp": {"label": "MCP Host / Gateway", "extra": "mcp", "import": "from agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall"},
-    "custom-python": {"label": "Custom Python", "extra": "", "import": "from agenticdome_sdk import AgentGuardClient"},
+    "custom-python": {"label": "Custom Python", "extra": "", "import": "from agenticdome_sdk import AgenticDomeClient"},
 }
 
 
@@ -58,21 +58,21 @@ DEMO_PAIR = ("safe_lookup", "refund_hijack")
 
 
 def _client(live: bool):
-    from .client import AgentGuardClient
+    from .client import AgenticDomeClient
 
     if live:
         required = ["AGENTICDOME_API_BASE", "AGENTICDOME_API_KEY", "AGENTICDOME_TENANT_ID"]
         missing = [name for name in required if not str(os.getenv(name, "")).strip()]
         if missing:
             raise SystemExit("Live mode requires: " + ", ".join(missing))
-        return AgentGuardClient(
+        return AgenticDomeClient(
             api_base=os.environ["AGENTICDOME_API_BASE"],
             api_key=os.environ["AGENTICDOME_API_KEY"],
             tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
             mode="live",
         )
 
-    return AgentGuardClient(mode="local_sim")
+    return AgenticDomeClient(mode="local_sim")
 
 
 def _run_demo(framework_key: str, scenario_key: str, *, live: bool) -> Dict[str, Any]:

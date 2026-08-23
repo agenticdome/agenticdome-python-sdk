@@ -59,14 +59,17 @@ keeps source code on your machine:
 
 ```bash
 agenticdome init
-agenticdome verify --run-tests --output .agenticdome/verification.json
+agenticdome inspect --output agenticdome-inspection.json
 ```
 
-`init` writes the secret-free inspection and local configuration. `verify` is
-required before production because it rechecks the discovered boundaries,
-runs harmless allowed/blocked cases and, with `--run-tests`, runs detected
-application tests. If you want a suggested patch, run `agenticdome scaffold`;
-that step is optional and writes an unapplied patch for review.
+`init` writes the secret-free inspection and local configuration. For the
+certified onboarding path, obtain the assigned sidecar and a dedicated
+`integration_copilot` key, run the tenant-bound `agenticdome plan`, attach
+and test the selected boundaries, then run
+`agenticdome verify --run-tests --output .agenticdome/verification.json`.
+The private plan is required because production verification consumes its
+signed, catalog-bound semantic analysis. `agenticdome scaffold` remains
+optional and writes an unapplied patch for review.
 
 When `.agenticdome/inspection.json` is imported into Developer Integration,
 the Control Panel adds its detected frameworks to the workload. Frameworks,
@@ -660,9 +663,9 @@ from agenticdome_sdk.crewai import (
     DecisionTokenStore,
     InMemoryDecisionTokenStore,
     RedisDecisionTokenStore,
-    AgenticDome_before_tool_call,
-    AgenticDome_after_tool_call,
-    AgenticDome_before_llm_call,
+    agenticdome_before_tool_call,
+    agenticdome_after_tool_call,
+    agenticdome_before_llm_call,
     sanitize_streaming_response,
     attach_firewall,
     unregister_firewall,
@@ -2175,13 +2178,15 @@ from agenticdome_sdk.aws_bedrock import (
 
 ### MCP Host / Gateway
 
-The host is the right place to protect MCP: it can inspect `tools/call` requests before side effects happen and sanitize tool results before they return to the planner, agent, or client. The adapter accepts plain JSON-RPC request dictionaries, so it works with any MCP host, proxy, gateway, or router.
+The host is the right place to protect MCP: it can inspect `tools/call` requests before side effects happen and review configured tool results before they return to the planner, agent, or client. The adapter accepts plain JSON-RPC request dictionaries, so it can be wired into an application-controlled MCP host, proxy, gateway, or router without replacing its transport.
 
 Start with the dedicated [MCP Host and Gateway Action Firewall guide](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/docs/mcp-integration.md), including the network-free allowed, blocked, and poisoned-result rehearsal.
 
 ```bash
 pip install "agenticdome-python-sdk[mcp]"
 ```
+
+**MCP package compatibility:** the `[mcp]` extra currently installs the externally certified PyPI range `mcp>=1.26.0,<=1.28.1`. That is the supported range of the third-party `mcp` package, not the version of AgenticDome's SDK. MCP 2.0 removed the certified `mcp.server.fastmcp` import surface, and CrewAI 1.15.5 declares `mcp~=1.28.1` for combined installs. Keep the ceiling until an isolated MCP 2.x certification passes the native imports, adapter checks, preserved 1.x floor, and package gates. The AgenticDome firewall itself is plain-JSON-RPC and dependency-light, but installing the base SDK beside an independently managed MCP 2.x transport does not constitute a formally certified MCP 2.x support claim.
 
 **Wrap the forwarding boundary** — the full host flow is `JSON-RPC request → rate limit / upstream prompt screen → method authorization → optional delegation-token verification → third-party MCP server → list filtering / result sanitization → client`:
 
@@ -2245,7 +2250,7 @@ await firewall.authorize_manager_handoff(
 <details>
 <summary>MCP capabilities, configuration, notes, and imports</summary>
 
-Supports: optional upstream prompt screening from host context · `tools/call` authorization via `mcp_guardrail_validate()` · authorization for tool, resource, prompt and sampling methods · tool-list filtering according to policy · resource, prompt, sampling, tool, and streaming-output sanitization · delegated verification through public handoff methods · per-server policy context · sanitized business-argument forwarding · size limits, rate limiting and audit logging · Mesh output sanitization for supported MCP result shapes · fail-closed/fail-open behavior via `AGENTICDOME_FAIL_CLOSED`.
+Supports: optional upstream prompt screening from host context · `tools/call` authorization via `mcp_guardrail_validate()` · authorization for tool, resource, prompt and sampling methods · tool-list filtering according to policy · resource, prompt, sampling, tool, and streaming-output sanitization · delegated verification through public handoff methods · per-server policy context · sanitized business-argument forwarding · size limits, rate limiting and audit logging · Mesh output sanitization for supported MCP result shapes · configurable request/preflight fail-closed or fail-open behavior via `AGENTICDOME_FAIL_CLOSED`.
 
 ```bash
 export AGENTICDOME_PLATFORM="mcp"
@@ -2269,7 +2274,7 @@ export AGENTICDOME_MCP_RATE_LIMIT_PER_MINUTE="0"
 # export AGENTICDOME_REDIS_KEY_PREFIX="AgenticDome:mcp:handoff"
 ```
 
-Notes: call `preflight_request()` or `forward_with_firewall()` in the host, gateway, proxy, or router that forwards JSON-RPC requests — env config alone does not intercept MCP traffic. Disable individual protections with the corresponding `AGENTICDOME_MCP_PROTECT_*` setting when a simple host needs passthrough behavior. AgenticDome protects the local host boundary and returned result; it cannot inspect code inside a remote third-party MCP server you do not control. Pass `mcp_server_id`, `mcp_server_url`, `mcp_server_vendor`, and trust metadata in `context` for per-server policy decisions. Use stable `session_id` values; set `AGENTICDOME_REQUIRE_SESSION_ID=true` when every host request should be traceable.
+Notes: call `preflight_request()` or `forward_with_firewall()` in the host, gateway, proxy, or router that forwards JSON-RPC requests — env config alone does not intercept MCP traffic. Disable individual protections with the corresponding `AGENTICDOME_MCP_PROTECT_*` setting when a simple host needs passthrough behavior. AgenticDome protects only the routed local boundary and configured returned-result paths; it cannot inspect code inside a remote third-party MCP server you do not control. `forward_with_firewall()` enforces policy blocks, but currently returns the original response after an unexpected non-policy result-sanitization error. Applications requiring fail-closed output handling must catch and block review failures explicitly. Pass `mcp_server_id`, `mcp_server_url`, `mcp_server_vendor`, and trust metadata in `context` for per-server policy decisions. Use stable `session_id` values; set `AGENTICDOME_REQUIRE_SESSION_ID=true` when every host request should be traceable.
 
 ```python
 from agenticdome_sdk.mcp_host import (
@@ -2293,9 +2298,9 @@ Use the core client when you own the runtime loop or have a custom gateway — A
 **End-to-end example** — prompt screen, tool authorization, execution, output review:
 
 ```python
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 
-client = AgentGuardClient(
+client = AgenticDomeClient(
     api_base="https://demo-sidecar.agenticdome.io",
     api_key="your-api-key",
     tenant_id="your-tenant-id",
@@ -2462,9 +2467,9 @@ client.report_incident(
 For high-impact tools, authorise at the last responsible moment and bind the decision to the real destination, HTTP method, tool version/digest, and workload identity. The sidecar returns a short-lived, single-use execution receipt; attach it to the actual outbound request that traverses the AgenticDome enforcement gateway.
 
 ```python
-from agenticdome_sdk import AgentGuardClient
+from agenticdome_sdk import AgenticDomeClient
 
-client = AgentGuardClient(
+client = AgenticDomeClient(
     "https://your-sidecar.example.com",
     execution_broker_mode="enforce",
 )

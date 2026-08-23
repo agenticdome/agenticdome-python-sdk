@@ -17,16 +17,16 @@ from inspect import isawaitable
 from threading import Lock
 from typing import Any, AsyncIterator, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover - compatibility with older package layouts
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:  # pragma: no cover
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -294,14 +294,14 @@ def _build_token_store(config: FirewallConfig) -> DecisionTokenStore:
 class AgenticDomeAWSBedrockFirewall:
     """Firewall for local AWS Bedrock Runtime, Bedrock Agents, and retrieval boundaries."""
 
-    def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgentGuardClient] = None) -> None:
+    def __init__(self, *, config: Optional[FirewallConfig] = None, client: Optional[AgenticDomeClient] = None) -> None:
         self.config = config or load_config()
         if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
             raise AWSBedrockConfigurationError(
                 "AgenticDome AWS Bedrock firewall misconfigured. "
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
             )
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id,
@@ -510,7 +510,7 @@ class AgenticDomeAWSBedrockFirewall:
         return {
             key: value
             for key, value in (args or {}).items()
-            if not str(key).startswith("_AgenticDome_")
+            if not str(key).startswith("_agenticdome_")
             and not str(key).startswith("_decision_")
             and str(key) not in {"decision_token", "source_agent_id", "delegation_token", "handoff_token"}
         }
@@ -670,7 +670,7 @@ class AgenticDomeAWSBedrockFirewall:
         return ""
 
     def _token_from_args(self, tool_args: Dict[str, Any]) -> str:
-        for key in ("_AgenticDome_decision_token", "decision_token", "delegation_token", "handoff_token"):
+        for key in ("_agenticdome_decision_token", "decision_token", "delegation_token", "handoff_token"):
             value = tool_args.get(key)
             if value:
                 return self._safe_str(value)

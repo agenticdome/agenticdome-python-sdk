@@ -13,16 +13,16 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tuple
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -499,18 +499,18 @@ def _strip_private_args(args: Dict[str, Any]) -> Dict[str, Any]:
     private_keys = {
         "decision_token",
         "_decision_token",
-        "AgenticDome_decision_token",
-        "_AgenticDome_decision_token",
+        "agenticdome_decision_token",
+        "_agenticdome_decision_token",
         "source_agent_id",
         "_source_agent_id",
-        "AgenticDome_source_agent_id",
-        "_AgenticDome_source_agent_id",
+        "agenticdome_source_agent_id",
+        "_agenticdome_source_agent_id",
     }
     return {
         key: value
         for key, value in (args or {}).items()
         if key not in private_keys
-        and not str(key).startswith("_AgenticDome_")
+        and not str(key).startswith("_agenticdome_")
         and not str(key).startswith("_decision_")
     }
 
@@ -603,7 +603,7 @@ class AgenticDomeAgnoFirewall:
         self,
         *,
         config: Optional[FirewallConfig] = None,
-        client: Optional[AgentGuardClient] = None,
+        client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
     ) -> None:
         self.config = config or load_config()
@@ -614,7 +614,7 @@ class AgenticDomeAgnoFirewall:
                 "Set AGENTICDOME_API_BASE, AGENTICDOME_API_KEY, and AGENTICDOME_TENANT_ID."
             )
 
-        self.client = client or AgentGuardClient(
+        self.client = client or AgenticDomeClient(
             api_base=self.config.api_base,
             api_key=self.config.api_key,
             tenant_id=self.config.tenant_id,
@@ -874,24 +874,24 @@ class AgenticDomeAgnoFirewall:
         policy_context = raw_policy if isinstance(raw_policy, dict) else {}
         token = (
             kwargs.get("decision_token")
-            or kwargs.get("AgenticDome_decision_token")
-            or kwargs.get("_AgenticDome_decision_token")
+            or kwargs.get("agenticdome_decision_token")
+            or kwargs.get("_agenticdome_decision_token")
             or kwargs.get("_decision_token")
             or tool_args.get("decision_token")
-            or tool_args.get("AgenticDome_decision_token")
-            or tool_args.get("_AgenticDome_decision_token")
+            or tool_args.get("agenticdome_decision_token")
+            or tool_args.get("_agenticdome_decision_token")
             or tool_args.get("_decision_token")
             or policy_context.get("decision_token")
-            or policy_context.get("AgenticDome_decision_token")
+            or policy_context.get("agenticdome_decision_token")
         )
         source = (
             kwargs.get("source_agent_id")
-            or kwargs.get("AgenticDome_source_agent_id")
-            or kwargs.get("_AgenticDome_source_agent_id")
+            or kwargs.get("agenticdome_source_agent_id")
+            or kwargs.get("_agenticdome_source_agent_id")
             or kwargs.get("_source_agent_id")
             or tool_args.get("source_agent_id")
-            or tool_args.get("AgenticDome_source_agent_id")
-            or tool_args.get("_AgenticDome_source_agent_id")
+            or tool_args.get("agenticdome_source_agent_id")
+            or tool_args.get("_agenticdome_source_agent_id")
             or tool_args.get("_source_agent_id")
             or policy_context.get("source_agent_id")
         )
@@ -1242,7 +1242,7 @@ class AgenticDomeAgnoFirewall:
             else:
                 self.screen_input(agent=agent, kwargs=hook_kwargs)
             return True
-        except (AgenticDomeAgnoDenied, AgenticDomeAgnoConfigurationError, AgentGuardHTTPError) as exc:
+        except (AgenticDomeAgnoDenied, AgenticDomeAgnoConfigurationError, AgenticDomeHTTPError) as exc:
             return self._handle_error(exc, "agno pre_hook")
         except Exception as exc:
             return self._handle_error(exc, "agno pre_hook")
@@ -1377,11 +1377,11 @@ class AgenticDomeAgnoFirewall:
                     "tool_platform",
                     "source_agent_id",
                     "decision_token",
-                    "AgenticDome_decision_token",
-                    "_AgenticDome_decision_token",
+                    "agenticdome_decision_token",
+                    "_agenticdome_decision_token",
                     "_decision_token",
-                    "AgenticDome_source_agent_id",
-                    "_AgenticDome_source_agent_id",
+                    "agenticdome_source_agent_id",
+                    "_agenticdome_source_agent_id",
                     "_source_agent_id",
                 }
                 call_kwargs = dict(kwargs)

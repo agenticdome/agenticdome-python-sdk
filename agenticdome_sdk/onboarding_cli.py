@@ -37,6 +37,7 @@ from .copilot_ir import collect_repository_ir
 
 SCHEMA = "agenticdome.onboarding-report.v1"
 CONFIG_SCHEMA = "agenticdome.project-config.v1"
+COPILOT_ANALYSIS_REVISION = 4
 MAX_FILES = 2_000
 MAX_TEXT_BYTES = 512_000
 IGNORED_DIRECTORIES = {
@@ -174,6 +175,7 @@ def _ir_sha256(ir: Dict[str, Any]) -> str:
 def _pending_semantic_analysis(ir: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "schema": "agenticdome.semantic-analysis.v2",
+        "analysis_revision": COPILOT_ANALYSIS_REVISION,
         "ir_schema": ir.get("schema"),
         "ir_sha256": _ir_sha256(ir),
         "source_upload": False,
@@ -182,6 +184,7 @@ def _pending_semantic_analysis(ir: Dict[str, Any]) -> Dict[str, Any]:
         "engines": ir.get("engines", {}),
         "attachment_points": [],
         "bypass_risks": [],
+        "review_findings": [],
         "coverage": {},
         "execution_paths": [],
         "symbols_indexed": 0,
@@ -222,6 +225,7 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
             and cached_binding.get("sidecar_verified") is True
             and isinstance(semantic, dict)
             and semantic.get("ir_sha256") == ir_digest
+            and semantic.get("analysis_revision") == COPILOT_ANALYSIS_REVISION
         ):
             return semantic
 
@@ -270,6 +274,11 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
     semantic = result.get("semantic_analysis")
     if not isinstance(semantic, dict) or semantic.get("ir_sha256") != ir_digest:
         raise SystemExit("Integration Copilot response is not bound to the submitted structural IR.")
+    if semantic.get("analysis_revision") != COPILOT_ANALYSIS_REVISION:
+        raise SystemExit(
+            "Integration Copilot Core is older than this SDK's required analysis revision. "
+            "Update the assigned control plane and sidecar, then rerun the Copilot."
+        )
     response_binding = result.get("catalog_binding")
     if (
         not isinstance(response_binding, dict)
@@ -687,6 +696,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
     frameworks = config.get("frameworks", [])
     hook_plans = _hook_plans(root, report, frameworks)
     semantic_bypasses = semantic.get("bypass_risks", []) if isinstance(semantic, dict) else []
+    semantic_reviews = semantic.get("review_findings", []) if isinstance(semantic, dict) else []
     return {
         "schema": "agenticdome.integration-plan.v1",
         "hook_catalog": {
@@ -715,9 +725,11 @@ def integration_plan(root: Path) -> Dict[str, Any]:
             "confidence": semantic.get("confidence", "unavailable") if isinstance(semantic, dict) else "unavailable",
             "symbols_indexed": int(semantic.get("symbols_indexed", 0)) if isinstance(semantic, dict) else 0,
             "call_edges": int(semantic.get("call_edges", 0)) if isinstance(semantic, dict) else 0,
+            "action_required": len(semantic_bypasses),
             "unresolved_bypasses": len(semantic_bypasses),
             "high_severity_bypasses": sum(1 for item in semantic_bypasses if item.get("severity") == "high"),
-            "production_ready": not semantic_bypasses and semantic.get("confidence") in {"high", "partial"},
+            "review_required": len(semantic_reviews),
+            "production_ready": not semantic_bypasses and not semantic_reviews and semantic.get("confidence") in {"high", "partial"},
         },
         "coverage": {"counts": counts, "required": required, "gaps": gaps},
         "recommended_order": [
@@ -728,7 +740,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
             "Review/redact output before streaming, returning, logging or persistence.",
         ],
         "safe_change_policy": "Generate an unapplied patch; review and test before applying it to application code.",
-        "claim_boundary": "Exact symbols are catalog-certified only for resolved package versions. The private Copilot reasons over source-free AST/compiler metadata to rank insertion locations and flag observable bypasses; reflection, generated code and unexercised runtime paths remain human-reviewed until compatibility and workload tests pass.",
+        "claim_boundary": "Exact symbols are catalog-certified only for resolved package versions. The private Copilot reasons over source-free AST/compiler metadata, class-qualified calls, guard dominance and value lineage to separate action-required enforcement gaps from internal or uncertain review paths; reflection, generated code and unexercised runtime paths remain human-reviewed until compatibility and workload tests pass.",
     }
 
 
@@ -744,7 +756,8 @@ def _semantic_review_markdown(plan: Dict[str, Any]) -> str:
         "- Confidence: **{}**".format(gate.get("confidence", "unavailable")),
         "- Symbols indexed: {}".format(gate.get("symbols_indexed", 0)),
         "- Interprocedural call edges: {}".format(gate.get("call_edges", 0)),
-        "- Unresolved bypasses: {}".format(gate.get("unresolved_bypasses", 0)),
+        "- Action-required findings: {}".format(gate.get("action_required", gate.get("unresolved_bypasses", 0))),
+        "- Review-required findings: {}".format(gate.get("review_required", 0)),
         "",
         "## Ranked attachment points",
         "",
@@ -758,7 +771,7 @@ def _semantic_review_markdown(plan: Dict[str, Any]) -> str:
                 score=float(item.get("confidence_score", 0)), state=state,
             )
         )
-    lines.extend(["", "## Unresolved bypass risks", ""])
+    lines.extend(["", "## Action-required bypass findings", ""])
     bypasses = semantic.get("bypass_risks", [])
     if not bypasses:
         lines.append("No statically observable bypass remains. Runtime and workload tests are still required.")
@@ -767,6 +780,17 @@ def _semantic_review_markdown(plan: Dict[str, Any]) -> str:
             "- `{path}:{line}` · **{severity}** · {boundary} · `{symbol}` · required `{guard}`".format(
                 path=item.get("path"), line=item.get("line"), severity=item.get("severity"),
                 boundary=item.get("boundary"), symbol=item.get("symbol"), guard=item.get("required_guard"),
+            )
+        )
+    lines.extend(["", "## Review-required internal or indirect paths", ""])
+    reviews = semantic.get("review_findings", [])
+    if not reviews:
+        lines.append("No internal or indirect path remains pending human classification.")
+    for item in reviews[:100]:
+        lines.append(
+            "- `{path}:{line}` · **review required** · {boundary} · `{symbol}` · {reason}".format(
+                path=item.get("path"), line=item.get("line"), boundary=item.get("boundary"),
+                symbol=item.get("symbol"), reason=item.get("reason"),
             )
         )
     lines.extend([
@@ -826,9 +850,9 @@ This module does not monkey-patch your framework. Call these functions at the
 real input, tool-executor and output boundaries identified in the plan.
 """
 import os
-from agenticdome_sdk import AgentGuardClient
+from agenticdome_sdk import AgenticDomeClient
 
-client = AgentGuardClient(
+client = AgenticDomeClient(
     api_base=os.environ["AGENTICDOME_API_BASE"],
     api_key=os.environ["AGENTICDOME_API_KEY"],
     tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
@@ -860,7 +884,7 @@ def review_output(text, *, agent_id, session_id, platform):
     typescript_wrapper = '''/** AgenticDome enforcement boundaries generated for review.
  * Call these functions at the real input, tool-executor and output boundaries.
  */
-import AgentGuardClient from "agenticdome-sdk";
+import AgenticDomeClient from "agenticdome-sdk";
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -868,7 +892,7 @@ function required(name: string): string {
   return value;
 }
 
-export const agenticDome = new AgentGuardClient(required("AGENTICDOME_API_BASE"), {
+export const agenticDome = new AgenticDomeClient(required("AGENTICDOME_API_BASE"), {
   apiKey: required("AGENTICDOME_API_KEY"),
   tenantId: required("AGENTICDOME_TENANT_ID"),
 });
@@ -1031,14 +1055,14 @@ def _run_existing_tests(root: Path) -> Dict[str, Any]:
 
 
 def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> Tuple[int, Dict[str, Any]]:
-    from .client import AgentGuardClient
+    from .client import AgenticDomeClient
 
     plan = integration_plan(root)
     required_env = ["AGENTICDOME_API_BASE", "AGENTICDOME_API_KEY", "AGENTICDOME_TENANT_ID"]
     missing_env = [name for name in required_env if live and not os.getenv(name, "").strip()]
     if missing_env:
         raise SystemExit("Live verification requires: " + ", ".join(missing_env))
-    client = AgentGuardClient(
+    client = AgenticDomeClient(
         api_base=os.getenv("AGENTICDOME_API_BASE", ""),
         api_key=os.getenv("AGENTICDOME_API_KEY", ""),
         tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
@@ -1081,6 +1105,7 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
     semantic_ready = (
         semantic_gate.get("confidence") in {"high", "partial"}
         and int(semantic_gate.get("unresolved_bypasses", 0)) == 0
+        and int(semantic_gate.get("review_required", 0)) == 0
     )
     result = {
         "schema": "agenticdome.verification-result.v1",
@@ -1093,8 +1118,10 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
             "confidence": semantic_gate.get("confidence", "unavailable"),
             "symbols_indexed": int(semantic_gate.get("symbols_indexed", 0)),
             "call_edges": int(semantic_gate.get("call_edges", 0)),
+            "action_required": int(semantic_gate.get("action_required", semantic_gate.get("unresolved_bypasses", 0))),
             "unresolved_bypasses": int(semantic_gate.get("unresolved_bypasses", 0)),
             "high_severity_bypasses": int(semantic_gate.get("high_severity_bypasses", 0)),
+            "review_required": int(semantic_gate.get("review_required", 0)),
             "passed": semantic_ready,
         },
         "application_tests": application_tests,

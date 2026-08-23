@@ -41,14 +41,14 @@ customer-managed Redis; see [runtime location and Redis responsibilities](../run
 ```python
 from typing import Any, Callable, Dict
 
-from agenticdome_sdk import AgentGuardClient
+from agenticdome_sdk import AgenticDomeClient
 
 def secured_customer_lookup(
     *,
     customer_id: str,
     execute_customer_lookup: Callable[[str], Any],
 ) -> Dict[str, Any]:
-    client = AgentGuardClient()
+    client = AgenticDomeClient()
     decision = client.guardrail_validate(
         text="Support agent requests a customer lookup.",
         agent_id="support-agent",

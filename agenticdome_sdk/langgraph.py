@@ -17,16 +17,16 @@ from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Op
 import anyio
 from typing_extensions import TypedDict
 
-from agenticdome_sdk.client import AgentGuardClient
+from agenticdome_sdk.client import AgenticDomeClient
 from agenticdome_sdk._mode import credentials_or_local_sim
 
 try:
-    from agenticdome_sdk.exceptions import AgentGuardHTTPError
+    from agenticdome_sdk.exceptions import AgenticDomeHTTPError
 except Exception:  # pragma: no cover
     try:
-        from agenticdome_sdk.client import AgentGuardHTTPError  # type: ignore
+        from agenticdome_sdk.client import AgenticDomeHTTPError  # type: ignore
     except Exception:
-        class AgentGuardHTTPError(Exception):  # type: ignore
+        class AgenticDomeHTTPError(Exception):  # type: ignore
             pass
 
 
@@ -687,14 +687,14 @@ def _strip_private_args(args: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: value
         for key, value in (args or {}).items()
-        if not key.startswith("_AgenticDome_")
+        if not key.startswith("_agenticdome_")
         and key not in {
             "_decision_token",
             "_source_agent_id",
             "decision_token",
             "source_agent_id",
-            "AgenticDome_decision_token",
-            "AgenticDome_source_agent_id",
+            "agenticdome_decision_token",
+            "agenticdome_source_agent_id",
         }
     }
 
@@ -908,7 +908,7 @@ class AgenticDomeLangGraphFirewall:
             )
 
         self.config = config
-        self.client = AgentGuardClient(
+        self.client = AgenticDomeClient(
             api_base=config.api_base,
             api_key=config.api_key,
             tenant_id=config.tenant_id,
@@ -1298,16 +1298,16 @@ class AgenticDomeLangGraphFirewall:
             return
 
         arg_token = _safe_str(
-            tool_args.get("_AgenticDome_decision_token")
+            tool_args.get("_agenticdome_decision_token")
             or tool_args.get("_decision_token")
             or tool_args.get("decision_token")
-            or tool_args.get("AgenticDome_decision_token")
+            or tool_args.get("agenticdome_decision_token")
         )
         arg_source = _safe_str(
-            tool_args.get("_AgenticDome_source_agent_id")
+            tool_args.get("_agenticdome_source_agent_id")
             or tool_args.get("_source_agent_id")
             or tool_args.get("source_agent_id")
-            or tool_args.get("AgenticDome_source_agent_id")
+            or tool_args.get("agenticdome_source_agent_id")
         )
 
         if arg_token and arg_source:
@@ -1353,14 +1353,14 @@ class AgenticDomeLangGraphFirewall:
         if self.config.strict_delegated_execution and (
             ns.get("target_agent_id") == agent_id
             or any(key in tool_args for key in (
-                "_AgenticDome_decision_token",
+                "_agenticdome_decision_token",
                 "_decision_token",
                 "decision_token",
-                "AgenticDome_decision_token",
-                "_AgenticDome_source_agent_id",
+                "agenticdome_decision_token",
+                "_agenticdome_source_agent_id",
                 "_source_agent_id",
                 "source_agent_id",
-                "AgenticDome_source_agent_id",
+                "agenticdome_source_agent_id",
             ))
         ):
             raise AgenticDomeDenied("AgenticDome blocked delegated execution: missing valid decision token.")

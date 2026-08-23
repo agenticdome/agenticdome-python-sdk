@@ -149,9 +149,9 @@ firewall = AgenticDomeMicrosoftAIFoundryFirewall()""",
     "custom-python": {
         "label": "Custom Python",
         "platform": "custom_python",
-        "snippet": """from agenticdome_sdk import AgentGuardClient
+        "snippet": """from agenticdome_sdk import AgenticDomeClient
 
-client = AgentGuardClient()""",
+client = AgenticDomeClient()""",
     },
 }
 
@@ -262,9 +262,9 @@ def vulnerable_tool_execution(scenario: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def offline_agenticdome_decision(scenario: Dict[str, Any]) -> Dict[str, Any]:
-    from agenticdome_sdk import AgentGuardClient
+    from agenticdome_sdk import AgenticDomeClient
 
-    client = AgentGuardClient(mode="local_sim")
+    client = AgenticDomeClient(mode="local_sim")
     try:
         return client.guardrail_validate(
             text=scenario["prompt"],
@@ -283,9 +283,9 @@ def offline_agenticdome_decision(scenario: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def live_agenticdome_decision(framework: Dict[str, str], scenario: Dict[str, Any]) -> Dict[str, Any]:
-    from agenticdome_sdk import AgentGuardClient
+    from agenticdome_sdk import AgenticDomeClient
 
-    client = AgentGuardClient(
+    client = AgenticDomeClient(
         api_base=os.environ["AGENTICDOME_API_BASE"],
         api_key=os.environ["AGENTICDOME_API_KEY"],
         tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
