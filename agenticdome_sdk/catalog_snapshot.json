@@ -1,0 +1,28 @@
+{
+    "schema": "agenticdome.catalog-snapshot.v1",
+    "catalog_schema": "agenticdome.hook-catalog.v1",
+    "verified_at": "2026-08-23",
+    "python_sdk_version": "1.2.25",
+    "published_packages": {
+        "agenticdome-python-sdk": {
+            "registry": "pypi",
+            "version": "1.2.25",
+            "url": "https://pypi.org/project/agenticdome-python-sdk/1.2.25/"
+        },
+        "agenticdome-sdk": {
+            "registry": "npm",
+            "version": "0.6.3",
+            "url": "https://www.npmjs.com/package/agenticdome-sdk/v/0.6.3"
+        },
+        "agenticdome-openclaw-security": {
+            "registry": "npm",
+            "version": "1.0.2",
+            "url": "https://www.npmjs.com/package/agenticdome-openclaw-security/v/1.0.2"
+        },
+        "openclaw": {
+            "registry": "npm",
+            "version": "2026.7.1-2",
+            "url": "https://www.npmjs.com/package/openclaw/v/2026.7.1-2"
+        }
+    }
+}

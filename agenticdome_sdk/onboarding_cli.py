@@ -567,8 +567,14 @@ def _exact_version_from_spec(spec: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _hook_plans(root: Path, report: Dict[str, Any], frameworks: Sequence[str]) -> List[Dict[str, Any]]:
+def _hook_plans(
+    root: Path,
+    report: Dict[str, Any],
+    frameworks: Sequence[str],
+    catalog_binding: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     inventory = _manifest_dependency_specs(root)
+    bound_packages = (catalog_binding or {}).get("published_packages") or {}
     languages = set(report.get("languages", []))
     requested = list(dict.fromkeys(str(item) for item in frameworks))
     if "typescript/javascript" in languages and not any(item in {"openclaw", "mcp", "typescript"} for item in requested):
@@ -597,10 +603,15 @@ def _hook_plans(root: Path, report: Dict[str, Any], frameworks: Sequence[str]) -
             installed = observed.get("installed")
             declared = observed.get("declared")
             declared_exact = _exact_version_from_spec(str(declared or ""))
-            registry_version = PUBLISHED_AGENTICDOME_PACKAGES.get(package, {}).get("version")
+            registry_version = (bound_packages.get(package) or {}).get("version")
+            if not registry_version:
+                registry_version = PUBLISHED_AGENTICDOME_PACKAGES.get(package, {}).get("version")
+            effective_certification = certification
+            if package in PUBLISHED_AGENTICDOME_PACKAGES and registry_version:
+                effective_certification = {"exact": str(registry_version)}
             declared_latest = str(declared or "").strip().lower() in {"latest", "*"}
             comparable = declared_exact or installed or (registry_version if declared_latest else None)
-            compatible = version_satisfies_certification(str(comparable), certification) if comparable else None
+            compatible = version_satisfies_certification(str(comparable), effective_certification) if comparable else None
             environment_conflict = bool(declared_exact and installed and declared_exact != installed)
             # An explicit declared version outside the certified range must
             # fail closed even when this machine happens to have a different,
@@ -622,7 +633,7 @@ def _hook_plans(root: Path, report: Dict[str, Any], frameworks: Sequence[str]) -
                 "package": package,
                 "installed_version": installed,
                 "declared_spec": declared,
-                "certified_versions": certification_label(certification),
+                "certified_versions": certification_label(effective_certification),
                 "published_version": published,
                 "status": status,
                 "evidence": (
@@ -714,7 +725,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
     required = ["prompt_ingress", "tool_execution", "output_egress"]
     gaps = [boundary for boundary in required if not counts.get(boundary)]
     frameworks = config.get("frameworks", [])
-    hook_plans = _hook_plans(root, report, frameworks)
+    hook_plans = _hook_plans(root, report, frameworks, active_catalog_binding)
     semantic_bypasses = semantic.get("bypass_risks", []) if isinstance(semantic, dict) else []
     semantic_reviews = semantic.get("review_findings", []) if isinstance(semantic, dict) else []
     return {

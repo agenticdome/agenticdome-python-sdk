@@ -11,65 +11,42 @@ import copy
 import hashlib
 import json
 import re
-from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
 CATALOG_SCHEMA = "agenticdome.hook-catalog.v1"
-CATALOG_VERIFIED_AT = "2026-08-23"
-_SDK_ROOT = Path(__file__).resolve().parents[2]
+CATALOG_SNAPSHOT_SCHEMA = "agenticdome.catalog-snapshot.v1"
 
 
-def _json_manifest_version(relative_path: str, fallback: str) -> str:
-    manifest = _SDK_ROOT / relative_path
+def _load_catalog_snapshot() -> Dict[str, Any]:
+    path = Path(__file__).with_name("catalog_snapshot.json")
     try:
-        return str(json.loads(manifest.read_text(encoding="utf-8"))["version"]).strip() or fallback
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return fallback
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The installed SDK is missing its canonical hook-catalog snapshot.") from exc
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != CATALOG_SNAPSHOT_SCHEMA:
+        raise RuntimeError("The installed SDK contains an unsupported hook-catalog snapshot.")
+    if snapshot.get("catalog_schema") != CATALOG_SCHEMA:
+        raise RuntimeError("The installed SDK hook-catalog snapshot uses the wrong catalog schema.")
+    if not isinstance(snapshot.get("published_packages"), dict):
+        raise RuntimeError("The installed SDK hook-catalog snapshot has no published package map.")
+    return snapshot
 
 
-def _python_manifest_version(fallback: str) -> str:
-    manifest = _SDK_ROOT / "python" / "pyproject.toml"
-    try:
-        match = re.search(r"(?m)^version\s*=\s*\"([^\"]+)\"", manifest.read_text(encoding="utf-8"))
-        if match:
-            return match.group(1).strip()
-    except OSError:
-        pass
-    try:
-        return importlib_metadata.version("agenticdome-python-sdk")
-    except importlib_metadata.PackageNotFoundError:
-        return fallback
+_CATALOG_SNAPSHOT = _load_catalog_snapshot()
+CATALOG_VERIFIED_AT = str(_CATALOG_SNAPSHOT["verified_at"])
 
 
-def _published_package(registry: str, package: str, version: str) -> Dict[str, str]:
-    if registry == "pypi":
-        url = f"https://pypi.org/project/{package}/{version}/"
-    else:
-        url = f"https://www.npmjs.com/package/{package}/v/{version}"
-    return {"registry": registry, "version": version, "url": url}
-
-
-_PYTHON_SDK_VERSION = _python_manifest_version("1.2.21")
-_TYPESCRIPT_SDK_VERSION = _json_manifest_version("js/agentguard_sdk/src/package.json", "0.6.2")
-_OPENCLAW_PLUGIN_VERSION = _json_manifest_version(
-    "openclaw/ts/openclaw-agenticdome-security/package.json", "1.0.1"
-)
 _OPENCLAW_RUNTIME_MIN_VERSION = "2026.7.1-2"
 _OPENCLAW_RUNTIME_MAX_VERSION = "2026.7.1-2"
 _OPENCLAW_RUNTIME_VERSION = _OPENCLAW_RUNTIME_MAX_VERSION
 _OPENCLAW_NODE_RANGE = ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
 
-# The source checkout derives these values from the exact manifests that the
-# release harness publishes. Installed wheels retain the certified fallbacks.
 PUBLISHED_AGENTICDOME_PACKAGES: Dict[str, Dict[str, str]] = {
-    "agenticdome-python-sdk": _published_package("pypi", "agenticdome-python-sdk", _PYTHON_SDK_VERSION),
-    "agenticdome-sdk": _published_package("npm", "agenticdome-sdk", _TYPESCRIPT_SDK_VERSION),
-    "agenticdome-openclaw-security": _published_package(
-        "npm", "agenticdome-openclaw-security", _OPENCLAW_PLUGIN_VERSION
-    ),
-    "openclaw": _published_package("npm", "openclaw", _OPENCLAW_RUNTIME_VERSION),
+    str(package): {str(key): str(value) for key, value in row.items()}
+    for package, row in _CATALOG_SNAPSHOT["published_packages"].items()
+    if isinstance(row, dict)
 }
 
 
@@ -545,11 +522,18 @@ def framework_contract(key: str, language: Optional[str] = None) -> Optional[Dic
 
 
 def catalog_digest() -> str:
+    # Package versions are signed in the binding and excluded from this
+    # semantic Python hook-contract digest. npm/OpenClaw releases therefore
+    # cannot invalidate an already published Python wheel.
+    frameworks = copy.deepcopy(FRAMEWORK_HOOK_CATALOG)
+    for contract in frameworks.values():
+        for package in list((contract.get("packages") or {}).keys()):
+            if package in PUBLISHED_AGENTICDOME_PACKAGES:
+                contract["packages"][package] = {"binding": "signed_catalog"}
     payload = {
         "schema": CATALOG_SCHEMA,
         "verified_at": CATALOG_VERIFIED_AT,
-        "published": PUBLISHED_AGENTICDOME_PACKAGES,
-        "frameworks": FRAMEWORK_HOOK_CATALOG,
+        "frameworks": frameworks,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()

@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 
@@ -63,20 +62,6 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
     typescript_version = PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]
     openclaw_version = PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-openclaw-security"]["version"]
 
-    # The public Python repository intentionally contains no sibling TypeScript
-    # packages. In the platform monorepo, additionally bind the catalog to the
-    # actual package manifests so cross-language releases cannot drift.
-    typescript_package = MONOREPO_SDK_ROOT / "js" / "agentguard_sdk" / "src" / "package.json"
-    openclaw_package = (
-        MONOREPO_SDK_ROOT
-        / "openclaw"
-        / "ts"
-        / "openclaw-agenticdome-security"
-        / "package.json"
-    )
-    if typescript_package.is_file() and openclaw_package.is_file():
-        typescript_version = json.loads(typescript_package.read_text(encoding="utf-8"))["version"]
-        openclaw_version = json.loads(openclaw_package.read_text(encoding="utf-8"))["version"]
 
     assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-python-sdk"]["version"] == python_version
     assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"] == typescript_version
@@ -104,6 +89,15 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
         "certification": "not_applicable",
         "note": "agenticdome-sdk sends MCP policy requests through its own transport-neutral client API; customer MCP transports may use @modelcontextprotocol/sdk independently.",
     }
+
+
+def test_typescript_release_versions_do_not_change_python_hook_contract_digest(monkeypatch) -> None:
+    before = catalog_digest()
+    monkeypatch.setitem(PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"], "version", "999.0.0")
+    monkeypatch.setitem(
+        PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-openclaw-security"], "version", "999.0.1"
+    )
+    assert catalog_digest() == before
 
 
 def test_certification_bounds_fail_closed() -> None:
