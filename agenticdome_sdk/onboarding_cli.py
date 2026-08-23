@@ -53,6 +53,7 @@ SENSITIVE_FILE_PATTERN = re.compile(
     re.I,
 )
 SENSITIVE_FILE_SUFFIXES = {".key", ".pem", ".p12", ".pfx", ".jks", ".keystore"}
+COPILOT_CATALOG_BINDING_SCHEMA = "agenticdome.copilot-hook-catalog-binding.v1"
 
 
 def _installed_sdk_version() -> str:
@@ -197,6 +198,29 @@ def _pending_semantic_analysis(ir: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _copilot_catalog_binding_matches_sdk(binding: Any) -> bool:
+    """Validate the signed sidecar binding against this SDK's catalog.
+
+    ``digest`` identifies the complete signed binding (including published
+    package versions), while ``catalog_digest`` identifies the hook catalog
+    embedded in this SDK. They are deliberately different digests.
+    """
+    if not isinstance(binding, dict):
+        return False
+    try:
+        expires_at = int(binding.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    return (
+        binding.get("schema") == COPILOT_CATALOG_BINDING_SCHEMA
+        and binding.get("catalog_schema") == CATALOG_SCHEMA
+        and binding.get("catalog_digest") == catalog_digest()
+        and re.fullmatch(r"sha256:[a-f0-9]{64}", str(binding.get("digest") or "")) is not None
+        and binding.get("sidecar_verified") is True
+        and expires_at > int(time.time())
+    )
+
+
 def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool) -> Dict[str, Any]:
     ir_digest = _ir_sha256(ir)
     api_base = os.getenv("AGENTICDOME_API_BASE", "").strip().rstrip("/")
@@ -221,8 +245,7 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
             cached.get("tenant_id") == tenant_id
             and cached.get("api_base") == api_base
             and isinstance(cached_binding, dict)
-            and cached_binding.get("digest") == expected_catalog_digest
-            and cached_binding.get("sidecar_verified") is True
+            and _copilot_catalog_binding_matches_sdk(cached_binding)
             and isinstance(semantic, dict)
             and semantic.get("ir_sha256") == ir_digest
             and semantic.get("analysis_revision") == COPILOT_ANALYSIS_REVISION
@@ -234,7 +257,7 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
         "ir": ir,
         "catalog_binding": {
             "schema": CATALOG_SCHEMA,
-            "digest": expected_catalog_digest,
+            "catalog_digest": expected_catalog_digest,
             "verified_at": CATALOG_VERIFIED_AT,
         },
     }, separators=(",", ":")).encode("utf-8")
@@ -281,13 +304,12 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
         )
     response_binding = result.get("catalog_binding")
     if (
-        not isinstance(response_binding, dict)
-        or response_binding.get("digest") != expected_catalog_digest
-        or response_binding.get("sidecar_verified") is not True
+        not _copilot_catalog_binding_matches_sdk(response_binding)
     ):
         raise SystemExit(
             "Integration Copilot's signed hook catalog does not match this installed SDK. "
-            "Update the SDK and rerun the Copilot."
+            "Upgrade the SDK; if it is already current, ask the control-plane administrator "
+            "to refresh the assigned sidecar's signed catalog, then rerun the Copilot."
         )
     _write_json(cached_path, {
         "schema": "agenticdome.copilot-cache.v1",
@@ -309,9 +331,7 @@ def _active_copilot_catalog_binding(root: Path) -> Dict[str, Any]:
     if (
         cached.get("tenant_id") != os.getenv("AGENTICDOME_TENANT_ID", "").strip()
         or cached.get("api_base") != os.getenv("AGENTICDOME_API_BASE", "").strip().rstrip("/")
-        or not isinstance(binding, dict)
-        or binding.get("digest") != catalog_digest()
-        or binding.get("sidecar_verified") is not True
+        or not _copilot_catalog_binding_matches_sdk(binding)
     ):
         return {}
     return binding

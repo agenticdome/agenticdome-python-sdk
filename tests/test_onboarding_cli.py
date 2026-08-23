@@ -274,6 +274,7 @@ def test_private_copilot_cache_is_bound_to_tenant_sidecar_ir_and_catalog(tmp_pat
     }
     ir_digest = onboarding_cli._ir_sha256(ir)
     catalog = onboarding_cli.catalog_digest()
+    binding_digest = "sha256:" + ("b" * 64)
     calls = []
     state = {"tenant": "tenant-1"}
 
@@ -296,7 +297,10 @@ def test_private_copilot_cache_is_bound_to_tenant_sidecar_ir_and_catalog(tmp_pat
                     "ir_sha256": ir_digest,
                 },
                 "catalog_binding": {
-                    "digest": catalog,
+                    "schema": "agenticdome.copilot-hook-catalog-binding.v1",
+                    "catalog_schema": onboarding_cli.CATALOG_SCHEMA,
+                    "catalog_digest": catalog,
+                    "digest": binding_digest,
                     "sidecar_verified": True,
                     "generated_at": 1,
                     "expires_at": 4_102_444_800,
@@ -327,6 +331,24 @@ def test_private_copilot_cache_is_bound_to_tenant_sidecar_ir_and_catalog(tmp_pat
     state["tenant"] = "tenant-2"
     REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
     assert len(calls) == 2
+
+
+def test_private_copilot_rejects_stale_or_invalid_catalog_binding():
+    expected = onboarding_cli.catalog_digest()
+    current = {
+        "schema": "agenticdome.copilot-hook-catalog-binding.v1",
+        "catalog_schema": onboarding_cli.CATALOG_SCHEMA,
+        "catalog_digest": expected,
+        "digest": "sha256:" + ("c" * 64),
+        "sidecar_verified": True,
+        "expires_at": int(onboarding_cli.time.time()) + 3600,
+    }
+
+    assert onboarding_cli._copilot_catalog_binding_matches_sdk(current) is True
+    assert onboarding_cli._copilot_catalog_binding_matches_sdk({**current, "catalog_digest": "sha256:" + ("d" * 64)}) is False
+    assert onboarding_cli._copilot_catalog_binding_matches_sdk({**current, "digest": "not-a-digest"}) is False
+    assert onboarding_cli._copilot_catalog_binding_matches_sdk({**current, "expires_at": int(onboarding_cli.time.time()) - 1}) is False
+    assert onboarding_cli._copilot_catalog_binding_matches_sdk({**current, "sidecar_verified": False}) is False
 
 
 def test_normal_runtime_key_does_not_trigger_optional_copilot_network_call(tmp_path, monkeypatch):
