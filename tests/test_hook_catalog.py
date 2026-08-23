@@ -14,6 +14,10 @@ from agenticdome_sdk.hook_catalog import (
 from agenticdome_sdk.onboarding_cli import FRAMEWORK_MARKERS
 
 
+PYTHON_SDK_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_SDK_ROOT = PYTHON_SDK_ROOT.parent
+
+
 def test_every_detectable_framework_has_a_versioned_hook_contract() -> None:
     assert CATALOG_SCHEMA == "agenticdome.hook-catalog.v1"
     missing = set(FRAMEWORK_MARKERS) - set(FRAMEWORK_HOOK_CATALOG)
@@ -54,15 +58,25 @@ def test_harness_manifest_is_derived_for_every_python_contract() -> None:
 
 
 def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None:
-    sdk_root = Path(__file__).resolve().parents[2]
-    pyproject = (sdk_root / "python" / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = (PYTHON_SDK_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     python_version = re.search(r"(?m)^version\s*=\s*\"([^\"]+)\"", pyproject).group(1)
-    typescript_version = json.loads(
-        (sdk_root / "js" / "agentguard_sdk" / "src" / "package.json").read_text(encoding="utf-8")
-    )["version"]
-    openclaw_version = json.loads(
-        (sdk_root / "openclaw" / "ts" / "openclaw-agenticdome-security" / "package.json").read_text(encoding="utf-8")
-    )["version"]
+    typescript_version = PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]
+    openclaw_version = PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-openclaw-security"]["version"]
+
+    # The public Python repository intentionally contains no sibling TypeScript
+    # packages. In the platform monorepo, additionally bind the catalog to the
+    # actual package manifests so cross-language releases cannot drift.
+    typescript_package = MONOREPO_SDK_ROOT / "js" / "agentguard_sdk" / "src" / "package.json"
+    openclaw_package = (
+        MONOREPO_SDK_ROOT
+        / "openclaw"
+        / "ts"
+        / "openclaw-agenticdome-security"
+        / "package.json"
+    )
+    if typescript_package.is_file() and openclaw_package.is_file():
+        typescript_version = json.loads(typescript_package.read_text(encoding="utf-8"))["version"]
+        openclaw_version = json.loads(openclaw_package.read_text(encoding="utf-8"))["version"]
 
     assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-python-sdk"]["version"] == python_version
     assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"] == typescript_version
@@ -101,16 +115,18 @@ def test_certification_bounds_fail_closed() -> None:
 
 
 def test_mcp_documentation_tracks_certified_range_and_language_specific_scope() -> None:
-    sdk_root = Path(__file__).resolve().parents[2]
     mcp = FRAMEWORK_HOOK_CATALOG["mcp"]["packages"]["mcp"]
     range_text = f"mcp>={mcp['min']},<={mcp['max']}"
-    python_readme = (sdk_root / "python" / "README.md").read_text(encoding="utf-8")
-    python_guide = (sdk_root / "python" / "docs" / "mcp-integration.md").read_text(encoding="utf-8")
-    typescript_readme = (sdk_root / "js" / "agentguard_sdk" / "src" / "README.md").read_text(encoding="utf-8")
-    typescript_guide = (sdk_root / "js" / "agentguard_sdk" / "src" / "docs" / "mcp-integration.md").read_text(encoding="utf-8")
+    python_readme = (PYTHON_SDK_ROOT / "README.md").read_text(encoding="utf-8")
+    python_guide = (PYTHON_SDK_ROOT / "docs" / "mcp-integration.md").read_text(encoding="utf-8")
 
     assert range_text in python_readme
     assert range_text in python_guide
     assert "MCP 2.0 removed the certified `mcp.server.fastmcp` import surface" in python_readme
-    assert "does not forward requests to a customer MCP server" in typescript_readme
-    assert "does not depend\non or certify `@modelcontextprotocol/sdk`" in typescript_guide
+
+    typescript_root = MONOREPO_SDK_ROOT / "js" / "agentguard_sdk" / "src"
+    if typescript_root.is_dir():
+        typescript_readme = (typescript_root / "README.md").read_text(encoding="utf-8")
+        typescript_guide = (typescript_root / "docs" / "mcp-integration.md").read_text(encoding="utf-8")
+        assert "does not forward requests to a customer MCP server" in typescript_readme
+        assert "does not depend\non or certify `@modelcontextprotocol/sdk`" in typescript_guide
