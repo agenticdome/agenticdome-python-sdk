@@ -1283,6 +1283,48 @@ class AgenticDomeMCPHostFirewall:
             return sanitized_response
         return sanitized_response
 
+    async def review_forwarded_response(
+        self,
+        *,
+        mcp_request: Dict[str, Any],
+        response: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Review one upstream JSON-RPC response without forwarding the request.
+
+        Transport adapters that must stream or otherwise manage the upstream
+        connection themselves can use this after :meth:`preflight_request`.
+        Review failures remain fail-closed unless the firewall was explicitly
+        configured otherwise.
+        """
+        method = self._method(mcp_request) if isinstance(mcp_request, dict) else ""
+        local_context = dict(context or {})
+        local_context["mcp_method"] = method
+        try:
+            return await self._sanitize_forwarded_response(
+                method=method,
+                response=response,
+                context=local_context,
+            )
+        except MCPToolBlocked as exc:
+            return self.jsonrpc_error(
+                response.get("id"),
+                -32000,
+                f"AgenticDome Blocked: {exc}",
+                data={"method": method, "stage": "output_review"},
+            )
+        except Exception as exc:
+            if self.config.fail_closed:
+                logger.warning("AgenticDome MCP result sanitization failed closed. reason=%s", exc)
+                return self.jsonrpc_error(
+                    response.get("id"),
+                    -32000,
+                    "AgenticDome Blocked: MCP response review failed",
+                    data={"method": method, "stage": "output_review"},
+                )
+            logger.warning("AgenticDome MCP result sanitization failed open. reason=%s", exc)
+            return response
+
     async def forward_with_firewall(
         self,
         *,
@@ -1307,13 +1349,11 @@ class AgenticDomeMCPHostFirewall:
         if not isinstance(response, dict):
             return response
 
-        try:
-            return await self._sanitize_forwarded_response(method=method, response=response, context=local_context)
-        except MCPToolBlocked:
-            raise
-        except Exception as exc:
-            logger.warning("AgenticDome MCP result sanitization failed; returning original response. reason=%s", exc)
-            return response
+        return await self.review_forwarded_response(
+            mcp_request=mcp_request,
+            response=response,
+            context=local_context,
+        )
 
 
 __all__ = [

@@ -43,6 +43,8 @@ def test_harness_manifest_is_derived_for_every_python_contract() -> None:
         "authorize_mcp_method",
         "sanitize_text",
         "sanitize_mcp_result",
+        "review_forwarded_response",
+        "forward_with_firewall",
     ]
     assert all(
         certification["certified_at"]
@@ -78,16 +80,18 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
     assert openclaw["runtime"]["node"] == ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
     mcp_ts = framework_contract("mcp", "typescript")
     assert mcp_ts["packages"]["agenticdome-sdk"]["exact"] == typescript_version
-    assert mcp_ts["adapter_class"] == "AgenticDomeClient"
-    assert mcp_ts["attachment_methods"] == ["mcpToolCall", "mcpGuardrailValidate", "mcpListTools"]
-    assert mcp_ts["label"] == "MCP API Client Surface (TypeScript)"
+    assert mcp_ts["adapter_class"] == "AgenticDomeMCPGateway"
+    assert mcp_ts["attachment_methods"] == [
+        "forward", "preflight", "mcpToolCall", "mcpGuardrailValidate", "mcpListTools",
+    ]
+    assert mcp_ts["label"] == "MCP Host / Gateway Firewall (TypeScript)"
     assert mcp_ts["native_hooks"] == []
     assert mcp_ts["protocol_methods"] == ["tools/call", "tools/list"]
     assert mcp_ts["external_sdk"] == {
         "package": "@modelcontextprotocol/sdk",
         "relationship": "not_a_dependency",
         "certification": "not_applicable",
-        "note": "agenticdome-sdk sends MCP policy requests through its own transport-neutral client API; customer MCP transports may use @modelcontextprotocol/sdk independently.",
+        "note": "AgenticDomeMCPGateway wraps an injected customer MCP transport without depending on it; customer transports may use @modelcontextprotocol/sdk independently.",
     }
 
 
@@ -122,5 +126,8 @@ def test_mcp_documentation_tracks_certified_range_and_language_specific_scope() 
     if typescript_root.is_dir():
         typescript_readme = (typescript_root / "README.md").read_text(encoding="utf-8")
         typescript_guide = (typescript_root / "docs" / "mcp-integration.md").read_text(encoding="utf-8")
-        assert "does not forward requests to a customer MCP server" in typescript_readme
-        assert "does not depend\non or certify `@modelcontextprotocol/sdk`" in typescript_guide
+        assert "AgenticDomeMCPGateway" in typescript_readme
+        assert "does not open a proxy port" in typescript_readme
+        assert "or depend on `@modelcontextprotocol/sdk`" in typescript_readme
+        assert "You inject the application's existing stdio" in typescript_guide
+        assert "does not depend on or certify" in typescript_guide.replace("\n", " ")

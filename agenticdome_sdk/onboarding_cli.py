@@ -112,6 +112,39 @@ BOUNDARY_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
     ),
 }
 
+MCP_ROLE_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
+    "client": (
+        re.compile(r"\b(ClientSession|call_tool|callTool|tools/call|list_tools|listTools)\b"),
+        re.compile(r"\b(MCPClient|McpClient)\b"),
+    ),
+    "host": (
+        re.compile(r"\b(forward_with_firewall|AgenticDomeMCPHostFirewall|AgenticDomeMCPGateway)\b"),
+        re.compile(r"\b(tool_router|tool_dispatch|dispatch_tool|forward_mcp)\b", re.I),
+    ),
+    "gateway": (
+        re.compile(r"\b(proxy|forward|upstream|gateway)\b.*\b(mcp|tools/call)\b", re.I),
+        re.compile(r"\b(mcp|tools/call)\b.*\b(proxy|forward|upstream|gateway)\b", re.I),
+    ),
+    "server": (
+        re.compile(r"\b(FastMCP|McpServer|Server)\s*\("),
+        re.compile(r"\b(setRequestHandler|server\.tool|@mcp\.tool|@server\.tool)\b"),
+    ),
+}
+MCP_TRANSPORT_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
+    "stdio": (
+        re.compile(r"\b(stdio_client|stdio_server|StdioClientTransport|StdioServerParameters)\b"),
+        re.compile(r"\btransport\s*[:=].*['\"]stdio['\"]", re.I),
+    ),
+    "streamable_http": (
+        re.compile(r"\b(StreamableHTTP|streamable[_-]?http)\b", re.I),
+        re.compile(r"\btransport\s*[:=].*['\"](?:http|streamable-http)['\"]", re.I),
+    ),
+    "sse": (
+        re.compile(r"\b(SSEClientTransport|SseClientTransport|sse_client)\b"),
+        re.compile(r"\btransport\s*[:=].*['\"]sse['\"]", re.I),
+    ),
+}
+
 
 def _is_sensitive_file(path: Path) -> bool:
     name = path.name.lower()
@@ -364,6 +397,165 @@ def _framework_evidence_text(path: Path, text: str) -> str:
     return ""
 
 
+def _mcp_evidence_id(kind: str, relative: str, line: int) -> str:
+    digest = hashlib.sha256(f"{kind}:{relative}:{line}".encode("utf-8")).hexdigest()[:12]
+    return f"{kind}-{digest}"
+
+
+def _detect_mcp_protection(root: Path, paths: Sequence[Path], languages: Sequence[str]) -> Dict[str, Any]:
+    """Collect source-free MCP topology and candidate protection evidence.
+
+    Source is inspected only on the customer's machine. Evidence contains
+    relative locations, generated identifiers and classifications—never code,
+    string literals, URLs, credentials, tool arguments or environment values.
+    """
+    roles: set[str] = set()
+    transports: set[str] = set()
+    request_boundaries: List[Dict[str, Any]] = []
+    response_boundaries: List[Dict[str, Any]] = []
+    bypasses: List[Dict[str, Any]] = []
+    servers: List[Dict[str, Any]] = []
+    tools: List[Dict[str, Any]] = []
+    context_fields = {"agent_id": False, "session_id": False, "user_id": False, "business_purpose": False}
+
+    for path in paths:
+        relative = _relative(path, root)
+        text = _read_text(path)
+        if not re.search(
+            r"(?:\b(?:from\s+mcp|import\s+mcp|FastMCP|MCPClient|McpClient|McpServer|ClientSession|"
+            r"StdioClientTransport|StdioServerParameters|SSEClientTransport|tools/call|"
+            r"AgenticDomeMCPHostFirewall|AgenticDomeMCPGateway)\b|@modelcontextprotocol)",
+            text,
+        ):
+            continue
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for role, patterns in MCP_ROLE_PATTERNS.items():
+                if any(pattern.search(line) for pattern in patterns):
+                    roles.add(role)
+            for transport, patterns in MCP_TRANSPORT_PATTERNS.items():
+                if any(pattern.search(line) for pattern in patterns):
+                    transports.add(transport)
+            lowered = line.lower()
+            for field in context_fields:
+                if field in lowered or field.replace("_", "") in lowered:
+                    context_fields[field] = True
+
+            protected = bool(re.search(r"\b(forward_with_firewall|AgenticDomeMCPGateway)\b", line))
+            if protected:
+                request_boundaries.append({
+                    "id": _mcp_evidence_id("request", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "protection_observed": True,
+                })
+                response_boundaries.append({
+                    "id": _mcp_evidence_id("response", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "protection_observed": True,
+                })
+
+            if re.search(r"\b(FastMCP|McpServer|setRequestHandler|@\w+\.tool)\b", line):
+                servers.append({
+                    "id": _mcp_evidence_id("server", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "classification": "server_registration_point",
+                })
+            if re.search(r"\b(@\w+\.tool|registerTool|register_tool|tools/list)\b", line):
+                tools.append({
+                    "id": _mcp_evidence_id("tool", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "classification": "tool_registration_point",
+                })
+
+            direct_forward = bool(re.search(
+                r"\b(call_tool|callTool|send_request|sendRequest|tools/call|session\.send|client\.send)\b",
+                line,
+            ))
+            if direct_forward and not protected:
+                request_boundaries.append({
+                    "id": _mcp_evidence_id("request", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "protection_observed": False,
+                })
+                bypasses.append({
+                    "id": _mcp_evidence_id("bypass", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "severity": "high",
+                    "classification": "raw_mcp_forwarding_requires_review",
+                })
+            if re.search(r"\b(result|response|content)\b.*\b(return|send|yield)\b", line, re.I):
+                response_boundaries.append({
+                    "id": _mcp_evidence_id("response", relative, line_number),
+                    "path": relative,
+                    "line": line_number,
+                    "protection_observed": protected,
+                })
+
+    detected = bool(roles or transports or servers or tools)
+    if detected and not transports:
+        transports.add("unknown_dynamic")
+    if "gateway" in roles or "host" in roles:
+        integration_mode = "host_gateway"
+    elif "server" in roles:
+        integration_mode = "server_boundary"
+    elif "client" in roles:
+        integration_mode = "client_boundary"
+    else:
+        integration_mode = "not_detected"
+    language_contracts = []
+    if "python" in languages:
+        language_contracts.append("python:AgenticDomeMCPHostFirewall.forward_with_firewall")
+    if "typescript/javascript" in languages:
+        language_contracts.append("typescript:AgenticDomeMCPGateway.forward")
+
+    unique = lambda rows: list({(row["path"], row["line"], row.get("classification", "")): row for row in rows}.values())  # noqa: E731
+    request_boundaries = unique(request_boundaries)[:200]
+    response_boundaries = unique(response_boundaries)[:200]
+    bypasses = unique(bypasses)[:100]
+    servers = unique(servers)[:100]
+    tools = unique(tools)[:200]
+    certifiable_transport = bool(transports) and "unknown_dynamic" not in transports
+    return {
+        "schema": "agenticdome.mcp-protection.v1",
+        "source_upload": False,
+        "detected": detected,
+        "roles": sorted(roles),
+        "transports": sorted(transports),
+        "integration_mode": integration_mode,
+        "certified_sdk_contracts": language_contracts,
+        "servers": servers,
+        "tools": tools,
+        "request_boundaries": sorted(request_boundaries, key=lambda item: (item["path"], item["line"])),
+        "response_boundaries": sorted(response_boundaries, key=lambda item: (item["path"], item["line"])),
+        "identity_context": {
+            "agent_id_observed": context_fields["agent_id"],
+            "session_id_observed": context_fields["session_id"],
+            "user_id_observed": context_fields["user_id"],
+            "business_purpose_observed": context_fields["business_purpose"],
+            "complete": all(context_fields.values()),
+            "claim": "structural_names_only_not_authenticated_identity",
+        },
+        "bypass_findings": sorted(bypasses, key=lambda item: (item["path"], item["line"])),
+        "certification": {
+            "eligible_for_verification": detected and certifiable_transport and not bypasses,
+            "unknown_or_dynamic_transport": not certifiable_transport if detected else False,
+            "production_ready": False,
+            "reason": "Run agenticdome mcp verify with the assigned tenant sidecar after integrating and testing the generated patch.",
+        },
+        "safety_boundary": {
+            "customer_source_modified": False,
+            "oauth_or_server_auth_replaced": False,
+            "identity_invented": False,
+            "dynamic_routes_certified": False,
+        },
+    }
+
+
 def inspect_repository(root: Path) -> Dict[str, Any]:
     root = root.resolve()
     languages = set()
@@ -422,6 +614,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
 
     copilot_ir = collect_repository_ir(root, semantic_paths)
     semantic = _copilot_semantic_analysis(root, copilot_ir, required=False)
+    mcp_protection = _detect_mcp_protection(root, semantic_paths, sorted(languages))
 
     boundaries = sorted(boundaries, key=lambda item: (item["path"], item["line"], item["boundary"]))[:500]
     boundary_counts = {
@@ -442,6 +635,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
         "boundary_counts": boundary_counts,
         "copilot_ir": copilot_ir,
         "semantic_analysis": semantic,
+        "mcp_protection": mcp_protection,
         "limitations": [
             "The local CLI collects generic AST/compiler metadata; proprietary flow reasoning runs through the assigned sidecar.",
             "No source content, secrets, environment values, or absolute paths are included.",
@@ -752,6 +946,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
         "deployment": config.get("deployment", {}),
         "candidate_boundaries": report["boundaries"],
         "semantic_analysis": semantic,
+        "mcp_protection": report.get("mcp_protection", {}),
         "semantic_gate": {
             "confidence": semantic.get("confidence", "unavailable") if isinstance(semantic, dict) else "unavailable",
             "symbols_indexed": int(semantic.get("symbols_indexed", 0)) if isinstance(semantic, dict) else 0,
@@ -960,6 +1155,16 @@ AGENTICDOME_TENANT_ID=replace-with-your-tenant-id
 AGENTICDOME_MODE=live
 AGENTICDOME_PRODUCTION_MODE=true
 AGENTICDOME_FAIL_CLOSED=true
+# MCP gateway values are required only when using the generated low-code
+# Streamable HTTP gateway. Supply genuine values; do not commit credentials.
+AGENTICDOME_MCP_UPSTREAM_URL=https://your-mcp-server.example/mcp
+AGENTICDOME_MCP_SERVER_ID=replace-with-reviewed-server-id
+AGENTICDOME_MCP_AGENT_ID=replace-with-real-service-agent-id
+AGENTICDOME_MCP_BUSINESS_PURPOSE=replace-with-genuine-business-purpose
+AGENTICDOME_MCP_UPSTREAM_AUTHORIZATION=replace-from-your-secret-manager
+AGENTICDOME_MCP_TRUST_IDENTITY_HEADERS=false
+AGENTICDOME_MCP_GATEWAY_BIND=127.0.0.1
+AGENTICDOME_MCP_GATEWAY_PORT=8791
 """
     gap_text = ", ".join(plan["coverage"]["gaps"]) or "No static boundary categories missing; runtime verification is still required."
     readme = f"""# AgenticDome generated integration review
@@ -1007,15 +1212,98 @@ https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks
         files["agenticdome_integration.py"] = wrapper
     if "typescript/javascript" in languages:
         files["agenticdome_integration.ts"] = typescript_wrapper
+    mcp = plan.get("mcp_protection") if isinstance(plan.get("mcp_protection"), dict) else {}
+    if "mcp" in set(config.get("frameworks", [])) or mcp.get("detected"):
+        registry = {
+            "schema": "agenticdome.mcp-server-registry.v1",
+            "source_upload": False,
+            "servers": [
+                {
+                    "id": item.get("id"),
+                    "transport": "REVIEW_REQUIRED",
+                    "upstream": "REQUIRED_SECRET_MANAGER_REFERENCE",
+                    "authentication": "CUSTOMER_MANAGED",
+                    "business_purpose": "REQUIRED_BEFORE_PRODUCTION",
+                }
+                for item in mcp.get("servers", [])
+            ],
+            "claim_boundary": "This registry contains generated source-free identifiers only. It does not replace MCP OAuth, consent, scopes or server authentication.",
+        }
+        files["MCP-SERVER-REGISTRY.json"] = json.dumps(registry, indent=2, sort_keys=True) + "\n"
+        files["MCP-PROTECTION.json"] = json.dumps(mcp, indent=2, sort_keys=True) + "\n"
+        files["MCP-REVIEW.md"] = """# AgenticDome MCP protection review
+
+The generated additions are unapplied. Confirm the real MCP role, transport,
+request boundary, response boundary, authenticated identity and business
+purpose before applying them. Resolve every bypass finding. Unknown or dynamic
+routes are not certified.
+
+- Python hosts/gateways: call `AgenticDomeMCPHostFirewall.forward_with_firewall()` around the existing transport.
+- TypeScript hosts/gateways: call `AgenticDomeMCPGateway.forward()` with the existing transport as its forwarder.
+- Streamable HTTP (JSON or SSE response) low-code gateway: configure the fixed upstream in the generated registry, then run `python -m agenticdome_sdk.mcp_http_gateway` behind your authenticated TLS ingress. Point clients only at `/mcp`; direct upstream routes remain a bypass.
+- stdio: install the generated local wrapper between the client and server process.
+
+Streamable HTTP GET event streams are supported. A legacy SSE `endpoint` event
+is blocked because its separately advertised message endpoint can bypass the
+protection boundary. Use Streamable HTTP or the generated local wrapper unless
+that legacy route has its own reviewed adapter.
+
+AgenticDome does not replace MCP OAuth, user consent, scopes or upstream server
+authentication. Do not invent identity or purpose values to satisfy a check.
+Set `AGENTICDOME_MCP_TRUST_IDENTITY_HEADERS=true` only when authenticated ingress
+strips caller-supplied identity headers and sets the trusted values itself.
+"""
+        if "python" in languages or not languages:
+            files["agenticdome_mcp_gateway.py"] = '''"""Unapplied MCP transport wrapper generated for review."""
+from typing import Any, Awaitable, Callable, Dict
+from agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall
+
+firewall = AgenticDomeMCPHostFirewall()
+
+async def forward_protected(
+    request: Dict[str, Any],
+    *,
+    context: Dict[str, Any],
+    forward_to_upstream: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    # context must carry real agent_id, session_id, mcp_server_id, user identity
+    # when available, and the genuine business purpose. Do not use placeholders.
+    return await firewall.forward_with_firewall(
+        mcp_request=request,
+        context=context,
+        forward_to_third_party=forward_to_upstream,
+    )
+'''
+        if "typescript/javascript" in languages:
+            files["agenticdome_mcp_gateway.ts"] = '''/** Unapplied MCP transport wrapper generated for review. */
+import AgenticDomeClient, { AgenticDomeMCPGateway, MCPGatewayContext, MCPJsonRpcRequest } from "agenticdome-sdk";
+
+const required = (name: string): string => {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+};
+
+const client = new AgenticDomeClient(required("AGENTICDOME_API_BASE"), {
+  apiKey: required("AGENTICDOME_API_KEY"),
+  tenantId: required("AGENTICDOME_TENANT_ID"),
+});
+
+export function protectedMCPForwarder(forwardToUpstream: (request: MCPJsonRpcRequest) => Promise<any>) {
+  return new AgenticDomeMCPGateway(client, (request) => forwardToUpstream(request), { failClosed: true });
+}
+
+export type RequiredMCPContext = MCPGatewayContext;
+'''
     return files
 
 
-def create_scaffold(root: Path) -> Path:
+def create_scaffold(root: Path, plan: Optional[Dict[str, Any]] = None) -> Path:
     config_path = _agenticdome_dir(root) / "config.json"
     if not config_path.exists():
         raise SystemExit("Run 'agenticdome init' before generating a scaffold.")
     config = _load_json(config_path)
-    plan = integration_plan(root)
+    plan = plan or integration_plan(root)
     output = _agenticdome_dir(root) / "scaffold"
     output.mkdir(parents=True, exist_ok=True)
     _write_json(output / "integration-plan.json", plan)
@@ -1031,6 +1319,261 @@ def create_scaffold(root: Path) -> Path:
     patch_path = output / "agenticdome.patch"
     patch_path.write_text("".join(patch_lines), encoding="utf-8")
     return patch_path
+
+
+def protect_mcp(root: Path) -> Dict[str, Any]:
+    """Generate a source-free MCP plan and unapplied integration additions."""
+    report = inspect_repository(root)
+    mcp = report.get("mcp_protection") if isinstance(report.get("mcp_protection"), dict) else {}
+    if not mcp.get("detected"):
+        raise SystemExit(
+            "No MCP client, host, gateway or server boundary was detected. "
+            "Run this command from the deployable MCP workload directory or add the MCP dependency first."
+        )
+    config_path = _agenticdome_dir(root) / "config.json"
+    config = _load_json(config_path) if config_path.exists() else {
+        "schema": CONFIG_SCHEMA,
+        "frameworks": [],
+        "business_purpose": "REVIEW_REQUIRED_NOT_INVENTED",
+        "sensitive_tools": [],
+        "deployment": {
+            "preference": "managed",
+            "region": "auto",
+            "api_base_env": "AGENTICDOME_API_BASE",
+            "api_key_env": "AGENTICDOME_API_KEY",
+            "tenant_id_env": "AGENTICDOME_TENANT_ID",
+        },
+        "source_upload": False,
+    }
+    config["frameworks"] = list(dict.fromkeys([*config.get("frameworks", []), "mcp"]))
+    config["source_upload"] = False
+    _write_json(config_path, config)
+    _write_json(_agenticdome_dir(root) / "inspection.json", report)
+    plan = integration_plan(root)
+    plan["mcp_protection"] = mcp
+    plan["safe_change_policy"] = "Generated additions are unapplied; no customer source file is modified."
+    plan_path = _agenticdome_dir(root) / "mcp-protection-plan.json"
+    _write_json(plan_path, plan)
+    patch_path = create_scaffold(root, plan=plan)
+    return {
+        "schema": "agenticdome.mcp-protect-result.v1",
+        "status": "generated_not_applied",
+        "source_upload": False,
+        "detected_roles": mcp.get("roles", []),
+        "detected_transports": mcp.get("transports", []),
+        "integration_mode": mcp.get("integration_mode"),
+        "server_count": len(mcp.get("servers", [])),
+        "tool_registration_count": len(mcp.get("tools", [])),
+        "request_boundary_count": len(mcp.get("request_boundaries", [])),
+        "response_boundary_count": len(mcp.get("response_boundaries", [])),
+        "bypass_finding_count": len(mcp.get("bypass_findings", [])),
+        "plan": _relative(plan_path, root),
+        "patch": _relative(patch_path, root),
+        "customer_source_modified": False,
+        "next_action": "Review the MCP plan, supply genuine identity and business-purpose context, resolve every bypass, then manually apply suitable additions and run agenticdome mcp verify.",
+    }
+
+
+def verify_mcp_project(root: Path, *, live: bool = True, run_tests: bool = True) -> Tuple[int, Dict[str, Any]]:
+    from .mcp_verification import run_mcp_transport_verification
+
+    transport = run_mcp_transport_verification()
+    exit_code, result = verify_project(root, live=live, run_tests=run_tests)
+    report = inspect_repository(root)
+    topology = report.get("mcp_protection") if isinstance(report.get("mcp_protection"), dict) else {}
+    known_transport = topology.get("detected") is True and "unknown_dynamic" not in topology.get("transports", [])
+    # Raw forwarding locations are candidates until the signed semantic plan
+    # proves whether the protected wrapper dominates them. The production gate
+    # therefore uses the private semantic result, not a lexical same-file guess.
+    no_bypass = bool(result.get("semantic_gate", {}).get("passed"))
+    context_complete = bool(topology.get("identity_context", {}).get("complete"))
+    mcp_ready = bool(transport.get("ready")) and known_transport and no_bypass and context_complete
+    result["mcp_verification"] = {
+        "schema": "agenticdome.mcp-verification.v1",
+        "source_upload": False,
+        "detected_roles": topology.get("roles", []),
+        "detected_transports": topology.get("transports", []),
+        "integration_mode": topology.get("integration_mode"),
+        "request_boundaries": topology.get("request_boundaries", []),
+        "response_boundaries": topology.get("response_boundaries", []),
+        "identity_context": topology.get("identity_context", {}),
+        "bypass_findings": topology.get("bypass_findings", []),
+        "unresolved_bypass_findings": int(result.get("semantic_gate", {}).get("unresolved_bypasses", 0)),
+        "transport_rehearsal": transport,
+        "live_tenant_decisions": live and all(item.get("passed") for item in result.get("decision_cases", [])),
+        "telemetry_confirmation": "control_plane_certificate_required" if live else "not_run",
+        "production_readiness_certificate": "eligible_in_control_plane" if mcp_ready and live else "not_eligible",
+        "ready": mcp_ready and live,
+        "claim_boundary": "The CLI proves interception and live decisions. The customer Control Panel confirms retained telemetry and issues the point-in-time production-readiness certificate.",
+    }
+    result["ready"] = bool(result.get("ready")) and bool(result["mcp_verification"]["ready"])
+    result.pop("report_sha256", None)
+    canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    result["report_sha256"] = hashlib.sha256(canonical).hexdigest()
+    return (0 if result["ready"] else max(2, exit_code)), result
+
+
+OPENCLAW_REQUIRED_HOOKS = ["before_agent_run", "before_tool_call", "tool_result_persist"]
+
+
+def _last_json_object(text: str) -> Dict[str, Any]:
+    """Parse the final JSON object emitted by a CLI that may print notices first."""
+    decoder = json.JSONDecoder()
+    candidates = [position for position, character in enumerate(text) if character == "{"]
+    for position in reversed(candidates):
+        try:
+            value, remainder = decoder.raw_decode(text[position:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and not remainder.strip():
+            return value
+    raise RuntimeError("OpenClaw did not return a machine-readable runtime inspection")
+
+
+def _openclaw_runtime_inspection(root: Path) -> Dict[str, Any]:
+    openclaw = shutil.which("openclaw")
+    node = shutil.which("node")
+    if not openclaw or not node:
+        raise SystemExit(
+            "OpenClaw onboarding requires the openclaw and node executables in this shell. "
+            "Activate the real OpenClaw runtime, then retry."
+        )
+    try:
+        inspected = subprocess.run(
+            [openclaw, "plugins", "inspect", "agenticdome-security", "--runtime", "--json"],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=240,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit("OpenClaw plugin inspection timed out after 240 seconds.") from exc
+    if inspected.returncode != 0:
+        detail = inspected.stderr.strip()[-300:] or inspected.stdout.strip()[-300:]
+        raise SystemExit("OpenClaw could not inspect agenticdome-security" + (f": {detail}" if detail else "."))
+    payload = _last_json_object(inspected.stdout)
+    hooks = sorted({
+        str(item.get("name") or "").strip()
+        for item in payload.get("typedHooks", [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    })
+    status = str((payload.get("plugin") or {}).get("status") or "unknown").lower()
+    allow_conversation = (payload.get("policy") or {}).get("allowConversationAccess") is True
+    hook_count = int((payload.get("plugin") or {}).get("hookCount") or len(hooks))
+    exact_hooks = hooks == sorted(OPENCLAW_REQUIRED_HOOKS) and hook_count == len(OPENCLAW_REQUIRED_HOOKS)
+
+    def version_output(command: List[str]) -> str:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+            text=True,
+        )
+        return completed.stdout.strip().splitlines()[-1][:120] if completed.stdout.strip() else "unknown"
+
+    inventory = _manifest_dependency_specs(root)
+    return {
+        "schema": "agenticdome.openclaw-protection.v1",
+        "source_upload": False,
+        "plugin_id": "agenticdome-security",
+        "plugin_status": status,
+        "hook_count": hook_count,
+        "hooks": hooks,
+        "required_hooks": OPENCLAW_REQUIRED_HOOKS,
+        "exact_hook_contract": exact_hooks,
+        "allow_conversation_access": allow_conversation,
+        "versions": {
+            "node": version_output([node, "--version"]),
+            "openclaw": version_output([openclaw, "--version"]),
+            "plugin": str((inventory.get("agenticdome-openclaw-security") or {}).get("installed") or "unknown")[:64],
+            "core_sdk": str((inventory.get("agenticdome-sdk") or {}).get("installed") or "unknown")[:64],
+        },
+        "ready": status == "loaded" and exact_hooks and allow_conversation,
+        "claim_boundary": "This proves the real OpenClaw runtime loaded the published plugin and exact typed hooks. Live policy behavior and retained telemetry are separate required gates.",
+    }
+
+
+def protect_openclaw(root: Path) -> Dict[str, Any]:
+    """Record the real OpenClaw plugin/hook contract without uploading source."""
+    protection = _openclaw_runtime_inspection(root)
+    if not protection["ready"]:
+        raise SystemExit(
+            "The AgenticDome OpenClaw plugin is not ready. It must be loaded with exactly "
+            "before_agent_run, before_tool_call and tool_result_persist, and conversation-access consent must be enabled."
+        )
+    config_path = _agenticdome_dir(root) / "config.json"
+    config = _load_json(config_path) if config_path.exists() else {
+        "schema": CONFIG_SCHEMA,
+        "frameworks": [],
+        "business_purpose": "REVIEW_REQUIRED_NOT_INVENTED",
+        "sensitive_tools": [],
+        "deployment": {
+            "preference": "managed",
+            "region": "auto",
+            "api_base_env": "AGENTICDOME_API_BASE",
+            "api_key_env": "AGENTICDOME_API_KEY",
+            "tenant_id_env": "AGENTICDOME_TENANT_ID",
+        },
+        "source_upload": False,
+    }
+    config["frameworks"] = list(dict.fromkeys([*config.get("frameworks", []), "openclaw"]))
+    config["source_upload"] = False
+    _write_json(config_path, config)
+    report = inspect_repository(root)
+    report["openclaw_protection"] = protection
+    report.pop("report_sha256", None)
+    canonical = json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    report["report_sha256"] = hashlib.sha256(canonical).hexdigest()
+    inspection_path = _agenticdome_dir(root) / "inspection.json"
+    protection_path = _agenticdome_dir(root) / "openclaw-protection.json"
+    _write_json(inspection_path, report)
+    _write_json(protection_path, protection)
+    return {
+        "schema": "agenticdome.openclaw-protect-result.v1",
+        "status": "ready_for_verification",
+        "source_upload": False,
+        "plugin_status": protection["plugin_status"],
+        "hooks": protection["hooks"],
+        "versions": protection["versions"],
+        "inspection": _relative(inspection_path, root),
+        "evidence": _relative(protection_path, root),
+        "customer_source_modified": False,
+        "next_action": "Generate and review agenticdome plan with the tenant's Copilot key, then run agenticdome openclaw verify with its Runtime / SDK key.",
+    }
+
+
+def verify_openclaw_project(root: Path, *, live: bool = True, run_tests: bool = True) -> Tuple[int, Dict[str, Any]]:
+    """Verify the real OpenClaw hook contract plus tenant policy decisions."""
+    protection = _openclaw_runtime_inspection(root)
+    exit_code, result = verify_project(root, live=live, run_tests=run_tests)
+    decisions_ready = live and all(item.get("passed") for item in result.get("decision_cases", []))
+    openclaw_ready = bool(protection.get("ready")) and decisions_ready
+    result["openclaw_verification"] = {
+        "schema": "agenticdome.openclaw-verification.v1",
+        "source_upload": False,
+        "plugin_status": protection.get("plugin_status"),
+        "hooks": protection.get("hooks", []),
+        "exact_hook_contract": protection.get("exact_hook_contract") is True,
+        "allow_conversation_access": protection.get("allow_conversation_access") is True,
+        "versions": protection.get("versions", {}),
+        "live_tenant_decisions": decisions_ready,
+        "telemetry_confirmation": "control_plane_certificate_required" if live else "not_run",
+        "production_readiness_certificate": "eligible_in_control_plane" if openclaw_ready else "not_eligible",
+        "ready": openclaw_ready,
+        "claim_boundary": "The CLI proves the real OpenClaw hook registration and live tenant decisions. The Control Panel confirms retained telemetry before activation.",
+    }
+    result["ready"] = bool(result.get("ready")) and openclaw_ready
+    result.pop("report_sha256", None)
+    canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    result["report_sha256"] = hashlib.sha256(canonical).hexdigest()
+    return (0 if result["ready"] else max(2, exit_code)), result
 
 
 def _run_existing_tests(root: Path) -> Dict[str, Any]:
@@ -1214,6 +1757,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also run detected pytest and npm test commands locally (up to 15 minutes each); no output is included in evidence.",
     )
     verify_parser.add_argument("--output")
+
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Detect, generate and verify fail-closed MCP protection without silently editing source.",
+    )
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    mcp_protect_parser = mcp_subparsers.add_parser(
+        "protect",
+        help="Detect the MCP topology and generate a tailored, unapplied integration patch.",
+    )
+    mcp_protect_parser.add_argument("--output", help="Optional path for the protect summary JSON.")
+    mcp_verify_parser = mcp_subparsers.add_parser(
+        "verify",
+        help="Run transport interception, project tests and assigned-sidecar verification.",
+    )
+    mcp_verify_parser.add_argument("--output", default=".agenticdome/verification.json")
+    mcp_verify_parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Diagnostic only: skip the assigned-sidecar decision proof; never produces production-ready evidence.",
+    )
+    mcp_verify_parser.add_argument(
+        "--skip-project-tests",
+        action="store_true",
+        help="Diagnostic only: skip existing project tests; never produces production-ready evidence.",
+    )
+    openclaw_parser = subparsers.add_parser(
+        "openclaw",
+        help="Inspect and verify the native AgenticDome OpenClaw plugin without changing customer source.",
+    )
+    openclaw_subparsers = openclaw_parser.add_subparsers(dest="openclaw_command", required=True)
+    openclaw_protect_parser = openclaw_subparsers.add_parser(
+        "protect",
+        help="Confirm the real OpenClaw runtime loaded the exact certified AgenticDome hook contract.",
+    )
+    openclaw_protect_parser.add_argument("--output", help="Optional path for the protection summary JSON.")
+    openclaw_verify_parser = openclaw_subparsers.add_parser(
+        "verify",
+        help="Verify OpenClaw hooks, project tests and assigned-sidecar policy decisions.",
+    )
+    openclaw_verify_parser.add_argument("--output", default=".agenticdome/verification.json")
+    openclaw_verify_parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Diagnostic only: skip assigned-sidecar decision proof; never produces production-ready evidence.",
+    )
+    openclaw_verify_parser.add_argument(
+        "--skip-project-tests",
+        action="store_true",
+        help="Diagnostic only: skip existing project tests; never produces production-ready evidence.",
+    )
     return parser
 
 
@@ -1262,6 +1856,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         exit_code, result = verify_project(root, live=args.live, run_tests=args.run_tests)
         if args.output:
             _write_json(Path(args.output), result)
+        _print(result)
+        return exit_code
+    if args.command == "mcp" and args.mcp_command == "protect":
+        result = protect_mcp(root)
+        if args.output:
+            _write_json(Path(args.output), result)
+        _print(result)
+        return 0
+    if args.command == "mcp" and args.mcp_command == "verify":
+        exit_code, result = verify_mcp_project(
+            root,
+            live=not args.local_only,
+            run_tests=not args.skip_project_tests,
+        )
+        if args.output:
+            output = Path(args.output)
+            if not output.is_absolute():
+                output = root / output
+            _write_json(output, result)
+        _print(result)
+        return exit_code
+    if args.command == "openclaw" and args.openclaw_command == "protect":
+        result = protect_openclaw(root)
+        if args.output:
+            output = Path(args.output)
+            if not output.is_absolute():
+                output = root / output
+            _write_json(output, result)
+        _print(result)
+        return 0
+    if args.command == "openclaw" and args.openclaw_command == "verify":
+        exit_code, result = verify_openclaw_project(
+            root,
+            live=not args.local_only,
+            run_tests=not args.skip_project_tests,
+        )
+        if args.output:
+            output = Path(args.output)
+            if not output.is_absolute():
+                output = root / output
+            _write_json(output, result)
         _print(result)
         return exit_code
     return 1

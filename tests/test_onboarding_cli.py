@@ -15,6 +15,8 @@ from agenticdome_sdk.onboarding_cli import (
     inspect_repository,
     integration_plan,
     main,
+    protect_openclaw,
+    verify_openclaw_project,
     verify_project,
 )
 
@@ -630,4 +632,75 @@ def test_mcp_typescript_uses_published_core_contract(tmp_path):
     assert hook["contract_key"] == "mcp-ts"
     assert hook["language"] == "typescript"
     assert hook["status"] == "ready_for_attachment"
-    assert hook["adapter"]["attachment_methods"] == ["mcpToolCall", "mcpGuardrailValidate", "mcpListTools"]
+    assert hook["adapter"]["attachment_methods"] == [
+        "forward", "preflight", "mcpToolCall", "mcpGuardrailValidate", "mcpListTools",
+    ]
+
+
+def _openclaw_protection():
+    return {
+        "schema": "agenticdome.openclaw-protection.v1",
+        "source_upload": False,
+        "plugin_id": "agenticdome-security",
+        "plugin_status": "loaded",
+        "hook_count": 3,
+        "hooks": ["before_agent_run", "before_tool_call", "tool_result_persist"],
+        "required_hooks": ["before_agent_run", "before_tool_call", "tool_result_persist"],
+        "exact_hook_contract": True,
+        "allow_conversation_access": True,
+        "versions": {
+            "node": "v24.15.0",
+            "openclaw": "2026.7.1-2",
+            "plugin": "1.0.2",
+            "core_sdk": "0.6.3",
+        },
+        "ready": True,
+        "claim_boundary": "test",
+    }
+
+
+def test_openclaw_protect_records_exact_runtime_hooks_without_source_changes(tmp_path, monkeypatch):
+    (tmp_path / "package.json").write_text(
+        '{"dependencies":{"openclaw":"2026.7.1-2","agenticdome-openclaw-security":"1.0.2"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "agent.ts").write_text("openclaw plugins inspect agenticdome-security", encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "_openclaw_runtime_inspection", lambda _root: _openclaw_protection())
+
+    result = protect_openclaw(tmp_path)
+    inspection = json.loads((tmp_path / ".agenticdome" / "inspection.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "ready_for_verification"
+    assert result["customer_source_modified"] is False
+    assert inspection["openclaw_protection"]["ready"] is True
+    assert inspection["openclaw_protection"]["hooks"] == onboarding_cli.OPENCLAW_REQUIRED_HOOKS
+    assert len(inspection["report_sha256"]) == 64
+
+
+def test_openclaw_verify_requires_exact_hooks_and_live_decisions(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboarding_cli, "_openclaw_runtime_inspection", lambda _root: _openclaw_protection())
+    monkeypatch.setattr(
+        onboarding_cli,
+        "verify_project",
+        lambda _root, live, run_tests: (0, {
+            "schema": "agenticdome.verification-result.v1",
+            "source_upload": False,
+            "decision_cases": [
+                {"case": "allowed", "verdict": "ALLOWED", "passed": True},
+                {"case": "blocked", "verdict": "BLOCKED", "passed": True},
+            ],
+            "static_coverage": {"gaps": []},
+            "semantic_gate": {"passed": True},
+            "application_tests": {"requested": True, "detected": True, "passed": True, "results": []},
+            "ready": True,
+            "report_sha256": "0" * 64,
+        }),
+    )
+
+    exit_code, result = verify_openclaw_project(tmp_path)
+
+    assert exit_code == 0
+    assert result["ready"] is True
+    assert result["openclaw_verification"]["exact_hook_contract"] is True
+    assert result["openclaw_verification"]["live_tenant_decisions"] is True
+    assert result["openclaw_verification"]["telemetry_confirmation"] == "control_plane_certificate_required"

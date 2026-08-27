@@ -180,6 +180,32 @@ def test_forward_with_firewall_sanitizes_mcp_text_content():
     assert any(name == "mesh_validate" for name, _ in client.calls)
 
 
+def test_forward_with_firewall_does_not_return_unreviewed_output_when_sanitizer_fails_closed():
+    client = FakeClient()
+
+    def unavailable_mesh(**_kwargs):
+        raise RuntimeError("output policy unavailable")
+
+    client.mesh_validate = unavailable_mesh
+    firewall = make_firewall(client=client, fail_closed=True)
+
+    async def forward(_request):
+        return {
+            "jsonrpc": "2.0",
+            "id": "req-output-failure",
+            "result": {"content": [{"type": "text", "text": "unreviewed secret"}]},
+        }
+
+    result = asyncio.run(firewall.forward_with_firewall(
+        mcp_request=tools_call(),
+        context={"session_id": "s1"},
+        forward_to_third_party=forward,
+    ))
+
+    assert result["error"]["code"] == -32000
+    assert "unreviewed secret" not in str(result)
+
+
 def test_structured_result_is_preserved_when_sanitizer_returns_same_json():
     client = FakeClient()
     structured = {"structuredContent": {"ok": True, "count": 1}}

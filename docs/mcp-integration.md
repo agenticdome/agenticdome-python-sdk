@@ -153,6 +153,22 @@ The network-free example proves three distinct paths:
 - a remote-execution request is blocked before the transport is called;
 - a poisoned tool result is replaced before it can re-enter the planner.
 
+This example still uses a stand-in forwarder so it remains a teaching example,
+not transport certification. For the packaged transport-level rehearsal and a
+tailored integration plan, run from the real workload root:
+
+```bash
+agenticdome mcp protect
+# review and manually integrate the suitable generated additions
+agenticdome mcp verify
+```
+
+The verification command launches a real JSON-RPC stdio subprocess and proves
+exactly-once allowed forwarding, no forwarding on block, argument sanitization,
+tool-list filtering, poisoned-response redaction and fail-closed policy outage
+behavior. It then runs project tests and live assigned-sidecar decisions. It
+does not execute a customer business tool or silently modify customer code.
+
 ## Connect to live tenant policy
 
 Obtain these values from the AgenticDome activation experience:
@@ -238,6 +254,35 @@ return response
 
 `forward_with_firewall()` is preferred because it keeps request authorization
 and response handling together.
+
+## Low-code Streamable HTTP gateway
+
+`agenticdome mcp protect` generates a reviewed server registry and the required
+environment template. After supplying the fixed upstream endpoint, a genuine
+service identity and business purpose, run the packaged gateway behind your
+authenticated TLS ingress:
+
+```bash
+python -m agenticdome_sdk.mcp_http_gateway
+```
+
+Point the MCP client at the gateway's `/mcp` route. The gateway preflights each
+JSON-RPC request, forwards it once to the configured upstream, and reviews JSON
+or Streamable HTTP SSE responses. It refuses upstream redirects and does not accept a
+request-provided upstream URL or silently reuse the caller's Authorization
+header. Upstream authentication remains customer-managed through the secret
+manager-backed gateway configuration.
+
+The gateway requires session and user identity headers. Set
+`AGENTICDOME_MCP_TRUST_IDENTITY_HEADERS=true` only after authenticated ingress
+is configured to strip caller-supplied identity headers and set trusted values.
+
+The packaged gateway permits Streamable HTTP GET event streams but blocks the
+legacy SSE `endpoint` event. That event advertises a separate message endpoint
+which must be rewritten and reviewed or it can become a bypass. Use Streamable
+HTTP, or put the generated local wrapper around that legacy transport. Stdio
+always requires the local wrapper because it is a process transport, not an
+HTTP route.
 
 ## Identity, lineage and automated workloads
 
@@ -356,10 +401,9 @@ when the deployment model permits it.
 3. Confirm safe live traffic is allowed against the assigned tenant sidecar.
 4. Confirm returned secrets/PII are handled according to tenant policy.
 5. Test sidecar unavailability with the selected fail-open/fail-closed posture.
-   Request/preflight failures follow `AGENTICDOME_FAIL_CLOSED`. The current
-   `forward_with_firewall()` convenience path returns the original response
-   after an unexpected non-policy result-review error, so applications that
-   require fail-closed output handling must catch and block that path explicitly.
+   Request/preflight and response-review failures follow
+   `AGENTICDOME_FAIL_CLOSED`; in fail-closed mode the convenience wrapper never
+   returns an unreviewed response after a policy outage.
 6. Verify stable human/workload, agent, session, server and tool attribution in
    runtime evidence.
 7. Run SDK Assurance, then Performance Smoke, against the same tenant and

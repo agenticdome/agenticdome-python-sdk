@@ -116,7 +116,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.pydanticai",
         "CyberSecFirewall",
         ["install_native_hooks", "secure_tool"],
-        packages={"pydantic-ai": {"min":"2.16.0","max":"2.33.0"}},
+        packages={"pydantic-ai": {"min":"2.16.0","max":"2.35.1"}},
         native_modules=[{"module": "pydantic_ai", "attrs": ["Agent", "RunContext"]}],
         adapter_attrs=[
             {
@@ -201,7 +201,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.claude",
         "AgenticDomeClaudeFirewall",
         ["install_on_options", "secure_query", "run_client_securely", "secure_sdk_tool"],
-        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.144"}},
+        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.145"}},
         native_modules=[
             {
                 "module": "claude_agent_sdk",
@@ -226,7 +226,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.agno",
         "AgenticDomeAgnoFirewall",
         ["attach_firewall", "secure_tool", "create_hook_bundle"],
-        packages={"agno": {"min": "2.8.0", "max": "2.9.0"}},
+        packages={"agno": {"min":"2.8.0","max":"3.0.1"}},
         native_modules=[{"module": "agno.agent", "attrs": ["Agent"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.agno", "call": "attach_firewall"},
         docs="docs/frameworks/agno.md",
@@ -236,7 +236,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.google_adk",
         "AgenticDomeGoogleADKFirewall",
         ["build_callback_kwargs", "install_on_agent", "wrap_tool_handler"],
-        packages={"google-adk": {"min": "2.5.0", "max": "2.7.1"}},
+        packages={"google-adk": {"min":"2.5.0","max":"2.8.0"}},
         native_modules=[
             {"module": "google.adk.agents", "attrs": ["Agent"]},
             {"module": "google.adk.tools", "attrs": ["FunctionTool"]},
@@ -262,7 +262,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.aws_bedrock",
         "AgenticDomeAWSBedrockFirewall",
         ["converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"],
-        packages={"boto3": {"min":"1.43.54","max":"1.43.78"}},
+        packages={"boto3": {"min":"1.43.54","max":"1.43.81"}},
         native_modules=[{"module": "boto3", "attrs": ["client"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.aws_bedrock", "call": "wrap_tool_handler"},
         docs="docs/frameworks/aws-bedrock.md",
@@ -277,6 +277,8 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
             "authorize_mcp_method",
             "sanitize_text",
             "sanitize_mcp_result",
+            "review_forwarded_response",
+            "forward_with_firewall",
         ],
         packages={"mcp": {"min": "1.26.0", "max": "1.28.1"}},
         native_modules=[
@@ -327,23 +329,23 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "docs": "agenticdome-openclaw-security package README",
     },
     "mcp-ts": {
-        "label": "MCP API Client Surface (TypeScript)",
+        "label": "MCP Host / Gateway Firewall (TypeScript)",
         "language": "typescript",
         "registry": "npm",
         "agenticdome_package": "agenticdome-sdk",
         "packages": {"agenticdome-sdk": {"exact": PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"]}},
         "runtime": {"node": ">=18"},
         "adapter_module": "agenticdome-sdk",
-        "adapter_class": "AgenticDomeClient",
-        "attachment_methods": ["mcpToolCall", "mcpGuardrailValidate", "mcpListTools"],
+        "adapter_class": "AgenticDomeMCPGateway",
+        "attachment_methods": ["forward", "preflight", "mcpToolCall", "mcpGuardrailValidate", "mcpListTools"],
         "native_hooks": [],
         "protocol_methods": ["tools/call", "tools/list"],
-        "integration_scope": "transport_neutral_client",
+        "integration_scope": "transport_neutral_host_gateway",
         "external_sdk": {
             "package": "@modelcontextprotocol/sdk",
             "relationship": "not_a_dependency",
             "certification": "not_applicable",
-            "note": "agenticdome-sdk sends MCP policy requests through its own transport-neutral client API; customer MCP transports may use @modelcontextprotocol/sdk independently.",
+            "note": "AgenticDomeMCPGateway wraps an injected customer MCP transport without depending on it; customer transports may use @modelcontextprotocol/sdk independently.",
         },
         "docs": "agenticdome-sdk package README (MCP section)",
     },
@@ -427,7 +429,13 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
     },
     "mcp": {
         "adapter_attrs": ["AgenticDomeMCPHostFirewall"],
-        "firewall_methods": ["screen_upstream_prompt", "authorize_mcp_tool_call", "authorize_mcp_method", "sanitize_text", "sanitize_mcp_result"],
+        "firewall_methods": ["screen_upstream_prompt", "authorize_mcp_tool_call", "authorize_mcp_method", "sanitize_text", "sanitize_mcp_result", "review_forwarded_response", "forward_with_firewall"],
+        "low_code_gateway": {
+            "module": "agenticdome_sdk.mcp_http_gateway",
+            "transport": "streamable_http",
+            "response_modes": ["application/json", "text/event-stream"],
+            "legacy_standalone_sse": "requires_reviewed_local_adapter",
+        },
     },
     "custom-python": {
         "adapter_attrs": ["AgenticDomeClient"],
@@ -437,17 +445,17 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
 
 _PACKAGE_CERTIFICATION_DATES: Dict[str, Dict[str, str]] = {
     "crewai": {"crewai":"2026-08-20"},
-    "pydanticai": {"pydantic-ai": "2026-08-22"},
+    "pydanticai": {"pydantic-ai": "2026-08-27"},
     "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-08-20"},
     "autogen": {"autogen-agentchat": "2026-07-26"},
     "foundry": {"azure-ai-projects": "2026-08-22", "azure-identity": "2026-07-10"},
     "openai-agents": {"openai-agents": "2026-08-22"},
-    "claude": {"claude-agent-sdk": "2026-08-23"},
+    "claude": {"claude-agent-sdk": "2026-08-27"},
     "smolagents": {"smolagents": "2026-07-23"},
-    "agno": {"agno": "2026-08-16"},
-    "google-adk": {"google-adk": "2026-08-18"},
+    "agno": {"agno": "2026-08-27"},
+    "google-adk": {"google-adk": "2026-08-27"},
     "llamaindex": {"llama-index": "2026-08-20"},
-    "bedrock": {"boto3": "2026-08-23"},
+    "bedrock": {"boto3": "2026-08-27"},
     "mcp": {"mcp": "2026-07-10"},
 }
 
