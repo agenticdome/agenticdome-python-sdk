@@ -86,7 +86,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.crewai",
         "AgenticDomeCrewAIFirewall",
         ["attach", "secure_tool"],
-        packages={"crewai": {"min":"1.15.5","max":"1.15.17"}},
+        packages={"crewai": {"min":"1.15.5","max":"1.15.18"}},
         native_modules=[
             {
                 "module": "crewai.hooks",
@@ -116,7 +116,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.pydanticai",
         "CyberSecFirewall",
         ["install_native_hooks", "secure_tool"],
-        packages={"pydantic-ai": {"min":"2.16.0","max":"2.35.1"}},
+        packages={"pydantic-ai": {"min":"2.16.0","max":"2.35.3"}},
         native_modules=[{"module": "pydantic_ai", "attrs": ["Agent", "RunContext"]}],
         adapter_attrs=[
             {
@@ -134,7 +134,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         ["input_node", "transition_node", "output_node", "as_langchain_middleware"],
         packages={
             "langgraph": {"min": "1.2.9", "max": "1.2.11"},
-            "langchain-core": {"min":"1.5.0","max":"1.6.0"},
+            "langchain-core": {"min":"1.5.0","max":"1.6.1"},
         },
         native_modules=[
             {"module": "langgraph.graph", "attrs": ["StateGraph"]},
@@ -201,7 +201,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.claude",
         "AgenticDomeClaudeFirewall",
         ["install_on_options", "secure_query", "run_client_securely", "secure_sdk_tool"],
-        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.145"}},
+        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.147"}},
         native_modules=[
             {
                 "module": "claude_agent_sdk",
@@ -262,7 +262,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.aws_bedrock",
         "AgenticDomeAWSBedrockFirewall",
         ["converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"],
-        packages={"boto3": {"min":"1.43.54","max":"1.43.81"}},
+        packages={"boto3": {"min":"1.43.54","max":"1.43.82"}},
         native_modules=[{"module": "boto3", "attrs": ["client"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.aws_bedrock", "call": "wrap_tool_handler"},
         docs="docs/frameworks/aws-bedrock.md",
@@ -444,18 +444,18 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
 }
 
 _PACKAGE_CERTIFICATION_DATES: Dict[str, Dict[str, str]] = {
-    "crewai": {"crewai":"2026-08-20"},
-    "pydanticai": {"pydantic-ai": "2026-08-27"},
-    "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-08-20"},
+    "crewai": {"crewai":"2026-08-28"},
+    "pydanticai": {"pydantic-ai": "2026-08-28"},
+    "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-08-28"},
     "autogen": {"autogen-agentchat": "2026-07-26"},
     "foundry": {"azure-ai-projects": "2026-08-22", "azure-identity": "2026-07-10"},
     "openai-agents": {"openai-agents": "2026-08-22"},
-    "claude": {"claude-agent-sdk": "2026-08-27"},
+    "claude": {"claude-agent-sdk": "2026-08-28"},
     "smolagents": {"smolagents": "2026-07-23"},
     "agno": {"agno": "2026-08-27"},
     "google-adk": {"google-adk": "2026-08-27"},
     "llamaindex": {"llama-index": "2026-08-20"},
-    "bedrock": {"boto3": "2026-08-27"},
+    "bedrock": {"boto3": "2026-08-28"},
     "mcp": {"mcp": "2026-07-10"},
 }
 
