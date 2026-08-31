@@ -74,8 +74,10 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
     openclaw = framework_contract("openclaw")
     assert openclaw["packages"]["agenticdome-sdk"]["exact"] == typescript_version
     assert openclaw["packages"]["agenticdome-openclaw-security"]["exact"] == openclaw_version
-    assert openclaw["packages"]["openclaw"]["min"] == PUBLISHED_AGENTICDOME_PACKAGES["openclaw"]["version"]
-    assert openclaw["packages"]["openclaw"]["max"] == PUBLISHED_AGENTICDOME_PACKAGES["openclaw"]["version"]
+    published_openclaw_version = PUBLISHED_AGENTICDOME_PACKAGES["openclaw"]["version"]
+    certified_openclaw_range = openclaw["packages"]["openclaw"]
+    assert version_satisfies_certification(published_openclaw_version, certified_openclaw_range)
+    assert certified_openclaw_range["max"] == published_openclaw_version
     assert openclaw["native_hooks"] == ["before_agent_run", "before_tool_call", "tool_result_persist"]
     assert openclaw["runtime"]["node"] == ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
     mcp_ts = framework_contract("mcp", "typescript")
