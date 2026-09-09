@@ -16,6 +16,7 @@ from threading import Lock, Thread
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Tuple, Type
 
 from .client import AgenticDomeClient
+from .lifecycle import VerifiedActionReporter
 from ._mode import credentials_or_local_sim
 
 
@@ -201,6 +202,7 @@ class FrameworkFirewallBase:
             timeout=config.timeout_s,
         )
         self.token_store = token_store or build_token_store(config, logger)
+        self.lifecycle_reporter = VerifiedActionReporter.from_env(tenant_id=config.tenant_id)
         self.denied_error = denied_error
         self.label = label
         self.logger = logger
@@ -211,6 +213,7 @@ class FrameworkFirewallBase:
         self._circuit_open_until = 0.0
 
     def close(self) -> None:
+        self.lifecycle_reporter.flush(timeout=2.0)
         try:
             self.client.close()
         except Exception:
@@ -611,35 +614,73 @@ class FrameworkFirewallBase:
             call_args = self.normalize_args(kwargs if kwargs else (args[0] if len(args) == 1 and isinstance(args[0], dict) else {}))
             sid = self.session_id(session_id)
             aid = agent_id or self.config.agent_id
-            decision = await self.aauthorize_tool_call(
-                session_id=sid, agent_id=aid, tool_name=tool_name, tool_args=call_args,
-                tool_platform=tool_platform, text=f"[{self.label}] {aid} calls {tool_name}",
+            lifecycle = self.lifecycle_reporter.new_context(
+                operation_type="tool_call", tool_name=tool_name, arguments=call_args,
+                initiator_type="agent", executor_type="tool", target_type="tool",
             )
+            self.lifecycle_reporter.phase(lifecycle, "requested", "requested")
+            try:
+                decision = await self.aauthorize_tool_call(
+                    session_id=sid, agent_id=aid, tool_name=tool_name, tool_args=call_args,
+                    tool_platform=tool_platform, text=f"[{self.label}] {aid} calls {tool_name}",
+                )
+            except Exception:
+                self.lifecycle_reporter.phase(lifecycle, "authorised", "blocked")
+                self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
+                raise
+            self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
+            self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
             clean = self.sanitized_args(decision, call_args)
-            if kwargs:
-                raw = await handler(*args, **clean)
-            elif len(args) == 1 and isinstance(args[0], dict):
-                raw = await handler(clean)
-            else:
-                raw = await handler(*args, **kwargs)
-            return await self.areview_value(raw, session_id=sid, agent_id=aid, policy_context={"tool_name": tool_name}) if sanitize_output else raw
+            self.lifecycle_reporter.phase(lifecycle, "attempted", "attempted")
+            try:
+                if kwargs:
+                    raw = await handler(*args, **clean)
+                elif len(args) == 1 and isinstance(args[0], dict):
+                    raw = await handler(clean)
+                else:
+                    raw = await handler(*args, **kwargs)
+                reviewed = await self.areview_value(raw, session_id=sid, agent_id=aid, policy_context={"tool_name": tool_name}) if sanitize_output else raw
+            except Exception:
+                self.lifecycle_reporter.outcome(lifecycle, "failed")
+                raise
+            self.lifecycle_reporter.outcome(lifecycle, "succeeded")
+            return reviewed
 
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             call_args = self.normalize_args(kwargs if kwargs else (args[0] if len(args) == 1 and isinstance(args[0], dict) else {}))
             sid = self.session_id(session_id)
             aid = agent_id or self.config.agent_id
-            decision = self.authorize_tool_call(
-                session_id=sid, agent_id=aid, tool_name=tool_name, tool_args=call_args,
-                tool_platform=tool_platform, text=f"[{self.label}] {aid} calls {tool_name}",
+            lifecycle = self.lifecycle_reporter.new_context(
+                operation_type="tool_call", tool_name=tool_name, arguments=call_args,
+                initiator_type="agent", executor_type="tool", target_type="tool",
             )
+            self.lifecycle_reporter.phase(lifecycle, "requested", "requested")
+            try:
+                decision = self.authorize_tool_call(
+                    session_id=sid, agent_id=aid, tool_name=tool_name, tool_args=call_args,
+                    tool_platform=tool_platform, text=f"[{self.label}] {aid} calls {tool_name}",
+                )
+            except Exception:
+                self.lifecycle_reporter.phase(lifecycle, "authorised", "blocked")
+                self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
+                raise
+            self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
+            self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
             clean = self.sanitized_args(decision, call_args)
-            if kwargs:
-                raw = handler(*args, **clean)
-            elif len(args) == 1 and isinstance(args[0], dict):
-                raw = handler(clean)
-            else:
-                raw = handler(*args, **kwargs)
-            return self.review_value(raw, session_id=sid, agent_id=aid, policy_context={"tool_name": tool_name}) if sanitize_output else raw
+            self.lifecycle_reporter.phase(lifecycle, "attempted", "attempted")
+            try:
+                if kwargs:
+                    raw = handler(*args, **clean)
+                elif len(args) == 1 and isinstance(args[0], dict):
+                    raw = handler(clean)
+                else:
+                    raw = handler(*args, **kwargs)
+                reviewed = self.review_value(raw, session_id=sid, agent_id=aid, policy_context={"tool_name": tool_name}) if sanitize_output else raw
+            except Exception:
+                self.lifecycle_reporter.outcome(lifecycle, "failed")
+                raise
+            self.lifecycle_reporter.outcome(lifecycle, "succeeded")
+            return reviewed
 
         wrapper = async_wrapper if is_async else sync_wrapper
         return functools.wraps(handler)(wrapper)

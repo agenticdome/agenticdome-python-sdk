@@ -64,13 +64,14 @@ Run these commands from the root of **one deployable workload**:
 
 ```bash
 cd /path/to/one-deployable-agent-workload
-python -m pip install agenticdome-python-sdk
+python -m pip install --upgrade agenticdome-python-sdk
 agenticdome init
 agenticdome inspect --output agenticdome-inspection.json
 ```
 
-Upload `agenticdome-inspection.json` in Step 1 of the Control Panel. The JSON
-printed to the terminal by `agenticdome init` and the local
+Keep this initial inspection local and continue to the tenant-bound plan below.
+Upload the refreshed `agenticdome-inspection.json` produced after that plan.
+The JSON printed to the terminal by `agenticdome init` and the local
 `.agenticdome/config.json` are not upload evidence.
 
 The workload root is the directory built, tested and deployed as one
@@ -132,9 +133,9 @@ export AGENTICDOME_TENANT_ID="your_tenant_id"
 export AGENTICDOME_COPILOT_API_KEY="your_dedicated_copilot_key"
 agenticdome plan
 agenticdome scaffold
+git apply --stat .agenticdome/scaffold/agenticdome.patch
 agenticdome inspect --output agenticdome-inspection.json
 agenticdome verify --run-tests --output .agenticdome/verification.json
-git apply --stat .agenticdome/scaffold/agenticdome.patch
 ```
 
 Create the dedicated Integration Copilot key from the tenant API Keys page.

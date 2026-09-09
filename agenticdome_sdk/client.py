@@ -589,6 +589,7 @@ class AgenticDomeClient:
         trusted_destination_domains: Optional[List[str]] = None,
         allowed_destination_domains: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
+        content_parts: Optional[List[Dict[str, Any]]] = None,
         execution_broker: Optional[bool] = None,
         execution_boundary_id: Optional[str] = None,
         execution_destination: Optional[str] = None,
@@ -712,6 +713,7 @@ class AgenticDomeClient:
                 "trusted_destination_domains": trusted_destination_domains,
                 "allowed_destination_domains": allowed_destination_domains,
                 "attachments": attachments,
+                "content_parts": content_parts,
             }
         )
 
@@ -730,6 +732,26 @@ class AgenticDomeClient:
                 ])
                 boundary_id = "sdk:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
             payload["boundary_id"] = boundary_id
+            if execution_destination is not None:
+                destination = self._normalize_optional_string(execution_destination)
+                if destination is None or len(destination) > 2048:
+                    raise ValueError("'execution_destination' must be a non-empty URL/origin up to 2048 characters")
+                payload["destination"] = destination
+            if execution_http_method is not None:
+                method = self._normalize_optional_string(execution_http_method)
+                if method is None or not re.fullmatch(r"[A-Za-z]{1,16}", method):
+                    raise ValueError("'execution_http_method' must contain 1-16 letters")
+                payload["http_method"] = method.upper()
+            if workload_id is not None:
+                normalized_workload = self._normalize_optional_string(workload_id)
+                if (
+                    normalized_workload is None
+                    or len(normalized_workload) > 512
+                    or not normalized_workload.startswith("spiffe://")
+                ):
+                    raise ValueError("'workload_id' must be a non-empty SPIFFE ID up to 512 characters")
+                payload["workload_id"] = normalized_workload
+        else:
             if execution_destination is not None:
                 destination = self._normalize_optional_string(execution_destination)
                 if destination is None or len(destination) > 2048:
@@ -874,6 +896,36 @@ class AgenticDomeClient:
         )
 
         return self._request("POST", "/mesh/validate", json_body=payload, tenant_id=tenant_id)
+
+    def inspect_content(
+        self,
+        *,
+        content_parts: List[Dict[str, Any]],
+        direction: str = "output",
+        policy_context: Optional[Dict[str, Any]] = None,
+        runtime_verdict: str = "ALLOWED",
+        tenant_id: Optional[Union[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """Run multimodal descriptor DLP in the assigned AgenticDome runtime.
+
+        OCR, transcription and proprietary classification remain outside this
+        SDK.  Callers provide bounded text/transcripts, trusted labels or a
+        content digest; the runtime returns metadata-only decision evidence.
+        """
+        if not isinstance(content_parts, list) or not content_parts:
+            raise ValueError("'content_parts' requires at least one descriptor")
+        if len(content_parts) > 32 or not all(isinstance(part, dict) for part in content_parts):
+            raise ValueError("'content_parts' must contain at most 32 descriptor objects")
+        verdict = str(runtime_verdict or "").strip().upper()
+        if verdict not in {"ALLOWED", "BLOCKED", "REDACTED"}:
+            raise ValueError("runtime_verdict must be ALLOWED, BLOCKED, or REDACTED")
+        payload = {
+            "direction": self._normalize_direction(direction),
+            "content_parts": content_parts,
+            "policy_context": dict(policy_context or {}),
+            "runtime_verdict": verdict,
+        }
+        return self._request("POST", "/mesh/content/inspect", json_body=payload, tenant_id=tenant_id)
 
     def get_mesh_topology(self, tenant_id: Optional[Union[str, int]] = None) -> Dict[str, Any]:
         return self._request("GET", "/tools/mesh/topology", tenant_id=tenant_id)

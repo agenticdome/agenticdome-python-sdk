@@ -2224,7 +2224,7 @@ Start with the dedicated [MCP Host and Gateway Action Firewall guide](https://gi
 pip install "agenticdome-python-sdk[mcp]"
 ```
 
-**MCP package compatibility:** the `[mcp]` extra currently installs the externally certified PyPI range `mcp>=1.26.0,<=1.28.1`. That is the supported range of the third-party `mcp` package, not the version of AgenticDome's SDK. MCP 2.0 removed the certified `mcp.server.fastmcp` import surface, and CrewAI 1.15.5 declares `mcp~=1.28.1` for combined installs. Keep the ceiling until an isolated MCP 2.x certification passes the native imports, adapter checks, preserved 1.x floor, and package gates. The AgenticDome firewall itself is plain-JSON-RPC and dependency-light, but installing the base SDK beside an independently managed MCP 2.x transport does not constitute a formally certified MCP 2.x support claim.
+**MCP package compatibility:** the `[mcp]` extra currently installs the externally certified PyPI range `mcp>=1.26.0,<=2.2.0`. That is the supported range of the third-party `mcp` package, not the version of AgenticDome's SDK. MCP 2.0 removed the certified `mcp.server.fastmcp` import surface used by the earlier native compatibility test. AgenticDome's transport-independent JSON-RPC firewall has since passed the isolated MCP 2.x certification matrix through 2.2.0 while preserving the 1.26.0 floor. CrewAI 1.15.x combined installations can still resolve the narrower MCP 1.28.x line according to CrewAI's dependency constraint; this does not reduce the independently certified AgenticDome range.
 
 **Wrap the forwarding boundary** — the full host flow is `JSON-RPC request → rate limit / upstream prompt screen → method authorization → optional delegation-token verification → third-party MCP server → list filtering / result sanitization → client`:
 
@@ -2494,6 +2494,30 @@ result = client.mesh_validate(
 print(result)
 ```
 
+**Multimodal content descriptors:**
+
+Use `inspect_content()` when a document, image, audio or video processor has
+already produced bounded text, a transcript, trusted sensitivity labels, or a
+content digest. The active tenant policy is evaluated inside the assigned
+AgenticDome runtime. OCR, transcription and proprietary classification are not
+shipped in this public SDK, and the returned evidence does not retain raw
+content.
+
+```python
+verdict = client.inspect_content(
+    direction="output",
+    content_parts=[{
+        "modality": "image",
+        "mime_type": "image/png",
+        "content_sha256": "sha256:" + image_digest,
+        "labels": ["phi"],
+    }],
+    policy_context={"request_purpose": "clinical-summary-delivery"},
+)
+if verdict["verdict"] == "BLOCKED":
+    raise PermissionError(verdict["reason"])
+```
+
 **Incident reporting:**
 
 ```python
@@ -2604,6 +2628,34 @@ Plus, for every production deployment:
 - [ ] Configure Redis + `AGENTICDOME_TOKEN_HMAC_SECRET` wherever handoff authorization and specialist execution can happen in different workers or pods
 - [ ] Pass identity context (Entra IDs, AWS ARNs, GCP principals, roles/scopes, sensitivity labels) so server-side policy can make identity-aware decisions
 - [ ] Remember the SDK's reach: it protects local boundaries and returned content — tools executing inside remote provider runtimes can only be guarded at the local request/response boundary
+
+---
+
+## Verified Action lifecycle evidence
+
+Use `VerifiedActionReporter` for executable tool calls, function calls, MCP operations and external side effects that should appear in **Verified Actions**. It is not intended for health checks or every policy lookup.
+
+```bash
+export AGENTICDOME_EVIDENCE_API_BASE="https://your-control-plane.example"
+export AGENTICDOME_EVIDENCE_TOKEN="<portal-token-scoped-to-evidence:write>"
+```
+
+```python
+from agenticdome_sdk import VerifiedActionReporter, verified_action
+
+evidence = VerifiedActionReporter.from_env(tenant_id="your-tenant-id")
+
+@verified_action(
+    reporter=evidence,
+    operation_type="function_call",
+    executor_type="function",
+    target_type="service",
+)
+def refresh_customer_record(customer_id: str):
+    ...
+```
+
+The reporter uses a bounded, non-blocking queue and retains hashes plus normalized lifecycle metadata only. It never sends raw arguments, results, prompts, source, or credentials. The dedicated evidence token is separate from the Runtime / SDK key: authorization stays on the assigned sidecar and evidence-delivery failure never changes its allow/deny decision. Integrations built on the shared framework `secure_tool` / `wrap_tool_handler` boundary and the MCP host/gateway wrapper report the same lifecycle automatically when these optional evidence variables are present; other custom boundaries can use the decorator above.
 
 ---
 

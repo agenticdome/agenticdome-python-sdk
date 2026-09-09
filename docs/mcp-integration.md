@@ -62,17 +62,17 @@ your threat model requires strict rejection of custom or unknown methods.
 ## Supported external MCP package range
 
 The `agenticdome-python-sdk[mcp]` extra currently installs
-`mcp>=1.26.0,<=1.28.1`. This is the certified range of the external PyPI `mcp`
-package; it is not the AgenticDome SDK version. MCP 2.0 removed the certified
-`mcp.server.fastmcp` import surface, while CrewAI 1.15.5 declares
-`mcp~=1.28.1` for combined installations. The upper bound therefore remains
-intentional until isolated MCP 2.x certification passes native imports,
-AgenticDome adapter checks, the preserved 1.x floor, and package release gates.
+`mcp>=1.26.0,<=2.2.0`. This is the certified range of the external PyPI `mcp`
+package; it is not the AgenticDome SDK version. MCP 2.0 removed the
+`mcp.server.fastmcp` import surface used by the earlier native compatibility
+test. AgenticDome's transport-independent JSON-RPC firewall has since passed
+the isolated MCP 2.x certification matrix through 2.2.0 while preserving the
+1.26.0 floor. CrewAI 1.15.x combined installations can still resolve the
+narrower MCP 1.28.x line according to CrewAI's dependency constraint.
 
 The firewall accepts plain JSON-RPC dictionaries and does not need external MCP
-types at runtime. A project may install the dependency-light base SDK beside a
-separately managed transport, but that does not create a formal AgenticDome MCP
-2.x support claim.
+types at runtime. Applications should still retain their transport's own MCP
+authorization, protocol validation and secure session handling.
 
 ## Why use AgenticDome for MCP
 

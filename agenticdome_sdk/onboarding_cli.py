@@ -924,6 +924,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
     semantic_reviews = semantic.get("review_findings", []) if isinstance(semantic, dict) else []
     return {
         "schema": "agenticdome.integration-plan.v1",
+        "inspection_report_sha256": report.get("report_sha256"),
         "hook_catalog": {
             "schema": CATALOG_SCHEMA,
             "digest": catalog_digest(),
@@ -1077,6 +1078,7 @@ real input, tool-executor and output boundaries identified in the plan.
 """
 import os
 from agenticdome_sdk import AgenticDomeClient
+from agenticdome_sdk.attestation import RuntimeCoverageAttestor
 
 client = AgenticDomeClient(
     api_base=os.environ["AGENTICDOME_API_BASE"],
@@ -1084,14 +1086,19 @@ client = AgenticDomeClient(
     tenant_id=os.environ["AGENTICDOME_TENANT_ID"],
     mode="live",
 )
+coverage = RuntimeCoverageAttestor.from_environment(["prompt_ingress", "tool_execution", "output_egress"])
+if coverage:
+    coverage.start()
 
 def screen_input(text, *, agent_id, session_id):
+    if coverage: coverage.observe("prompt_ingress")
     return client.guardrail_validate(
         text=text, agent_id=agent_id, session_id=session_id,
         direction="input", policy_context={"request_purpose": "prompt_input"},
     )
 
 def authorize_tool(text, *, agent_id, session_id, tool_name, tool_args, platform):
+    if coverage: coverage.observe("tool_execution")
     return client.guardrail_validate(
         text=text, agent_id=agent_id, session_id=session_id,
         direction="outbound", platform=platform,
@@ -1100,6 +1107,7 @@ def authorize_tool(text, *, agent_id, session_id, tool_name, tool_args, platform
     )
 
 def review_output(text, *, agent_id, session_id, platform):
+    if coverage: coverage.observe("output_egress")
     return client.mesh_validate(
         text=text, agent_id=agent_id, session_id=session_id,
         direction="output", platform=platform,
@@ -1155,6 +1163,12 @@ AGENTICDOME_TENANT_ID=replace-with-your-tenant-id
 AGENTICDOME_MODE=live
 AGENTICDOME_PRODUCTION_MODE=true
 AGENTICDOME_FAIL_CLOSED=true
+# Runtime coverage evidence is signed locally. The private key path must be
+# mounted read-only from your secret store and is never uploaded.
+AGENTICDOME_CONTROL_PLANE_URL=https://www.agenticdome.io
+AGENTICDOME_WORKLOAD_UUID=replace-with-connect-output
+AGENTICDOME_DEPLOYMENT_ID=replace-with-your-immutable-deployment-id
+AGENTICDOME_ATTESTATION_KEY_PATH=/run/secrets/agenticdome-attestation-private.pem
 # MCP gateway values are required only when using the generated low-code
 # Streamable HTTP gateway. Supply genuine values; do not commit credentials.
 AGENTICDOME_MCP_UPSTREAM_URL=https://your-mcp-server.example/mcp
@@ -1185,7 +1199,44 @@ https://github.com/agenticdome/agenticdome-python-sdk/tree/main/docs/frameworks
 """
     files = {
         ".env.agenticdome.example": env_example,
-        "README.md": readme,
+        "AGENTICDOME-INTEGRATION.md": readme,
+        ".github/workflows/agenticdome-verify.yml": """name: AgenticDome verification
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'agenticdome-python-sdk>=1.2.28'
+      - run: agenticdome --path . verify --run-tests
+        env:
+          AGENTICDOME_API_BASE: ${{ secrets.AGENTICDOME_API_BASE }}
+          AGENTICDOME_API_KEY: ${{ secrets.AGENTICDOME_API_KEY }}
+          AGENTICDOME_TENANT_ID: ${{ secrets.AGENTICDOME_TENANT_ID }}
+""",
+        ".gitlab/agenticdome-verify.yml": """agenticdome_verify:
+  image: python:3.11-slim
+  stage: test
+  script:
+    - pip install 'agenticdome-python-sdk>=1.2.28'
+    - agenticdome --path . verify --run-tests
+  rules:
+    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"
+""",
+        "AGENTICDOME-GITLAB-CI-INCLUDE.md": """# GitLab CI activation
+
+After reviewing this branch, include `.gitlab/agenticdome-verify.yml` from your
+existing `.gitlab-ci.yml`. Keep API values in protected masked CI variables.
+AgenticDome does not edit an existing customer CI file automatically.
+""",
         "FRAMEWORK-HOOKS.md": _framework_hooks_markdown(plan),
         "SEMANTIC-REVIEW.md": _semantic_review_markdown(plan),
         "semantic-analysis.json": json.dumps(
@@ -1311,6 +1362,7 @@ def create_scaffold(root: Path, plan: Optional[Dict[str, Any]] = None) -> Path:
     patch_lines: List[str] = []
     for relative, content in files.items():
         target = output / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         patch_lines.extend(difflib.unified_diff(
             [], content.splitlines(keepends=True),
@@ -1683,6 +1735,7 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
     )
     result = {
         "schema": "agenticdome.verification-result.v1",
+        "inspection_report_sha256": plan.get("inspection_report_sha256"),
         "mode": "live_sidecar_fixed_payload" if live else "local_sim_fixed_payload",
         "source_upload": False,
         "framework_runtime_instantiated": False,
@@ -1733,6 +1786,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    connect_parser = subparsers.add_parser("connect", help="Authenticate, assign a runtime, run private planning, and prepare a reviewable integration.")
+    connect_parser.add_argument("--portal", default="https://www.agenticdome.io")
+    connect_parser.add_argument("--workload-name")
+    connect_parser.add_argument("--environment", default="development", choices=["development", "test", "staging", "production"])
+    connect_parser.add_argument("--yes", action="store_true", help="Approve the displayed source-free metadata upload non-interactively.")
+    connect_parser.add_argument("--no-browser", action="store_true")
+    connect_parser.add_argument("--repository-connection", help="Customer-portal repository connection UUID.")
+    connect_parser.add_argument("--open-pr", action="store_true", help="Create and push a review branch, then open a PR/MR; never merge it.")
+    connect_parser.add_argument("--allow-insecure-http", action="store_true", help=argparse.SUPPRESS)
+    subparsers.add_parser("assist", help="Execute one tenant-approved local onboarding task; never merge or upload source.")
 
     inspect_parser = subparsers.add_parser("inspect", aliases=["doctor"], help="Detect supported runtimes and candidate boundaries.")
     inspect_parser.add_argument("--output", help="Optional JSON report path.")
@@ -1816,6 +1880,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     root = Path(args.path).resolve()
     if not root.is_dir():
         raise SystemExit(f"Project directory does not exist: {root}")
+    if args.command == "connect":
+        from .connect import run_connect
+        _print(run_connect(root, args))
+        return 0
+    if args.command == "assist":
+        from .connect import run_assist
+        _print(run_assist(root))
+        return 0
     if args.command in {"inspect", "doctor"}:
         report = inspect_repository(root)
         if args.output:

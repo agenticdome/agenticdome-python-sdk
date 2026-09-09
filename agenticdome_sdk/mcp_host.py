@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Op
 
 from .client import AgenticDomeClient
 from ._mode import credentials_or_local_sim
+from .lifecycle import VerifiedActionReporter
 
 try:
     from .exceptions import AgenticDomeHTTPError
@@ -344,6 +345,7 @@ class AgenticDomeMCPHostFirewall:
         *,
         client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
+        lifecycle_reporter: Optional[VerifiedActionReporter] = None,
     ) -> None:
         self.config = config or load_config()
         if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
@@ -359,10 +361,12 @@ class AgenticDomeMCPHostFirewall:
             timeout=self.config.timeout_s,
         )
         self.token_store = token_store or _build_token_store(self.config)
+        self.lifecycle_reporter = lifecycle_reporter or VerifiedActionReporter.from_env(tenant_id=self.config.tenant_id)
         self._rate_lock = Lock()
         self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
 
     def close(self) -> None:
+        self.lifecycle_reporter.flush(timeout=2.0)
         close = getattr(self.client, "close", None)
         if callable(close):
             close()
@@ -1337,23 +1341,53 @@ class AgenticDomeMCPHostFirewall:
         local_context = dict(context or {})
         local_context["mcp_method"] = method
 
+        tool_name = method
+        arguments = self._params(mcp_request) if isinstance(mcp_request, dict) else {}
+        if method == "tools/call":
+            tool_name, arguments = self._extract_tool_call(mcp_request)
+        lifecycle = self.lifecycle_reporter.new_context(
+            operation_type="mcp_operation", tool_name=tool_name, arguments=arguments,
+            destination=self.config.mcp_server_url or self.config.mcp_server_id,
+            chain_id=self._safe_str(local_context.get("verified_chain_id") or local_context.get("action_chain_id")) or None,
+            action_id=self._safe_str(local_context.get("verified_action_id") or local_context.get("action_id")) or None,
+            parent_action_id=self._safe_str(local_context.get("parent_action_id")) or None,
+            initiator_type="human" if self._safe_str(local_context.get("user_id")) else "agent",
+            executor_type="tool", target_type="mcp",
+        )
+        self.lifecycle_reporter.phase(lifecycle, "requested", "requested")
+
         gated = await self.preflight_request(mcp_request=mcp_request, context=context)
         if isinstance(gated, dict) and "error" in gated:
+            self.lifecycle_reporter.phase(lifecycle, "authorised", "blocked")
+            self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
             return gated
 
-        response = await self._invoke_forwarder(forward_to_third_party, gated)
+        self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
+        self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
+        self.lifecycle_reporter.phase(lifecycle, "attempted", "attempted")
+
+        try:
+            response = await self._invoke_forwarder(forward_to_third_party, gated)
+        except Exception:
+            self.lifecycle_reporter.outcome(lifecycle, "failed")
+            raise
         if self.config.sanitize_streaming_output and hasattr(response, "__aiter__"):
+            self.lifecycle_reporter.outcome(lifecycle, "accepted")
             return self.sanitize_streaming_response(chunks=response, context=local_context)
         if self.config.sanitize_streaming_output and inspect.isgenerator(response):
+            self.lifecycle_reporter.outcome(lifecycle, "accepted")
             return self.sanitize_streaming_response(chunks=response, context=local_context)
         if not isinstance(response, dict):
+            self.lifecycle_reporter.outcome(lifecycle, "succeeded")
             return response
 
-        return await self.review_forwarded_response(
+        reviewed = await self.review_forwarded_response(
             mcp_request=mcp_request,
             response=response,
             context=local_context,
         )
+        self.lifecycle_reporter.outcome(lifecycle, "rejected" if isinstance(reviewed, dict) and "error" in reviewed else "succeeded")
+        return reviewed
 
 
 __all__ = [

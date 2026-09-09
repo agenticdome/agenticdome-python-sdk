@@ -91,6 +91,33 @@ def test_guardrail_validate_success(mock_request, client):
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")
+def test_guardrail_validate_forwards_content_and_direct_execution_bindings(mock_request, client):
+    mock_request.return_value = make_response(200, {"verdict": "BLOCKED"})
+
+    client.guardrail_validate(
+        text="review attachment",
+        agent_id="agent-1",
+        direction="outbound",
+        platform="langgraph",
+        content_parts=[{
+            "modality": "image",
+            "mime_type": "image/png",
+            "content_sha256": "sha256:" + "a" * 64,
+            "labels": ["phi"],
+        }],
+        execution_destination="https://records.example.test/patients/1",
+        execution_http_method="post",
+        workload_id="spiffe://customer.test/agent/records",
+    )
+
+    payload = mock_request.call_args.kwargs["json"]
+    assert payload["content_parts"][0]["labels"] == ["phi"]
+    assert payload["destination"] == "https://records.example.test/patients/1"
+    assert payload["http_method"] == "POST"
+    assert payload["workload_id"] == "spiffe://customer.test/agent/records"
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
 def test_registered_tool_provenance_is_forwarded_without_runtime_hashing(mock_request, client):
     digest = "sha256:" + "a" * 64
     mock_request.return_value = make_response(200, {"verdict": "ALLOWED"})
@@ -411,6 +438,28 @@ def test_mesh_validate(mock_request, client):
     assert payload["direction"] == "output"
     assert payload["platform"] == "openclaw"
     assert payload["policy_context"]["platform"] == "openclaw"
+
+
+@patch("agenticdome_sdk.client.requests.Session.request")
+def test_inspect_content_sends_descriptors_to_runtime(mock_request, client):
+    mock_request.return_value = make_response(200, {"verdict": "BLOCKED", "raw_content_retained": False})
+
+    result = client.inspect_content(
+        direction="outbound",
+        content_parts=[{
+            "modality": "document",
+            "mime_type": "application/pdf",
+            "content_sha256": "sha256:" + "c" * 64,
+            "labels": ["confidential"],
+        }],
+        policy_context={"content_dlp": {"block_labels": ["confidential"]}},
+    )
+
+    assert result["raw_content_retained"] is False
+    payload = mock_request.call_args.kwargs["json"]
+    assert mock_request.call_args.kwargs["url"] == "https://api.example.test/mesh/content/inspect"
+    assert payload["direction"] == "output"
+    assert payload["content_parts"][0]["modality"] == "document"
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")
