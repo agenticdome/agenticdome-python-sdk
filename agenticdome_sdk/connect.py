@@ -191,6 +191,7 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
     if not config_path.exists():
         config_path.write_text(json.dumps({
             "schema": "agenticdome.project-config.v1", "frameworks": frameworks or ["custom-python"],
+            "execution_broker_mode": "policy",
             "business_purpose": "REVIEW_REQUIRED_NOT_INVENTED", "sensitive_tools": [],
             "deployment": {"preference": "managed", "region": session["runtime"].get("region") or "auto"},
             "source_upload": False,
@@ -215,10 +216,17 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
         if not args.repository_connection:
             raise SystemExit("--open-pr requires --repository-connection with a connection UUID from the customer portal.")
         pull_request = _open_review_pr(root, portal, session, args.repository_connection, patch_path)
+    effective_config = json.loads(config_path.read_text(encoding="utf-8"))
+    broker_setup = dict(session["runtime"].get("execution_broker") or {
+        "status": "readiness_not_reported",
+        "next_action": "Ask AgenticDome to confirm policy-aware sidecar readiness before live verification.",
+    })
+    broker_setup["sdk_mode"] = effective_config.get("execution_broker_mode", "existing_sdk_or_environment_default")
     return {
         "status": "changeset_ready", "source_upload": False, "tenant_id": session["tenant_id"],
         "session_uuid": session["session_uuid"], "workload_uuid": workload_uuid,
         "runtime_region": session["runtime"].get("region"), "frameworks": frameworks,
+        "execution_broker": broker_setup,
         "attachment_points": len(semantic.get("attachment_points") or []),
         "bypass_risks": len(semantic.get("bypass_risks") or []),
         "patch": str(patch_path.relative_to(root)),

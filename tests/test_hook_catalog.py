@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -5,6 +6,7 @@ from agenticdome_sdk.hook_catalog import (
     CATALOG_SCHEMA,
     FRAMEWORK_HOOK_CATALOG,
     PUBLISHED_AGENTICDOME_PACKAGES,
+    _OPENCLAW_NODE_RANGE,
     catalog_digest,
     framework_contract,
     harness_compatibility_manifest,
@@ -79,7 +81,19 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
     assert version_satisfies_certification(published_openclaw_version, certified_openclaw_range)
     assert certified_openclaw_range["max"] == published_openclaw_version
     assert openclaw["native_hooks"] == ["before_agent_run", "before_tool_call", "tool_result_persist"]
-    assert openclaw["runtime"]["node"] == ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+    # Certification updates this authoritative range from the exact npm release.
+    # Do not freeze a second, obsolete Node release literal in Python SDK tests.
+    node_range = openclaw["runtime"]["node"]
+    assert node_range == _OPENCLAW_NODE_RANGE
+    assert all(re.fullmatch(r">=\d+\.\d+\.\d+(?: <\d+)?", branch.strip()) for branch in node_range.split("||"))
+    # The public Python checkout has no sibling TypeScript repository. When the
+    # release authority has both, prove their certified runtime contracts agree.
+    plugin = MONOREPO_SDK_ROOT / "openclaw" / "ts" / "openclaw-agenticdome-security"
+    if (plugin / "package.json").is_file():
+        manifest = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((plugin / "package-lock.json").read_text(encoding="utf-8"))
+        assert node_range == manifest["engines"]["node"]
+        assert node_range == lock["packages"][""]["engines"]["node"]
     mcp_ts = framework_contract("mcp", "typescript")
     assert mcp_ts["packages"]["agenticdome-sdk"]["exact"] == typescript_version
     assert mcp_ts["adapter_class"] == "AgenticDomeMCPGateway"

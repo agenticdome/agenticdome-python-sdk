@@ -126,8 +126,10 @@ class AgenticDomeClient:
             if execution_broker_mode is not None
             else os.getenv("AGENTICDOME_EXECUTION_BROKER_MODE", "off")
         ).strip().lower()
-        if broker_mode not in {"off", "observe", "enforce"}:
-            raise ValueError("execution_broker_mode must be off, observe, or enforce")
+        if broker_mode not in {"policy", "off", "observe", "monitor", "enforce"}:
+            raise ValueError("execution_broker_mode must be policy, off, monitor, observe, or enforce")
+        if broker_mode == "observe":
+            broker_mode = "monitor"
         self.execution_broker_mode = broker_mode
         self._tool_provenance: Dict[str, Dict[str, str]] = {}
         for registered_name, provenance in dict(tool_provenance or {}).items():
@@ -436,6 +438,7 @@ class AgenticDomeClient:
             extra_headers=headers,
         )
 
+
     # ------------------------------------------------------------------
     # SaaS Scan Endpoints
     # ------------------------------------------------------------------
@@ -717,9 +720,14 @@ class AgenticDomeClient:
             }
         )
 
+        resolved_broker_mode = self.execution_broker_mode if tool_name else "off"
+        # Offline demos have no tenant policy to resolve. Preserve that behavior,
+        # but never downgrade an explicit enforcement requirement to simulation.
+        if self.is_simulation and resolved_broker_mode != "enforce":
+            resolved_broker_mode = "off"
         broker_enabled = bool(
             tool_name
-            and (self.execution_broker_mode in {"observe", "enforce"} or execution_broker is True)
+            and (resolved_broker_mode in {"policy", "monitor", "enforce"} or execution_broker is True)
         )
         if broker_enabled:
             boundary_id = self._normalize_optional_string(execution_boundary_id)
@@ -773,12 +781,19 @@ class AgenticDomeClient:
                 payload["workload_id"] = normalized_workload
 
         path = "/tools/execution/authorize" if broker_enabled else "/tools/guardrail/validate"
+        if broker_enabled and resolved_broker_mode == "policy" and execution_broker is not True:
+            path = "/tools/execution/resolve"
         response = self._request("POST", path, json_body=payload, tenant_id=tenant_id)
         if broker_enabled:
+            if path == "/tools/execution/resolve":
+                contract = response.get("execution_broker_policy") or {}
+                if contract.get("schema") != "agenticdome.execution-broker-policy.v1" or contract.get("mode") not in {"off", "monitor", "enforce"}:
+                    raise AgenticDomeError("Assigned sidecar did not return a valid Execution Broker policy contract")
+                resolved_broker_mode = contract["mode"]
             broker = response.get("broker") if isinstance(response.get("broker"), dict) else {}
             verified = bool(broker.get("verified")) and bool(broker.get("token_consumed"))
-            must_enforce = self.execution_broker_mode == "enforce" or execution_broker is True
-            if must_enforce and not verified:
+            must_enforce = resolved_broker_mode == "enforce" or execution_broker is True
+            if must_enforce and (self.is_simulation or not verified):
                 raise AgenticDomeError(
                     "AgenticDome execution broker did not return a verified, atomically consumed decision"
                 )
@@ -1538,7 +1553,11 @@ class AgenticDomeClient:
         # In broker mode the official MCP adapter uses the same one-request
         # execution boundary as REST. This preserves immediate decision
         # consumption without adding a second network round trip.
-        if tool_name and self.execution_broker_mode in {"observe", "enforce"}:
+        if (
+            tool_name
+            and self.execution_broker_mode in {"policy", "monitor", "enforce"}
+            and (not self.is_simulation or self.execution_broker_mode == "enforce")
+        ):
             return self.guardrail_validate(
                 text=text,
                 agent_id=agent_id,
@@ -1566,7 +1585,6 @@ class AgenticDomeClient:
                 block_on_sensitive_output=block_on_sensitive_output,
                 trusted_destination_domains=trusted_destination_domains,
                 allowed_destination_domains=allowed_destination_domains,
-                execution_broker=True,
                 tenant_id=tenant_id,
             )
 

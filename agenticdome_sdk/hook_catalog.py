@@ -39,9 +39,9 @@ CATALOG_VERIFIED_AT = str(_CATALOG_SNAPSHOT["verified_at"])
 
 
 _OPENCLAW_RUNTIME_MIN_VERSION = "2026.7.1-2"
-_OPENCLAW_RUNTIME_MAX_VERSION = "2026.8.1"
+_OPENCLAW_RUNTIME_MAX_VERSION = "2026.9.3"
 _OPENCLAW_RUNTIME_VERSION = _OPENCLAW_RUNTIME_MAX_VERSION
-_OPENCLAW_NODE_RANGE = ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+_OPENCLAW_NODE_RANGE = ">=24.16.0 <25 || >=26.1.0"
 
 PUBLISHED_AGENTICDOME_PACKAGES: Dict[str, Dict[str, str]] = {
     str(package): {str(key): str(value) for key, value in row.items()}
@@ -86,7 +86,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.crewai",
         "AgenticDomeCrewAIFirewall",
         ["attach", "secure_tool"],
-        packages={"crewai": {"min":"1.15.5","max":"1.15.20"}},
+        packages={"crewai": {"min":"1.15.5","max":"1.15.21"}},
         native_modules=[
             {
                 "module": "crewai.hooks",
@@ -191,7 +191,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.openai_agents",
         "AgenticDomeOpenAIAgentsFirewall",
         ["run_agent_securely", "wrap_tool_handler", "create_input_guardrail"],
-        packages={"openai-agents": {"min":"0.18.3","max":"0.22.1"}},
+        packages={"openai-agents": {"min":"0.18.3","max":"0.22.2"}},
         native_modules=[{"module": "agents", "attrs": ["Agent", "Runner", "function_tool"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.openai_agents", "call": "create_input_guardrail"},
         docs="docs/frameworks/openai-agents.md",
@@ -262,7 +262,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.aws_bedrock",
         "AgenticDomeAWSBedrockFirewall",
         ["converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"],
-        packages={"boto3": {"min":"1.43.54","max":"1.43.90"}},
+        packages={"boto3": {"min":"1.43.54","max":"1.43.91"}},
         native_modules=[{"module": "boto3", "attrs": ["client"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.aws_bedrock", "call": "wrap_tool_handler"},
         docs="docs/frameworks/aws-bedrock.md",
@@ -444,18 +444,18 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
 }
 
 _PACKAGE_CERTIFICATION_DATES: Dict[str, Dict[str, str]] = {
-    "crewai": {"crewai":"2026-09-09"},
+    "crewai": {"crewai":"2026-09-10"},
     "pydanticai": {"pydantic-ai": "2026-09-09"},
     "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-09-09"},
     "autogen": {"autogen-agentchat": "2026-07-26"},
     "foundry": {"azure-ai-projects": "2026-09-09", "azure-identity": "2026-07-10"},
-    "openai-agents": {"openai-agents": "2026-09-09"},
+    "openai-agents": {"openai-agents": "2026-09-10"},
     "claude": {"claude-agent-sdk": "2026-09-09"},
     "smolagents": {"smolagents": "2026-07-23"},
     "agno": {"agno": "2026-09-09"},
     "google-adk": {"google-adk": "2026-08-27"},
     "llamaindex": {"llama-index": "2026-08-20"},
-    "bedrock": {"boto3": "2026-09-09"},
+    "bedrock": {"boto3": "2026-09-10"},
     "mcp": {"mcp": "2026-09-09"},
 }
 

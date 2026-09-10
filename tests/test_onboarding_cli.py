@@ -186,6 +186,7 @@ def test_init_and_scaffold_generate_review_material_without_editing_application(
     patch_path = create_scaffold(root)
 
     assert config["schema"] == CONFIG_SCHEMA
+    assert config["execution_broker_mode"] == "policy"
     assert config["source_upload"] is False
     assert patch_path.exists()
     assert "AGENTICDOME_API_KEY=replace-in-your-secret-manager" in patch_path.read_text(encoding="utf-8")
@@ -194,6 +195,105 @@ def test_init_and_scaffold_generate_review_material_without_editing_application(
     ast.parse((root / ".agenticdome" / "scaffold" / "agenticdome_integration.py").read_text(encoding="utf-8"))
     assert (root / ".agenticdome" / "scaffold" / "semantic-analysis.json").exists()
     assert (root / ".agenticdome" / "scaffold" / "SEMANTIC-REVIEW.md").exists()
+    generated = (root / ".agenticdome" / "scaffold" / "agenticdome_integration.py").read_text()
+    assert 'execution_broker_mode="policy"' in generated
+    assert 'AGENTICDOME_EXECUTION_BROKER_MODE=policy' in patch_path.read_text()
+
+
+def test_reinitialization_preserves_existing_config_and_explicit_modes(tmp_path):
+    root = _project(tmp_path)
+    directory = root / ".agenticdome"
+    directory.mkdir(exist_ok=True)
+    for existing in ({"schema": CONFIG_SCHEMA, "frameworks": ["mcp"]}, {"schema": CONFIG_SCHEMA, "execution_broker_mode": "off"}):
+        original = json.dumps(existing, indent=4) + "\n"
+        (directory / "config.json").write_text(original)
+        assert init_project(root, argparse.Namespace()) == existing
+        assert (directory / "config.json").read_text() == original
+
+
+def test_policy_configuration_reaches_python_typescript_and_mcp_clients(tmp_path):
+    root = _project(tmp_path)
+    config = {"frameworks": ["mcp"], "execution_broker_mode": "policy"}
+    plan = integration_plan(root)
+    plan["languages"] = ["python", "typescript/javascript"]
+    files = onboarding_cli._scaffold_files(config, plan)
+    for filename in ("agenticdome_integration.py", "agenticdome_mcp_gateway.py"):
+        ast.parse(files[filename])
+        assert 'execution_broker_mode="policy"' in files[filename]
+    for filename in ("agenticdome_integration.ts", "agenticdome_mcp_gateway.ts"):
+        assert 'executionBrokerMode: "policy"' in files[filename]
+    assert "unsupported resolver fails closed" in files["AGENTICDOME-INTEGRATION.md"]
+    legacy = onboarding_cli._scaffold_files({"frameworks": ["mcp"]}, plan)
+    assert "AGENTICDOME_EXECUTION_BROKER_MODE" not in legacy[".env.agenticdome.example"]
+    assert "executionBrokerMode" not in legacy["agenticdome_mcp_gateway.ts"]
+    explicit = onboarding_cli._scaffold_files({**config, "execution_broker_mode": "off"}, plan)
+    assert 'execution_broker_mode="off"' in explicit["agenticdome_integration.py"]
+
+
+def test_bad_onboarding_mode_is_rejected_instead_of_silent_downgrade():
+    with pytest.raises(SystemExit, match="Invalid execution_broker_mode"):
+        onboarding_cli._onboarding_broker_options({"execution_broker_mode": "typo"})
+
+
+@pytest.mark.parametrize("existing_mode", [None, "off"])
+def test_device_connect_sets_policy_only_for_new_workloads(tmp_path, monkeypatch, existing_mode):
+    import hashlib
+    from agenticdome_sdk import connect
+
+    root = _project(tmp_path)
+    state = root / ".agenticdome"
+    state.mkdir(exist_ok=True)
+    original = None
+    if existing_mode:
+        original = json.dumps({"schema": CONFIG_SCHEMA, "execution_broker_mode": existing_mode, "frameworks": ["custom-python"]}, indent=4)
+        (state / "config.json").write_text(original)
+    session = {
+        "tenant_id": "2", "session_uuid": "test-session", "access_token": "test-only",
+        "expires_at": "2026-09-10T12:00:00Z",
+        "runtime": {"api_base": "https://runtime.example", "region": "au", "execution_broker": {"sdk_mode": "policy", "status": "pending_runtime_readiness"}},
+        "copilot": {"api_key": "test-copilot-only"},
+    }
+    def request(url, data, *args, **kwargs):
+        if url.endswith("/device"):
+            return {"verification_uri_complete": "https://portal.example/device", "user_code": "TEST", "device_code": "test", "expires_in": 600}
+        if url.endswith("/token"):
+            return session
+        if url.endswith("/analyze"):
+            digest = hashlib.sha256(json.dumps(data["ir"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            return {"schema": "agenticdome.copilot-plan.v1", "tenant_id": "2", "semantic_analysis": {"ir_sha256": digest}}
+        return {}
+    monkeypatch.setattr(connect, "_request", request)
+    monkeypatch.setattr(connect.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(connect, "_approve_metadata", lambda *args: None)
+    monkeypatch.setattr(connect, "ensure_attestation_key", lambda directory: ("test-private", "test-public"))
+    monkeypatch.setattr(onboarding_cli, "create_scaffold", lambda root: root / ".agenticdome/scaffold/agenticdome.patch")
+    result = connect.run_connect(root, argparse.Namespace(portal="https://portal.example", no_browser=True, yes=True, workload_name="test", environment="test", open_pr=False))
+    assert json.loads((state / "config.json").read_text())["execution_broker_mode"] == (existing_mode or "policy")
+    assert result["execution_broker"]["sdk_mode"] == (existing_mode or "policy")
+    assert result["execution_broker"]["status"] == "pending_runtime_readiness"
+    if original:
+        assert (state / "config.json").read_text() == original
+
+
+def test_live_verification_uses_workload_broker_configuration(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    state = root / ".agenticdome"
+    state.mkdir(exist_ok=True)
+    (state / "config.json").write_text(json.dumps({"schema": CONFIG_SCHEMA, "frameworks": ["custom-python"], "execution_broker_mode": "policy"}))
+    for key, value in {"AGENTICDOME_API_BASE": "https://sidecar.example", "AGENTICDOME_API_KEY": "test-only", "AGENTICDOME_TENANT_ID": "2"}.items():
+        monkeypatch.setenv(key, value)
+    captured = {}
+    class Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        def guardrail_validate(self, **kwargs):
+            return {"verdict": "BLOCKED" if kwargs["tool_name"].startswith("salesforce") else "ALLOWED"}
+        def close(self):
+            pass
+    monkeypatch.setattr("agenticdome_sdk.client.AgenticDomeClient", Client)
+    verify_project(root, live=True)
+    assert captured["execution_broker_mode"] == "policy"
+    assert captured["mode"] == "live"
 
 
 def test_plan_and_local_verification_cover_allowed_and_blocked_paths(tmp_path, monkeypatch):

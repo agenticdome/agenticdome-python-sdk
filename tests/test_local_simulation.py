@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import logging
 import subprocess
@@ -20,6 +21,7 @@ def _clear_live_credentials(monkeypatch):
         "AGENTICDOME_TENANT_ID",
         "AGENTICDOME_BEARER_TOKEN",
         "AGENTICDOME_PRODUCTION_MODE",
+        "AGENTICDOME_EXECUTION_BROKER_MODE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -86,17 +88,103 @@ def test_local_simulation_is_refused_in_production(monkeypatch):
         AgenticDomeClient(mode="local_sim")
 
 
-def test_local_simulation_cannot_satisfy_enforced_execution_broker(monkeypatch):
+@pytest.mark.parametrize("entrypoint", ["guardrail_validate", "mcp_guardrail_validate"])
+@pytest.mark.parametrize("from_environment", [False, True])
+def test_local_simulation_cannot_satisfy_enforced_execution_broker(monkeypatch, entrypoint, from_environment):
     _clear_live_credentials(monkeypatch)
-    client = AgenticDomeClient(mode="local_sim", execution_broker_mode="enforce")
+    if from_environment:
+        monkeypatch.setenv("AGENTICDOME_EXECUTION_BROKER_MODE", " ENFORCE ")
+    client = AgenticDomeClient(mode="local_sim", **({} if from_environment else {"execution_broker_mode": "enforce"}))
+    monkeypatch.setattr(client.session, "request", lambda *a, **kw: pytest.fail("simulation used the network"))
     with pytest.raises(AgenticDomeError, match="did not return a verified"):
-        client.guardrail_validate(
+        getattr(client, entrypoint)(
             text="Look up case 123.",
             agent_id="demo-agent",
             platform="custom_python",
             tool_name="crm.case.lookup",
             tool_args={"case_id": "123"},
         )
+
+
+@pytest.mark.parametrize("mode,override", [("enforce", False), ("off", True), ("policy", True)])
+def test_simulation_cannot_downgrade_explicit_broker_requirements(monkeypatch, mode, override):
+    _clear_live_credentials(monkeypatch)
+    client = AgenticDomeClient(mode="local_sim", execution_broker_mode=mode)
+    monkeypatch.setattr(client.session, "request", lambda *a, **kw: pytest.fail("simulation used the network"))
+    with pytest.raises(AgenticDomeError, match="did not return a verified"):
+        client.guardrail_validate(text="lookup", agent_id="demo-agent", platform="custom_python", tool_name="crm.lookup", tool_args={}, execution_broker=override)
+
+
+def test_simulated_verified_flags_cannot_become_trusted_execution(monkeypatch):
+    _clear_live_credentials(monkeypatch)
+    client = AgenticDomeClient(mode="local_sim", execution_broker_mode="enforce")
+    monkeypatch.setattr(client, "_request", lambda *a, **kw: {
+        "verdict": "ALLOWED", "simulated": True,
+        "broker": {"verified": True, "token_consumed": True},
+    })
+    with pytest.raises(AgenticDomeError, match="did not return a verified"):
+        client.guardrail_validate(text="lookup", agent_id="demo-agent", platform="custom_python", tool_name="crm.lookup", tool_args={})
+
+
+@pytest.mark.parametrize("mode", ["off", "monitor", "observe", "policy"])
+@pytest.mark.parametrize("entrypoint", ["guardrail_validate", "mcp_guardrail_validate"])
+def test_non_enforcing_simulation_preserves_offline_demonstrations(monkeypatch, mode, entrypoint):
+    _clear_live_credentials(monkeypatch)
+    client = AgenticDomeClient(mode="local_sim", execution_broker_mode=mode)
+    monkeypatch.setattr(client.session, "request", lambda *a, **kw: pytest.fail("simulation used the network"))
+    response = getattr(client, entrypoint)(text="Look up case 123.", agent_id="demo-agent", platform="custom_python", tool_name="crm.lookup", tool_args={})
+    decision = response.get("result", response)
+    assert decision["verdict"] == "ALLOWED"
+    assert decision["simulated"] is True
+    assert decision["assurance"] == "not_cloud_enforced"
+
+
+def test_enforced_broker_still_allows_non_tool_simulation(monkeypatch):
+    _clear_live_credentials(monkeypatch)
+    client = AgenticDomeClient(mode="local_sim", execution_broker_mode="enforce")
+    monkeypatch.setattr(client.session, "request", lambda *a, **kw: pytest.fail("simulation used the network"))
+    assert client.guardrail_validate(text="Hello", agent_id="demo-agent", direction="inbound")["simulated"] is True
+
+
+@pytest.mark.parametrize("mode", ["off", "enforce"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_framework_callback_never_runs_after_simulated_broker_failure(monkeypatch, mode, asynchronous):
+    from agenticdome_sdk._framework_firewall import FrameworkFirewallBase, FrameworkFirewallConfig
+    from agenticdome_sdk.lifecycle import VerifiedActionReporter
+
+    _clear_live_credentials(monkeypatch)
+    client = AgenticDomeClient(mode="local_sim", execution_broker_mode=mode)
+    monkeypatch.setattr(client.session, "request", lambda *a, **kw: pytest.fail("simulation used the network"))
+    firewall = FrameworkFirewallBase(
+        FrameworkFirewallConfig("https://unused.example", "unused", "test", "custom_python", "demo-agent", retry_attempts=1),
+        client=client, token_store=None, denied_error=RuntimeError, configuration_error=ValueError,
+        label="test", logger=logging.getLogger(__name__),
+    )
+    firewall.lifecycle_reporter = VerifiedActionReporter()
+    calls = []
+
+    def callback(arguments):
+        calls.append(arguments)
+        return "no-op result"
+
+    async def async_callback(arguments):
+        return callback(arguments)
+
+    wrapped = firewall.wrap_tool_handler(
+        tool_name="crm.lookup", handler=async_callback if asynchronous else callback,
+        session_id="simulation-regression", sanitize_output=False,
+    )
+    try:
+        if mode == "enforce":
+            with pytest.raises(RuntimeError, match="did not return a verified"):
+                asyncio.run(wrapped({})) if asynchronous else wrapped({})
+            assert calls == []
+        else:
+            result = asyncio.run(wrapped({})) if asynchronous else wrapped({})
+            assert result == "no-op result"
+            assert calls == [{}]
+    finally:
+        firewall.close()
 
 
 @pytest.mark.parametrize("framework", sorted(FRAMEWORKS))

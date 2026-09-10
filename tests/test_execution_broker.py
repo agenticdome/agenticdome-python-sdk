@@ -1,4 +1,5 @@
 from agenticdome_sdk.client import AgenticDomeClient, AgenticDomeError
+import pytest
 
 
 def _client(mode="enforce"):
@@ -9,6 +10,27 @@ def _client(mode="enforce"):
         execution_broker_mode=mode,
         max_retries=0,
     )
+
+
+@pytest.mark.parametrize('mode', ['off', 'monitor', 'enforce'])
+def test_policy_mode_resolves_per_action_without_a_policy_cache(monkeypatch, mode):
+    client = _client('policy')
+    calls = []
+    def request(method, path, **kwargs):
+        calls.append((method, path))
+        return {'verdict': 'ALLOWED', 'execution_broker_policy': {'schema': 'agenticdome.execution-broker-policy.v1', 'mode': mode}, 'broker': {'verified': True, 'token_consumed': True}}
+    monkeypatch.setattr(client, '_request', request)
+    for _ in range(2):
+        client.guardrail_validate(text='lookup', agent_id='worker', platform='custom_python', tool_name='crm.lookup', tool_args={})
+    assert calls == [('POST', '/tools/execution/resolve')] * 2
+
+
+@pytest.mark.parametrize('result', [{}, {'execution_broker_policy': {'mode': 'off'}}, {'execution_broker_policy': {'schema': 'agenticdome.execution-broker-policy.v1', 'mode': 'enforce'}}])
+def test_policy_mode_does_not_downgrade_on_missing_contract_or_receipt(monkeypatch, result):
+    client = _client('policy')
+    monkeypatch.setattr(client, '_request', lambda *a, **kw: result)
+    with pytest.raises(AgenticDomeError):
+        client.guardrail_validate(text='lookup', agent_id='worker', platform='custom_python', tool_name='crm.lookup', tool_args={})
 
 
 def test_tool_authorization_uses_one_request_broker_and_requires_receipt(monkeypatch):

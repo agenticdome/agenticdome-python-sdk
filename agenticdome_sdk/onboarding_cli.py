@@ -666,6 +666,10 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 
 def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
+    target = _agenticdome_dir(root) / "config.json"
+    # Reassessment must not silently migrate an established integration.
+    if target.exists():
+        return _load_json(target)
     report = inspect_repository(root)
     detected = [item["key"] for item in report["frameworks"]]
     frameworks = list(dict.fromkeys(args.framework or detected or ["custom-python"]))
@@ -685,8 +689,8 @@ def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
             "tenant_id_env": "AGENTICDOME_TENANT_ID",
         },
         "source_upload": False,
+        "execution_broker_mode": "policy",
     }
-    target = _agenticdome_dir(root) / "config.json"
     _write_json(target, config)
     _write_json(_agenticdome_dir(root) / "inspection.json", report)
     return config
@@ -1069,6 +1073,59 @@ def _framework_hooks_markdown(plan: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _onboarding_broker_options(config: Dict[str, Any]) -> Dict[str, str]:
+    # An absent value is a pre-existing integration: retain the SDK/env default.
+    if "execution_broker_mode" not in config:
+        return {}
+    mode = config["execution_broker_mode"]
+    if mode not in ("policy", "off", "monitor", "observe", "enforce"):
+        raise SystemExit("Invalid execution_broker_mode in .agenticdome/config.json; use policy for tenant-controlled brokering.")
+    return {"execution_broker_mode": mode}
+
+
+def _configure_scaffold_broker(files: Dict[str, str], config: Dict[str, Any]) -> Dict[str, str]:
+    options = _onboarding_broker_options(config)
+    if not options:
+        return files
+    mode = options["execution_broker_mode"]
+    files[".env.agenticdome.example"] += (
+        "\n# Load this into the APPLICATION process, not just the sidecar.\n"
+        "# Policy selects Off / Monitor / Enforce; this setting does not force Enforce.\n"
+        f"AGENTICDOME_EXECUTION_BROKER_MODE={mode}\n"
+    )
+    if "agenticdome_integration.py" in files:
+        files["agenticdome_integration.py"] = files["agenticdome_integration.py"].replace(
+            '    mode="live",', f'    mode="live",\n    execution_broker_mode="{mode}",'
+        )
+    for filename in ("agenticdome_integration.ts", "agenticdome_mcp_gateway.ts"):
+        if filename in files:
+            files[filename] = files[filename].replace(
+                '  tenantId: required("AGENTICDOME_TENANT_ID"),',
+                f'  tenantId: required("AGENTICDOME_TENANT_ID"),\n  executionBrokerMode: "{mode}",',
+            )
+    if "agenticdome_mcp_gateway.py" in files:
+        files["agenticdome_mcp_gateway.py"] = files["agenticdome_mcp_gateway.py"].replace(
+            "from agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall",
+            "from agenticdome_sdk import AgenticDomeClient\nfrom agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall, load_config",
+        ).replace(
+            "firewall = AgenticDomeMCPHostFirewall()",
+            'config = load_config()\nfirewall = AgenticDomeMCPHostFirewall(config, client=AgenticDomeClient(\n'
+            '    api_base=config.api_base, api_key=config.api_key, tenant_id=config.tenant_id,\n'
+            f'    timeout=config.timeout_s, execution_broker_mode="{mode}",\n))',
+        )
+    files["AGENTICDOME-INTEGRATION.md"] += (
+        "\n## Policy-controlled execution\n\n"
+        f"This new scaffold sets `AGENTICDOME_EXECUTION_BROKER_MODE={mode}` and configures the generated SDK clients. "
+        "An example env file is not loaded automatically: load it into the application, MCP gateway or plugin process. "
+        "This does not install a separate broker or force Enforce. The assigned sidecar resolves the effective tenant policy per action. "
+        "AgenticDome must deploy a policy-aware sidecar and a compatible SDK before live activation. "
+        "Run `agenticdome verify --live` with a Runtime / SDK key; an unsupported resolver fails closed, without silently falling back. "
+        "The Integration Copilot key cannot authorize tool execution. "
+        "Review and attach wrappers at actual invocation boundaries; generated files alone do not protect an application.\n"
+    )
+    return files
+
+
 def _scaffold_files(config: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, str]:
     frameworks = ", ".join(config.get("frameworks", []))
     wrapper = '''"""AgenticDome enforcement boundaries generated for review.
@@ -1346,7 +1403,7 @@ export function protectedMCPForwarder(forwardToUpstream: (request: MCPJsonRpcReq
 
 export type RequiredMCPContext = MCPGatewayContext;
 '''
-    return files
+    return _configure_scaffold_broker(files, config)
 
 
 def create_scaffold(root: Path, plan: Optional[Dict[str, Any]] = None) -> Path:
@@ -1385,6 +1442,7 @@ def protect_mcp(root: Path) -> Dict[str, Any]:
     config_path = _agenticdome_dir(root) / "config.json"
     config = _load_json(config_path) if config_path.exists() else {
         "schema": CONFIG_SCHEMA,
+        "execution_broker_mode": "policy",
         "frameworks": [],
         "business_purpose": "REVIEW_REQUIRED_NOT_INVENTED",
         "sensitive_tools": [],
@@ -1563,6 +1621,7 @@ def protect_openclaw(root: Path) -> Dict[str, Any]:
     config_path = _agenticdome_dir(root) / "config.json"
     config = _load_json(config_path) if config_path.exists() else {
         "schema": CONFIG_SCHEMA,
+        "execution_broker_mode": "policy",
         "frameworks": [],
         "business_purpose": "REVIEW_REQUIRED_NOT_INVENTED",
         "sensitive_tools": [],
@@ -1597,7 +1656,8 @@ def protect_openclaw(root: Path) -> Dict[str, Any]:
         "inspection": _relative(inspection_path, root),
         "evidence": _relative(protection_path, root),
         "customer_source_modified": False,
-        "next_action": "Generate and review agenticdome plan with the tenant's Copilot key, then run agenticdome openclaw verify with its Runtime / SDK key.",
+        "runtime_environment": {"AGENTICDOME_EXECUTION_BROKER_MODE": _onboarding_broker_options(config)["execution_broker_mode"]} if _onboarding_broker_options(config) else {},
+        "next_action": "Generate and review agenticdome plan with the tenant's Copilot key. Load the reported runtime_environment in the OpenClaw process (existing settings are not changed), then run agenticdome openclaw verify with its Runtime / SDK key and a compatible sidecar.",
     }
 
 
@@ -1684,6 +1744,8 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
     from .client import AgenticDomeClient
 
     plan = integration_plan(root)
+    config_path = _agenticdome_dir(root) / "config.json"
+    broker_options = _onboarding_broker_options(_load_json(config_path)) if config_path.exists() else {}
     required_env = ["AGENTICDOME_API_BASE", "AGENTICDOME_API_KEY", "AGENTICDOME_TENANT_ID"]
     missing_env = [name for name in required_env if live and not os.getenv(name, "").strip()]
     if missing_env:
@@ -1693,6 +1755,7 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
         api_key=os.getenv("AGENTICDOME_API_KEY", ""),
         tenant_id=os.getenv("AGENTICDOME_TENANT_ID", ""),
         mode="live" if live else "local_sim",
+        **broker_options,
     )
     cases = [
         ("allowed", "Look up the status of support case 123.", "crm.case.lookup", {"case_id": "123"}),
