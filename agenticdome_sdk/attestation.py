@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 
+EVIDENCE_CONTRACT_VERSION = "agenticdome.evidence.v1"
+
+
 def _crypto():
     try:
         from cryptography.hazmat.primitives import hashes, serialization
@@ -74,6 +77,7 @@ def build_hook_manifest(
     now = int(time.time())
     claims: Dict[str, Any] = {
         "schema": "agenticdome.hook-manifest.v1",
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "tenant_id": tenant_id,
         "workload_uuid": workload_uuid,
         "deployment_id": deployment_id,
@@ -98,6 +102,7 @@ def build_hook_heartbeat(
     now = int(time.time())
     claims: Dict[str, Any] = {
         "schema": "agenticdome.hook-heartbeat.v1",
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "tenant_id": tenant_id,
         "workload_uuid": workload_uuid,
         "deployment_id": deployment_id,
