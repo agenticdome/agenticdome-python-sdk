@@ -108,6 +108,7 @@ def test_guardrail_validate_forwards_content_and_direct_execution_bindings(mock_
         execution_destination="https://records.example.test/patients/1",
         execution_http_method="post",
         workload_id="spiffe://customer.test/agent/records",
+        workload_uuid="21d22fcf-3d72-4d40-8d90-c995a777d1f4",
     )
 
     payload = mock_request.call_args.kwargs["json"]
@@ -115,6 +116,7 @@ def test_guardrail_validate_forwards_content_and_direct_execution_bindings(mock_
     assert payload["destination"] == "https://records.example.test/patients/1"
     assert payload["http_method"] == "POST"
     assert payload["workload_id"] == "spiffe://customer.test/agent/records"
+    assert payload["workload_uuid"] == "21d22fcf-3d72-4d40-8d90-c995a777d1f4"
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")
@@ -453,6 +455,10 @@ def test_inspect_content_sends_descriptors_to_runtime(mock_request, client):
             "labels": ["confidential"],
         }],
         policy_context={"content_dlp": {"block_labels": ["confidential"]}},
+        workload_uuid="21d22fcf-3d72-4d40-8d90-c995a777d1f4",
+        chain_id="chain-1",
+        action_id="action-1",
+        decision_ref_sha256="d" * 64,
     )
 
     assert result["raw_content_retained"] is False
@@ -460,6 +466,10 @@ def test_inspect_content_sends_descriptors_to_runtime(mock_request, client):
     assert mock_request.call_args.kwargs["url"] == "https://api.example.test/mesh/content/inspect"
     assert payload["direction"] == "output"
     assert payload["content_parts"][0]["modality"] == "document"
+    assert payload["workload_uuid"] == "21d22fcf-3d72-4d40-8d90-c995a777d1f4"
+    assert payload["chain_id"] == "chain-1"
+    assert payload["action_id"] == "action-1"
+    assert payload["decision_ref_sha256"] == "d" * 64
 
 
 @patch("agenticdome_sdk.client.requests.Session.request")

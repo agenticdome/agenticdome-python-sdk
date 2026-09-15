@@ -176,7 +176,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "AgenticDomeMicrosoftAIFoundryFirewall",
         ["install_on_client", "wrap_tool_executor", "run_secure"],
         packages={
-            "azure-ai-projects": {"min":"2.3.0","max":"2.6.0"},
+            "azure-ai-projects": {"min":"2.3.0","max":"2.6.1"},
             "azure-identity": {"exact": "1.25.3"},
         },
         native_modules=[
@@ -262,7 +262,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.aws_bedrock",
         "AgenticDomeAWSBedrockFirewall",
         ["converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"],
-        packages={"boto3": {"min":"1.43.54","max":"1.43.93"}},
+        packages={"boto3": {"min":"1.43.54","max":"1.43.94"}},
         native_modules=[{"module": "boto3", "attrs": ["client"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.aws_bedrock", "call": "wrap_tool_handler"},
         docs="docs/frameworks/aws-bedrock.md",
@@ -448,14 +448,14 @@ _PACKAGE_CERTIFICATION_DATES: Dict[str, Dict[str, str]] = {
     "pydanticai": {"pydantic-ai": "2026-09-13"},
     "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-09-13"},
     "autogen": {"autogen-agentchat": "2026-07-26"},
-    "foundry": {"azure-ai-projects": "2026-09-09", "azure-identity": "2026-07-10"},
+    "foundry": {"azure-ai-projects": "2026-09-15", "azure-identity": "2026-07-10"},
     "openai-agents": {"openai-agents": "2026-09-10"},
     "claude": {"claude-agent-sdk": "2026-09-09"},
     "smolagents": {"smolagents": "2026-07-23"},
     "agno": {"agno": "2026-09-09"},
     "google-adk": {"google-adk": "2026-09-13"},
     "llamaindex": {"llama-index": "2026-08-20"},
-    "bedrock": {"boto3": "2026-09-13"},
+    "bedrock": {"boto3": "2026-09-15"},
     "mcp": {"mcp": "2026-09-09"},
 }
 

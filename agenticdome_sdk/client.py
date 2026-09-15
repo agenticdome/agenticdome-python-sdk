@@ -598,6 +598,7 @@ class AgenticDomeClient:
         execution_destination: Optional[str] = None,
         execution_http_method: Optional[str] = None,
         workload_id: Optional[str] = None,
+        workload_uuid: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
     ) -> Dict[str, Any]:
         """
@@ -638,6 +639,12 @@ class AgenticDomeClient:
         )
         if tool_digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(tool_digest)):
             raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
+        workload_uuid = self._normalize_optional_string(workload_uuid or os.getenv("AGENTICDOME_WORKLOAD_UUID"))
+        if workload_uuid is not None and not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            workload_uuid,
+        ):
+            raise ValueError("'workload_uuid' must be a UUID from AgenticDome onboarding")
 
         merged_policy_context = self._merge_policy_context(
             policy_context,
@@ -717,6 +724,7 @@ class AgenticDomeClient:
                 "allowed_destination_domains": allowed_destination_domains,
                 "attachments": attachments,
                 "content_parts": content_parts,
+                "workload_uuid": workload_uuid.lower() if workload_uuid else None,
             }
         )
 
@@ -919,6 +927,10 @@ class AgenticDomeClient:
         direction: str = "output",
         policy_context: Optional[Dict[str, Any]] = None,
         runtime_verdict: str = "ALLOWED",
+        workload_uuid: Optional[str] = None,
+        chain_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        decision_ref_sha256: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
     ) -> Dict[str, Any]:
         """Run multimodal descriptor DLP in the assigned AgenticDome runtime.
@@ -934,12 +946,28 @@ class AgenticDomeClient:
         verdict = str(runtime_verdict or "").strip().upper()
         if verdict not in {"ALLOWED", "BLOCKED", "REDACTED"}:
             raise ValueError("runtime_verdict must be ALLOWED, BLOCKED, or REDACTED")
+        workload_uuid = self._normalize_optional_string(workload_uuid or os.getenv("AGENTICDOME_WORKLOAD_UUID"))
+        if workload_uuid is not None and not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            workload_uuid,
+        ):
+            raise ValueError("'workload_uuid' must be a UUID from AgenticDome onboarding")
+        for label, value in (("chain_id", chain_id), ("action_id", action_id)):
+            if value is not None and not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", str(value)):
+                raise ValueError(f"'{label}' must be a bounded action reference")
+        if decision_ref_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", str(decision_ref_sha256)):
+            raise ValueError("'decision_ref_sha256' must contain 64 lowercase hexadecimal characters")
         payload = {
             "direction": self._normalize_direction(direction),
             "content_parts": content_parts,
             "policy_context": dict(policy_context or {}),
             "runtime_verdict": verdict,
+            "workload_uuid": workload_uuid.lower() if workload_uuid else None,
+            "chain_id": chain_id,
+            "action_id": action_id,
+            "decision_ref_sha256": decision_ref_sha256,
         }
+        payload = self._drop_none(payload)
         return self._request("POST", "/mesh/content/inspect", json_body=payload, tenant_id=tenant_id)
 
     def get_mesh_topology(self, tenant_id: Optional[Union[str, int]] = None) -> Dict[str, Any]:
