@@ -39,7 +39,7 @@ CATALOG_VERIFIED_AT = str(_CATALOG_SNAPSHOT["verified_at"])
 
 
 _OPENCLAW_RUNTIME_MIN_VERSION = "2026.7.1-2"
-_OPENCLAW_RUNTIME_MAX_VERSION = "2026.9.4"
+_OPENCLAW_RUNTIME_MAX_VERSION = "2026.9.6"
 _OPENCLAW_RUNTIME_VERSION = _OPENCLAW_RUNTIME_MAX_VERSION
 _OPENCLAW_NODE_RANGE = ">=24.16.0 <25 || >=26.1.0"
 
@@ -86,7 +86,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.crewai",
         "AgenticDomeCrewAIFirewall",
         ["attach", "secure_tool"],
-        packages={"crewai": {"min":"1.15.5","max":"1.15.21"}},
+        packages={"crewai": {"min":"1.15.5","max":"1.15.22"}},
         native_modules=[
             {
                 "module": "crewai.hooks",
@@ -116,7 +116,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.pydanticai",
         "CyberSecFirewall",
         ["install_native_hooks", "secure_tool"],
-        packages={"pydantic-ai": {"min":"2.16.0","max":"2.43.0"}},
+        packages={"pydantic-ai": {"min":"2.16.0","max":"2.51.0"}},
         native_modules=[{"module": "pydantic_ai", "attrs": ["Agent", "RunContext"]}],
         adapter_attrs=[
             {
@@ -133,8 +133,8 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "AgenticDomeLangGraphFirewall",
         ["input_node", "transition_node", "output_node", "as_langchain_middleware"],
         packages={
-            "langgraph": {"min": "1.2.9", "max": "1.2.11"},
-            "langchain-core": {"min":"1.5.0","max":"1.6.3"},
+            "langgraph": {"min":"1.2.9","max":"1.2.12"},
+            "langchain-core": {"min":"1.5.0","max":"1.6.5"},
         },
         native_modules=[
             {"module": "langgraph.graph", "attrs": ["StateGraph"]},
@@ -176,7 +176,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "AgenticDomeMicrosoftAIFoundryFirewall",
         ["install_on_client", "wrap_tool_executor", "run_secure"],
         packages={
-            "azure-ai-projects": {"min":"2.3.0","max":"2.6.1"},
+            "azure-ai-projects": {"min":"2.3.0","max":"2.7.0"},
             "azure-identity": {"exact": "1.25.3"},
         },
         native_modules=[
@@ -191,7 +191,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.openai_agents",
         "AgenticDomeOpenAIAgentsFirewall",
         ["run_agent_securely", "wrap_tool_handler", "create_input_guardrail"],
-        packages={"openai-agents": {"min":"0.18.3","max":"0.22.2"}},
+        packages={"openai-agents": {"min":"0.18.3","max":"0.22.3"}},
         native_modules=[{"module": "agents", "attrs": ["Agent", "Runner", "function_tool"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.openai_agents", "call": "create_input_guardrail"},
         docs="docs/frameworks/openai-agents.md",
@@ -201,7 +201,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.claude",
         "AgenticDomeClaudeFirewall",
         ["install_on_options", "secure_query", "run_client_securely", "secure_sdk_tool"],
-        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.152"}},
+        packages={"claude-agent-sdk": {"min":"0.2.126","max":"0.2.160"}},
         native_modules=[
             {
                 "module": "claude_agent_sdk",
@@ -226,7 +226,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.agno",
         "AgenticDomeAgnoFirewall",
         ["attach_firewall", "secure_tool", "create_hook_bundle"],
-        packages={"agno": {"min":"2.8.0","max":"3.0.9"}},
+        packages={"agno": {"min":"2.8.0","max":"3.0.11"}},
         native_modules=[{"module": "agno.agent", "attrs": ["Agent"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.agno", "call": "attach_firewall"},
         docs="docs/frameworks/agno.md",
@@ -236,7 +236,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.google_adk",
         "AgenticDomeGoogleADKFirewall",
         ["build_callback_kwargs", "install_on_agent", "wrap_tool_handler"],
-        packages={"google-adk": {"min":"2.5.0","max":"2.9.0"}},
+        packages={"google-adk": {"min":"2.5.0","max":"2.10.0"}},
         native_modules=[
             {"module": "google.adk.agents", "attrs": ["Agent"]},
             {"module": "google.adk.tools", "attrs": ["FunctionTool"]},
@@ -249,7 +249,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.llamaindex",
         "AgenticDomeLlamaIndexFirewall",
         ["to_function_tool", "wrap_query_engine", "run_query_securely"],
-        packages={"llama-index": {"min":"0.14.23","max":"0.14.24"}},
+        packages={"llama-index": {"min":"0.14.23","max":"0.14.25"}},
         native_modules=[
             {"module": "llama_index.core.tools", "attrs": ["FunctionTool"]},
             {"module": "llama_index.core.agent.workflow", "attrs": ["FunctionAgent"]},
@@ -262,7 +262,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "agenticdome_sdk.integrations.aws_bedrock",
         "AgenticDomeAWSBedrockFirewall",
         ["converse_securely", "wrap_tool_handler", "wrap_action_group_lambda"],
-        packages={"boto3": {"min":"1.43.54","max":"1.43.94"}},
+        packages={"boto3": {"min":"1.43.54","max":"1.43.103"}},
         native_modules=[{"module": "boto3", "attrs": ["client"]}],
         native_smoke={"module": "agenticdome_sdk.integrations.aws_bedrock", "call": "wrap_tool_handler"},
         docs="docs/frameworks/aws-bedrock.md",
@@ -444,18 +444,18 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
 }
 
 _PACKAGE_CERTIFICATION_DATES: Dict[str, Dict[str, str]] = {
-    "crewai": {"crewai":"2026-09-10"},
-    "pydanticai": {"pydantic-ai": "2026-09-13"},
-    "langgraph": {"langgraph": "2026-08-12", "langchain-core": "2026-09-13"},
+    "crewai": {"crewai":"2026-09-26"},
+    "pydanticai": {"pydantic-ai": "2026-09-26"},
+    "langgraph": {"langgraph": "2026-09-26", "langchain-core": "2026-09-26"},
     "autogen": {"autogen-agentchat": "2026-07-26"},
-    "foundry": {"azure-ai-projects": "2026-09-15", "azure-identity": "2026-07-10"},
-    "openai-agents": {"openai-agents": "2026-09-10"},
-    "claude": {"claude-agent-sdk": "2026-09-09"},
+    "foundry": {"azure-ai-projects": "2026-09-26", "azure-identity": "2026-07-10"},
+    "openai-agents": {"openai-agents": "2026-09-26"},
+    "claude": {"claude-agent-sdk": "2026-09-26"},
     "smolagents": {"smolagents": "2026-07-23"},
-    "agno": {"agno": "2026-09-09"},
-    "google-adk": {"google-adk": "2026-09-13"},
-    "llamaindex": {"llama-index": "2026-08-20"},
-    "bedrock": {"boto3": "2026-09-15"},
+    "agno": {"agno": "2026-09-26"},
+    "google-adk": {"google-adk": "2026-09-26"},
+    "llamaindex": {"llama-index": "2026-09-26"},
+    "bedrock": {"boto3": "2026-09-26"},
     "mcp": {"mcp": "2026-09-09"},
 }
 

@@ -1,5 +1,6 @@
 import argparse
 import ast
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -21,6 +22,69 @@ from agenticdome_sdk.onboarding_cli import (
 )
 
 REAL_COPILOT_ANALYSIS = onboarding_cli._copilot_semantic_analysis
+
+
+def test_scoped_inspection_excludes_generated_harness_and_exports_bounded_evidence(tmp_path):
+    (tmp_path / "app.py").write_text("def run():\n    return call_tool('approved', {})\n", encoding="utf-8")
+    generated = tmp_path / ".harness_runtime_ts"
+    generated.mkdir()
+    (generated / "poison.py").write_text("def leaked():\n    return call_tool('unreviewed', {})\n", encoding="utf-8")
+    report = inspect_repository(tmp_path)
+    assert report["scope"]["complete"] is True
+    assert report["scanned_files"] == 1
+    assert all(item["path"] == "app.py" for item in report["copilot_ir"]["functions"])
+    exported = onboarding_cli._exportable_inspection(report)
+    assert "copilot_ir" not in exported
+    assert exported["copilot_ir_summary"]["symbols_collected"] == len(report["copilot_ir"]["functions"])
+    digest = exported.pop("report_sha256")
+    assert digest == hashlib.sha256(json.dumps(exported, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def test_chunked_copilot_transport_binds_every_batch_to_one_ir(monkeypatch):
+    functions = [
+        {"path": "a.py", "symbol": "entry", "line": 1, "events": [{"event": "call", "callee": "a" * 450000, "line": 2}]},
+        {"path": "b.py", "symbol": "sink", "line": 1, "events": [{"event": "call", "callee": "b" * 450000, "line": 2}]},
+    ]
+    ir = {"schema": "agenticdome.copilot-ir.v1", "source_upload": False, "engines": {}, "functions": functions}
+    seen = []
+
+    def post(api_base, api_key, tenant_id, path, body, *, method="POST", idempotency_key=""):
+        data = json.loads(body)
+        seen.append((path, method, data))
+        if path.endswith("/sessions"):
+            return {"schema": "agenticdome.copilot-session.v2", "session_id": "A" * 32}
+        if "/batches/" in path:
+            return {"schema": "agenticdome.copilot-batch-receipt.v2", "index": int(path.rsplit("/", 1)[1]), "sha256": data["sha256"]}
+        return {"schema": "agenticdome.copilot-plan.v1", "tenant_id": tenant_id}
+
+    monkeypatch.setattr(onboarding_cli, "_post_copilot", post)
+    result = onboarding_cli._chunked_copilot_request("https://sidecar.example", "key", "tenant-1", ir, onboarding_cli._ir_sha256(ir), "idempotency")
+    assert result["tenant_id"] == "tenant-1"
+    assert seen[0][2]["batch_count"] == 2
+    assert [item[1] for item in seen] == ["POST", "PUT", "PUT", "POST"]
+    assert seen[0][2]["ir_sha256"] == onboarding_cli._ir_sha256(ir)
+    assert [item[2]["functions"][0]["symbol"] for item in seen[1:3]] == ["entry", "sink"]
+
+
+def test_incomplete_scope_cannot_be_presented_as_a_placement_plan(tmp_path, monkeypatch):
+    (tmp_path / "a.py").write_text("def a():\n    pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def b():\n    pass\n", encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "MAX_FILES", 1)
+    report = inspect_repository(tmp_path)
+    assert report["scan_limit_reached"] is True
+    assert report["scope"]["complete"] is False
+    with pytest.raises(SystemExit, match="unexamined code must not be reported as protected"):
+        integration_plan(tmp_path)
+
+
+def test_oversized_source_is_visible_as_a_scope_gap(tmp_path, monkeypatch):
+    (tmp_path / "small.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    (tmp_path / "large.py").write_text("def hidden():\n    pass\n" * 10, encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "MAX_TEXT_BYTES", 64)
+    report = inspect_repository(tmp_path)
+    assert report["scope"]["complete"] is False
+    assert report["scope"]["unexamined_source_counts"]["oversized_source_files"] == 1
+    assert all(function["path"] != "large.py" for function in report["copilot_ir"]["functions"])
 
 
 def _private_analysis(*, points=None, bypasses=None, reviews=None, confidence="high"):

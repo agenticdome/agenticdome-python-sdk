@@ -38,13 +38,14 @@ from .copilot_ir import collect_repository_ir
 SCHEMA = "agenticdome.onboarding-report.v1"
 CONFIG_SCHEMA = "agenticdome.project-config.v1"
 COPILOT_ANALYSIS_REVISION = 4
-MAX_FILES = 2_000
+MAX_FILES = 5_000
 MAX_TEXT_BYTES = 512_000
 IGNORED_DIRECTORIES = {
     ".git", ".hg", ".svn", ".idea", ".vscode", ".tox", ".venv", "venv",
     "node_modules", "dist", "build", "coverage", "__pycache__", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".next", ".agenticdome", ".harness_runtime",
-    "tests", "test", "__tests__", "spec",
+    ".harness_runtime_ts", ".nuxt", ".turbo", ".cache", ".yarn",
+    ".pnpm-store", "target", "tests", "test", "__tests__", "spec",
 }
 TEXT_SUFFIXES = {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".txt", ".yaml", ".yml"}
 SENSITIVE_FILE_PATTERN = re.compile(
@@ -172,26 +173,38 @@ def _relative(path: Path, root: Path) -> str:
         return path.name
 
 
-def _candidate_files(root: Path) -> Iterable[Path]:
+def _candidate_files(root: Path, scan_gaps: Dict[str, int] | None = None) -> Iterable[Path]:
     count = 0
-    for current, directories, files in os.walk(root):
-        directories[:] = sorted(name for name in directories if name not in IGNORED_DIRECTORIES)
+    gaps = scan_gaps if scan_gaps is not None else {}
+    def walk_error(_error: OSError) -> None:
+        gaps["unreadable_directories"] = gaps.get("unreadable_directories", 0) + 1
+
+    for current, directories, files in os.walk(root, onerror=walk_error):
+        directories[:] = sorted(
+            name for name in directories
+            if name not in IGNORED_DIRECTORIES and not (Path(current) / name).is_symlink()
+        )
         for name in sorted(files):
-            if count >= MAX_FILES:
-                return
             path = Path(current) / name
-            if _is_backup_file(path):
+            if path.is_symlink() or _is_backup_file(path):
                 continue
             sensitive_name = _is_sensitive_file(path)
             if path.suffix.lower() not in TEXT_SUFFIXES and not sensitive_name:
                 continue
             try:
                 if path.stat().st_size > MAX_TEXT_BYTES:
+                    if path.suffix.lower() in {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx"} and not sensitive_name:
+                        gaps["oversized_source_files"] = gaps.get("oversized_source_files", 0) + 1
                     continue
             except OSError:
+                gaps["unreadable_files"] = gaps.get("unreadable_files", 0) + 1
                 continue
             count += 1
             yield path
+            # The extra candidate distinguishes an exactly-full scan from a
+            # truncated one without walking the rest of a huge repository.
+            if count > MAX_FILES:
+                return
 
 
 def _read_text(path: Path) -> str:
@@ -202,8 +215,73 @@ def _read_text(path: Path) -> str:
 
 
 def _ir_sha256(ir: Dict[str, Any]) -> str:
-    canonical = json.dumps(ir, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
+    digest = hashlib.sha256()
+    for piece in json.JSONEncoder(sort_keys=True, separators=(",", ":")).iterencode(ir):
+        digest.update(piece.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _post_copilot(api_base: str, api_key: str, tenant_id: str, path: str, body: bytes, *, method: str = "POST", idempotency_key: str = "") -> Dict[str, Any]:
+    headers = {
+        "Content-Type": "application/json", "Accept": "application/json",
+        "X-API-Key": api_key, "X-Tenant-Id": tenant_id,
+    }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    request = urllib.request.Request(api_base + path, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - tenant sidecar URL is explicit configuration
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = str(payload.get("detail") or "")[:240] if isinstance(payload, dict) else ""
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        raise SystemExit(f"Integration Copilot sidecar request failed ({exc.code}): {detail or exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Integration Copilot sidecar request failed safely: {exc}") from exc
+    if not isinstance(result, dict):
+        raise SystemExit("Integration Copilot returned an invalid JSON response.")
+    return result
+
+
+def _chunked_copilot_request(api_base: str, api_key: str, tenant_id: str, ir: Dict[str, Any], ir_digest: str, idempotency_key: str) -> Dict[str, Any]:
+    batches: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    size = 2
+    for function in ir.get("functions", []):
+        encoded_size = len(json.dumps(function, sort_keys=True, separators=(",", ":")).encode("utf-8")) + 1
+        if encoded_size > 800_000:
+            raise SystemExit("One structural function exceeds the bounded Copilot batch size; narrow the workload or simplify that generated file.")
+        if current and size + encoded_size > 800_000:
+            batches.append(current)
+            current = []
+            size = 2
+        current.append(function)
+        size += encoded_size
+    if current:
+        batches.append(current)
+    if not batches or len(batches) > 64:
+        raise SystemExit("The workload exceeds 64 bounded Copilot batches. Choose a narrower application or package root.")
+    header = {key: value for key, value in ir.items() if key != "functions"}
+    start = _post_copilot(api_base, api_key, tenant_id, "/integration-copilot/v2/sessions", json.dumps({
+        "schema": "agenticdome.copilot-session.v2", "ir_header": header,
+        "ir_sha256": ir_digest, "batch_count": len(batches),
+    }, separators=(",", ":")).encode("utf-8"))
+    session_id = str(start.get("session_id") or "")
+    if start.get("schema") != "agenticdome.copilot-session.v2" or re.fullmatch(r"[A-Za-z0-9_-]{20,80}", session_id) is None:
+        raise SystemExit("Integration Copilot did not return a valid tenant-bound batch session.")
+    for index, functions in enumerate(batches):
+        canonical = json.dumps(functions, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        digest = hashlib.sha256(canonical).hexdigest()
+        receipt = _post_copilot(api_base, api_key, tenant_id, f"/integration-copilot/v2/sessions/{session_id}/batches/{index}", json.dumps({
+            "schema": "agenticdome.copilot-batch.v2", "functions": functions, "sha256": digest,
+        }, separators=(",", ":")).encode("utf-8"), method="PUT")
+        if receipt.get("schema") != "agenticdome.copilot-batch-receipt.v2" or receipt.get("index") != index or receipt.get("sha256") != digest:
+            raise SystemExit("Integration Copilot structural batch receipt did not match the submitted metadata.")
+    return _post_copilot(api_base, api_key, tenant_id, f"/integration-copilot/v2/sessions/{session_id}/finalize", b"{}", idempotency_key=idempotency_key)
 
 
 def _pending_semantic_analysis(ir: Dict[str, Any]) -> Dict[str, Any]:
@@ -297,31 +375,11 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
     idempotency_key = hashlib.sha256(
         f"{tenant_id}\n{api_base}\n{ir_digest}\n{expected_catalog_digest}".encode("utf-8")
     ).hexdigest()
-    request = urllib.request.Request(
-        api_base + "/integration-copilot/v1/analyze",
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "X-API-Key": api_key,
-            "X-Tenant-Id": tenant_id,
-            "Idempotency-Key": idempotency_key,
-        },
+    result = (
+        _chunked_copilot_request(api_base, api_key, tenant_id, ir, ir_digest, idempotency_key)
+        if len(body) > 8_000_000 else
+        _post_copilot(api_base, api_key, tenant_id, "/integration-copilot/v1/analyze", body, idempotency_key=idempotency_key)
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - tenant sidecar URL is explicit configuration
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            payload = json.loads(exc.read().decode("utf-8"))
-            detail = str(payload.get("detail") or "")[:240] if isinstance(payload, dict) else ""
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            pass
-        raise SystemExit(f"Integration Copilot sidecar request failed ({exc.code}): {detail or exc.reason}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Integration Copilot sidecar request failed safely: {exc}") from exc
 
     if not isinstance(result, dict) or result.get("schema") != "agenticdome.copilot-plan.v1":
         raise SystemExit("Integration Copilot returned an unsupported response contract.")
@@ -564,10 +622,21 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
     scanned_files = 0
     secret_file_count = 0
     semantic_paths: List[Path] = []
+    scan_limit_reached = False
+    scan_gaps: Dict[str, int] = {}
+    scope_digest = hashlib.sha256()
 
-    for path in _candidate_files(root):
+    for path in _candidate_files(root, scan_gaps):
+        if scanned_files >= MAX_FILES:
+            scan_limit_reached = True
+            break
         scanned_files += 1
         relative = _relative(path, root)
+        scope_digest.update(relative.encode("utf-8", errors="replace") + b"\0")
+        try:
+            scope_digest.update(str(path.stat().st_size).encode("ascii") + b"\n")
+        except OSError:
+            scope_digest.update(b"unavailable\n")
         suffix = path.suffix.lower()
         if suffix in {".py", ".pyi"}:
             languages.add("python")
@@ -578,7 +647,11 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
             secret_file_count += 1
             continue
 
-        text = _read_text(path)
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            scan_gaps["unreadable_files"] = scan_gaps.get("unreadable_files", 0) + 1
+            continue
         framework_evidence = _framework_evidence_text(path, text)
         for framework, markers in FRAMEWORK_MARKERS.items():
             source_markers = markers
@@ -613,7 +686,23 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
         detected.append({"key": "custom-python", "evidence_files": []})
 
     copilot_ir = collect_repository_ir(root, semantic_paths)
-    semantic = _copilot_semantic_analysis(root, copilot_ir, required=False)
+    scope = {
+        "schema": "agenticdome.repository-scope.v1",
+        "selected_root": root.name,
+        "fingerprint": "sha256:" + scope_digest.hexdigest(),
+        "eligible_files_scanned": scanned_files,
+        "complete": not scan_limit_reached and not any(scan_gaps.values()) and copilot_ir.get("coverage", {}).get("complete") is True,
+        "excluded_generated_directories": sorted(IGNORED_DIRECTORIES),
+        "unexamined_source_counts": scan_gaps,
+        "unexamined_candidates": "at_least_one" if scan_limit_reached else "none_detected",
+    }
+    copilot_ir["scope"] = scope
+    semantic = (
+        _copilot_semantic_analysis(root, copilot_ir, required=False)
+        if scope["complete"] else _pending_semantic_analysis(copilot_ir)
+    )
+    if not scope["complete"]:
+        semantic["limitations"].append("The selected workload was not completely collected; narrow the scope before requesting a placement plan.")
     mcp_protection = _detect_mcp_protection(root, semantic_paths, sorted(languages))
 
     boundaries = sorted(boundaries, key=lambda item: (item["path"], item["line"], item["boundary"]))[:500]
@@ -629,7 +718,8 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
         "languages": sorted(languages),
         "frameworks": detected,
         "scanned_files": scanned_files,
-        "scan_limit_reached": scanned_files >= MAX_FILES,
+        "scan_limit_reached": scan_limit_reached,
+        "scope": scope,
         "potential_secret_files_excluded": secret_file_count,
         "boundaries": boundaries,
         "boundary_counts": boundary_counts,
@@ -644,6 +734,21 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
     canonical = json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
     report["report_sha256"] = hashlib.sha256(canonical).hexdigest()
     return report
+
+
+def _exportable_inspection(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep structural call graphs local; onboarding imports need only bounded evidence."""
+    exported = {key: value for key, value in report.items() if key not in {"copilot_ir", "report_sha256"}}
+    ir = report.get("copilot_ir", {})
+    exported["copilot_ir_summary"] = {
+        "schema": ir.get("schema"),
+        "sha256": _ir_sha256(ir),
+        "symbols_collected": len(ir.get("functions", [])),
+        "coverage": ir.get("coverage", {}),
+    }
+    canonical = json.dumps(exported, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    exported["report_sha256"] = hashlib.sha256(canonical).hexdigest()
+    return exported
 
 
 def _agenticdome_dir(root: Path) -> Path:
@@ -692,7 +797,7 @@ def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
         "execution_broker_mode": "policy",
     }
     _write_json(target, config)
-    _write_json(_agenticdome_dir(root) / "inspection.json", report)
+    _write_json(_agenticdome_dir(root) / "inspection.json", _exportable_inspection(report))
     return config
 
 
@@ -885,6 +990,11 @@ def _hook_plans(
 
 def integration_plan(root: Path) -> Dict[str, Any]:
     report = inspect_repository(root)
+    if report.get("scope", {}).get("complete") is not True:
+        raise SystemExit(
+            "The selected workload exceeds the complete local analysis boundary. "
+            "Choose a narrower application or package root; unexamined code must not be reported as protected."
+        )
     config_path = _agenticdome_dir(root) / "config.json"
     config = _load_json(config_path) if config_path.exists() else {
         "schema": CONFIG_SCHEMA,
@@ -928,7 +1038,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
     semantic_reviews = semantic.get("review_findings", []) if isinstance(semantic, dict) else []
     return {
         "schema": "agenticdome.integration-plan.v1",
-        "inspection_report_sha256": report.get("report_sha256"),
+        "inspection_report_sha256": _exportable_inspection(report).get("report_sha256"),
         "hook_catalog": {
             "schema": CATALOG_SCHEMA,
             "digest": catalog_digest(),
@@ -1952,7 +2062,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _print(run_assist(root))
         return 0
     if args.command in {"inspect", "doctor"}:
-        report = inspect_repository(root)
+        report = _exportable_inspection(inspect_repository(root))
         if args.output:
             _write_json(Path(args.output), report)
             _print({

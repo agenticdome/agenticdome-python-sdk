@@ -83,6 +83,20 @@ Each workload keeps its own `.agenticdome` evidence beside its own CI tests.
 Run verification only after Step 3 has produced a signed, catalog-bound
 Integration Copilot plan and the application attachment tests exist.
 
+For large repositories, choose the deployable subdirectory with `--path` or
+run the commands from that subdirectory. The local scan skips known generated
+caches and dependency folders, including `.harness_runtime_ts`, `node_modules`
+and virtual environments. The inspection records a scope fingerprint and
+whether the selected scope was fully collected. If the file or symbol limit is
+reached, planning stops and asks you to narrow the workload; unexamined code
+is never labelled protected. The exported inspection is compact: the full
+source-free call graph stays local rather than being included in portal upload
+evidence. For a large but complete structural graph, the SDK sends bounded
+digest-checked batches to the assigned sidecar; the private Core reconnects
+cross-batch call paths before producing one signed plan. Source text is not
+uploaded. A plan remains a static proposal, not proof that a customer action
+is intercepted.
+
 `agenticdome init` creates `.agenticdome/config.json` and
 `.agenticdome/inspection.json`. The scanner:
 

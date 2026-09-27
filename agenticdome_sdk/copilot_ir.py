@@ -18,7 +18,9 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 
 IR_SCHEMA = "agenticdome.copilot-ir.v1"
-MAX_IR_FILES = 1_000
+MAX_IR_FILES = 5_000
+MAX_IR_FUNCTIONS = 20_000
+TYPESCRIPT_BATCH_FILES = 200
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -280,7 +282,7 @@ def _collect_python(root: Path, paths: Sequence[Path]) -> Tuple[List[Dict[str, A
     parsed = 0
     parse_errors = 0
     features = {"functions": 0, "calls": 0, "returns": 0, "raises": 0}
-    for path in paths[:MAX_IR_FILES]:
+    for path in paths:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=path.name)
         except (OSError, SyntaxError, ValueError):
@@ -309,29 +311,38 @@ def _collect_typescript(root: Path, paths: Sequence[Path]) -> Tuple[List[Dict[st
     helper = Path(__file__).with_name("copilot_ir_collector.cjs")
     if not node or not helper.exists():
         return _typescript_fallback(root, paths, "Node.js or the packaged IR collector is unavailable.")
-    try:
-        completed = subprocess.run(
-            [node, str(helper)],
-            input=json.dumps({"root": str(root), "files": [str(path) for path in paths[:MAX_IR_FILES]]}),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=20,
-            cwd=root,
-        )
-        result = json.loads(completed.stdout or "{}") if completed.returncode == 0 else {}
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        result = {}
-    if not isinstance(result, dict) or not result.get("available"):
-        return _typescript_fallback(root, paths, str(result.get("reason", "The TypeScript compiler is unavailable."))[:160] if isinstance(result, dict) else "The TypeScript compiler is unavailable.")
-    functions = result.get("functions") if isinstance(result.get("functions"), list) else []
-    return [item for item in functions if isinstance(item, dict)], {
+    functions: List[Dict[str, Any]] = []
+    files_parsed = 0
+    parse_errors = 0
+    compiler_version = ""
+    for offset in range(0, len(paths), TYPESCRIPT_BATCH_FILES):
+        batch = paths[offset:offset + TYPESCRIPT_BATCH_FILES]
+        try:
+            completed = subprocess.run(
+                [node, str(helper)],
+                input=json.dumps({"root": str(root), "files": [str(path) for path in batch]}),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+                cwd=root,
+            )
+            result = json.loads(completed.stdout or "{}") if completed.returncode == 0 else {}
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            result = {}
+        if not isinstance(result, dict) or not result.get("available"):
+            return _typescript_fallback(root, paths, str(result.get("reason", "The TypeScript compiler is unavailable."))[:160] if isinstance(result, dict) else "The TypeScript compiler is unavailable.")
+        functions.extend(item for item in result.get("functions", []) if isinstance(item, dict))
+        files_parsed += max(0, int(result.get("files_parsed", 0)))
+        parse_errors += max(0, int(result.get("parse_errors", 0)))
+        compiler_version = str(result.get("typescript_version", ""))[:40]
+    return functions, {
         "engine": "typescript-compiler-api",
         "available": True,
-        "files_parsed": max(0, int(result.get("files_parsed", 0))),
-        "parse_errors": max(0, int(result.get("parse_errors", 0))),
-        "typescript_version": str(result.get("typescript_version", ""))[:40],
+        "files_parsed": files_parsed,
+        "parse_errors": parse_errors,
+        "typescript_version": compiler_version,
         "claim": "Generic compiler AST structure collection; private reasoning is performed by the assigned Copilot service",
     }
 
@@ -340,7 +351,7 @@ def _typescript_fallback(root: Path, paths: Sequence[Path], reason: str) -> Tupl
     functions: List[Dict[str, Any]] = []
     parsed = 0
     call_pattern = re.compile(r"\b([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(")
-    for path in paths[:MAX_IR_FILES]:
+    for path in paths:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
@@ -365,16 +376,26 @@ def _typescript_fallback(root: Path, paths: Sequence[Path], reason: str) -> Tupl
 
 def collect_repository_ir(root: Path, paths: Sequence[Path]) -> Dict[str, Any]:
     """Collect bounded metadata for private reasoning without emitting source."""
-    python_paths = [path for path in paths if path.suffix.lower() in {".py", ".pyi"}]
-    typescript_paths = [path for path in paths if path.suffix.lower() in {".js", ".jsx", ".ts", ".tsx"}]
+    selected = paths[:MAX_IR_FILES]
+    python_paths = [path for path in selected if path.suffix.lower() in {".py", ".pyi"}]
+    typescript_paths = [path for path in selected if path.suffix.lower() in {".js", ".jsx", ".ts", ".tsx"}]
     python_functions, python_engine = _collect_python(root, python_paths)
     typescript_functions, typescript_engine = _collect_typescript(root, typescript_paths)
+    functions = python_functions + typescript_functions
+    complete = len(paths) <= MAX_IR_FILES and len(functions) <= MAX_IR_FUNCTIONS
     return {
         "schema": IR_SCHEMA,
         "source_upload": False,
         "collector_mode": "generic_ast_metadata_only",
         "engines": {"python": python_engine, "typescript": typescript_engine},
-        "functions": (python_functions + typescript_functions)[:20_000],
+        "functions": functions[:MAX_IR_FUNCTIONS],
+        "coverage": {
+            "candidate_source_files": len(paths),
+            "files_selected": len(selected),
+            "symbols_found": len(functions),
+            "complete": complete,
+            "limit_reason": "file_limit" if len(paths) > MAX_IR_FILES else "symbol_limit" if len(functions) > MAX_IR_FUNCTIONS else None,
+        },
         "privacy": {
             "source_text": False,
             "string_literals": False,
