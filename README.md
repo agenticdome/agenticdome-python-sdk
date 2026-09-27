@@ -105,7 +105,10 @@ agenticdome openclaw verify --output .agenticdome/verification.json
 AgenticDome plugin, explicit consent and the exact certified typed hooks.
 `agenticdome plan` returns source-free, tenant-bound Integration Copilot
 guidance for review. `openclaw verify` adds workspace-test and assigned-tenant
-policy evidence. The
+policy evidence. If the same deployable workload also uses MCP, this command
+includes the MCP transport rehearsal and both `mcp_verification` and
+`openclaw_verification` in one report. Both sections must be ready before the
+report is imported; `mcp verify` alone is not a combined-workload proof. The
 customer Control Panel separately confirms tenant binding and retained
 telemetry; neither command silently modifies customer source.
 
@@ -114,6 +117,17 @@ the Control Panel adds its detected frameworks to the workload. Frameworks,
 languages and candidate boundaries can be discovered locally; business
 purpose, sensitive actions and managed-versus-sovereign deployment remain
 explicit customer decisions and are not guessed from source code.
+
+`agenticdome init` creates local configuration without contacting Copilot.
+`inspect` and `plan` send source-free structural metadata to the assigned
+tenant sidecar. A selection spanning several deployable packages is analyzed
+as bounded, sequential workload units; successful units are checkpointed
+locally so a retry does not resubmit them. The report lists analyzed parts
+and any result-list caps. It does not claim that calls or guard placement
+across separate workload units were proven; review those boundaries before
+production. If the selection exceeds the 24-unit safety limit, select the
+application or package that actually executes agent actions. No unexamined
+unit is silently omitted or reported as protected.
 
 Use **Customer Control Panel → Activate Action Firewall → Core Config** to
 choose the Developer Integration path and import the two evidence files. This

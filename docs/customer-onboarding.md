@@ -80,7 +80,7 @@ application. It normally contains that service's `pyproject.toml`,
 assistant separately inside each independently deployed agent service; do not
 scan the top-level monorepo unless it genuinely represents one deployment.
 Each workload keeps its own `.agenticdome` evidence beside its own CI tests.
-Run verification only after Step 3 has produced a signed, catalog-bound
+Run verification only after Step 3 has produced a tenant-bound, catalog-checked
 Integration Copilot plan and the application attachment tests exist.
 
 For large repositories, choose the deployable subdirectory with `--path` or
@@ -91,11 +91,17 @@ whether the selected scope was fully collected. If the file or symbol limit is
 reached, planning stops and asks you to narrow the workload; unexamined code
 is never labelled protected. The exported inspection is compact: the full
 source-free call graph stays local rather than being included in portal upload
-evidence. For a large but complete structural graph, the SDK sends bounded
-digest-checked batches to the assigned sidecar; the private Core reconnects
-cross-batch call paths before producing one signed plan. Source text is not
-uploaded. A plan remains a static proposal, not proof that a customer action
-is intercepted.
+evidence. For a large but complete structural graph, the SDK analyzes bounded
+parts sequentially through the assigned sidecar. Completed parts are cached
+locally and reused on retry, so a later failure does not restart the entire
+analysis. Each part receives tenant-bound private analysis; the SDK merges the
+results and inventories resolvable calls between parts. This does not prove
+cross-part guard coverage, and the portal requires a documented review of
+those paths and workload-specific tests before marking a split workload ready.
+Source text is not uploaded. A plan remains a static proposal, not proof that
+a customer action is intercepted. A single source file over 2 MB or a scope
+that exceeds the collection limits remains an explicit gap; do not exclude a
+required agent path merely to pass onboarding.
 
 `agenticdome init` creates `.agenticdome/config.json` and
 `.agenticdome/inspection.json`. The scanner:

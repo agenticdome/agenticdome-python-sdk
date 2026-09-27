@@ -66,6 +66,164 @@ def test_chunked_copilot_transport_binds_every_batch_to_one_ir(monkeypatch):
     assert [item[2]["functions"][0]["symbol"] for item in seen[1:3]] == ["entry", "sink"]
 
 
+def test_copilot_analyzes_every_deployable_workload_separately(tmp_path, monkeypatch):
+    package = tmp_path / "sdk"
+    package.mkdir()
+    (package / "pyproject.toml").write_text("[build-system]\n", encoding="utf-8")
+    ir = {
+        "schema": "agenticdome.copilot-ir.v1", "source_upload": False,
+        "engines": {"python": {"available": True, "files_parsed": 2}},
+        "functions": [
+            {"path": "app.py", "symbol": "root", "line": 1, "events": []},
+            {"path": "sdk/client.py", "symbol": "client", "line": 1, "events": []},
+        ],
+        "coverage": {"complete": True, "candidate_source_files": 2},
+        "scope": {"complete": True, "selected_root": "project"},
+    }
+    seen = []
+
+    def post(api_base, api_key, tenant_id, path, body, **kwargs):
+        request = json.loads(body)
+        seen.append(request["ir"])
+        assert len(body) < 4_500_000
+        return {
+            "schema": "agenticdome.copilot-plan.v1", "tenant_id": tenant_id,
+            "catalog_binding": {"schema": "test"},
+            "semantic_analysis": {
+                "schema": "agenticdome.semantic-analysis.v2",
+                "analysis_revision": onboarding_cli.COPILOT_ANALYSIS_REVISION,
+                "ir_sha256": onboarding_cli._ir_sha256(request["ir"]),
+                "confidence": "high", "symbols_indexed": 1, "call_edges": 0,
+                "protected_sinks": 0, "events_analyzed": 0,
+                "attachment_points": [], "bypass_risks": [], "review_findings": [],
+                "execution_paths": [], "coverage": {}, "limitations": [],
+            },
+        }
+
+    monkeypatch.setenv("AGENTICDOME_API_BASE", "https://sidecar.example")
+    monkeypatch.setenv("AGENTICDOME_COPILOT_API_KEY", "test-key")
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
+    monkeypatch.setattr(onboarding_cli, "_post_copilot", post)
+    monkeypatch.setattr(onboarding_cli, "_copilot_catalog_binding_matches_sdk", lambda binding: True)
+    semantic = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    assert [part["functions"][0]["path"] for part in seen] == ["app.py", "sdk/client.py"]
+    assert semantic["ir_sha256"] == onboarding_cli._ir_sha256(ir)
+    assert semantic["workload_coverage"]["selected_parts"] == 2
+    assert semantic["workload_coverage"]["analyzed_parts"] == 2
+    assert semantic["workload_coverage"]["cross_part_flow_proven"] is False
+    assert semantic["confidence"] == "partial"
+
+
+def test_copilot_rejects_oversized_function_before_any_request(tmp_path, monkeypatch):
+    ir = {
+        "schema": "agenticdome.copilot-ir.v1", "source_upload": False,
+        "functions": [{"path": "app.py", "symbol": "large", "events": [{}] * 2049}],
+    }
+    monkeypatch.setenv("AGENTICDOME_API_BASE", "https://sidecar.example")
+    monkeypatch.setenv("AGENTICDOME_COPILOT_API_KEY", "test-key")
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
+    monkeypatch.setattr(onboarding_cli, "_post_copilot", lambda *args, **kwargs: pytest.fail("must not call sidecar"))
+    with pytest.raises(SystemExit, match="2048-event analysis boundary"):
+        REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+
+
+def test_init_remains_local_when_private_copilot_is_unavailable(tmp_path, monkeypatch):
+    (tmp_path / "app.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTICDOME_API_BASE", "https://unavailable.example")
+    monkeypatch.setenv("AGENTICDOME_COPILOT_API_KEY", "test-key")
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
+    monkeypatch.setattr(onboarding_cli, "_post_copilot", lambda *args, **kwargs: pytest.fail("init must stay local"))
+    config = init_project(tmp_path, argparse.Namespace(framework=[], business_purpose="test", sensitive_tool=[], deployment="managed", region="auto"))
+    assert config["schema"] == CONFIG_SCHEMA
+    assert onboarding_cli._read_workload_id(tmp_path) == config["workload_id"]
+    assert inspect_repository(tmp_path)["project"]["workload_id"] == config["workload_id"]
+
+
+def test_existing_project_keeps_config_and_gets_stable_workload_identity(tmp_path):
+    (tmp_path / "app.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    config_dir = tmp_path / ".agenticdome"
+    config_dir.mkdir()
+    original = '{"schema":"agenticdome.project-config.v1","frameworks":["custom-python"]}'
+    (config_dir / "config.json").write_text(original, encoding="utf-8")
+    args = argparse.Namespace(framework=[], business_purpose="", sensitive_tool=[], deployment="managed", region="auto")
+    init_project(tmp_path, args)
+    first = onboarding_cli._read_workload_id(tmp_path)
+    init_project(tmp_path, args)
+    assert onboarding_cli._read_workload_id(tmp_path) == first
+    assert inspect_repository(tmp_path)["project"]["workload_id"] == first
+    assert (config_dir / "config.json").read_text(encoding="utf-8") == original
+
+
+def test_cross_part_inventory_identifies_a_resolvable_call_without_claiming_proof():
+    caller = {"path": "app.py", "symbol": "run", "line": 1,
+              "events": [{"event": "call", "callee": "execute", "line": 3}]}
+    target = {"path": "sdk/client.py", "symbol": "execute", "line": 8, "events": []}
+    ir = {"schema": "agenticdome.copilot-ir.v1", "functions": [caller, target]}
+    parts = [("app#0", {"functions": [caller]}), ("sdk#0", {"functions": [target]})]
+    result = {"ir_sha256": "part", "attachment_points": [], "bypass_risks": [],
+              "review_findings": [], "execution_paths": [], "coverage": {}, "limitations": []}
+    semantic = onboarding_cli._merge_copilot_parts(ir, [("app#0", result), ("sdk#0", result)], parts)
+    assert semantic["workload_coverage"]["cross_part_edges"]["observed_count"] == 1
+    assert semantic["workload_coverage"]["cross_part_flow_proven"] is False
+    assert semantic["workload_coverage"]["cross_part_review_required"] is True
+
+
+def test_copilot_marks_capped_finding_lists_as_not_fully_visible():
+    ir = {"schema": "agenticdome.copilot-ir.v1", "source_upload": False, "functions": []}
+    result = {
+        "ir_sha256": "part-digest", "attachment_points": [{}] * 100,
+        "bypass_risks": [], "review_findings": [], "execution_paths": [],
+        "limitations": [], "symbols_indexed": 0,
+    }
+    semantic = onboarding_cli._merge_copilot_parts(ir, [(".#0", result)])
+    assert semantic["workload_coverage"]["result_lists_at_cap"] == ["attachment_points"]
+    assert any("additional findings may exist" in item for item in semantic["limitations"])
+
+
+def test_copilot_resumes_successful_parts_after_a_later_failure(tmp_path, monkeypatch):
+    package = tmp_path / "sdk"
+    package.mkdir()
+    (package / "pyproject.toml").write_text("[build-system]\n", encoding="utf-8")
+    ir = {
+        "schema": "agenticdome.copilot-ir.v1", "source_upload": False,
+        "functions": [
+            {"path": "app.py", "symbol": "root", "events": []},
+            {"path": "sdk/client.py", "symbol": "client", "events": []},
+        ],
+    }
+    monkeypatch.setenv("AGENTICDOME_API_BASE", "https://sidecar.example")
+    monkeypatch.setenv("AGENTICDOME_COPILOT_API_KEY", "test-key")
+    monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
+    monkeypatch.setattr(onboarding_cli, "_copilot_catalog_binding_matches_sdk", lambda binding: True)
+    calls = []
+    fail_second = True
+
+    def post(api_base, api_key, tenant_id, path, body, **kwargs):
+        nonlocal fail_second
+        part = json.loads(body)["ir"]
+        calls.append(part["functions"][0]["path"])
+        if calls[-1] == "sdk/client.py" and fail_second:
+            fail_second = False
+            raise SystemExit("temporary Core failure")
+        return {
+            "schema": "agenticdome.copilot-plan.v1", "tenant_id": tenant_id,
+            "catalog_binding": {"schema": "test"},
+            "semantic_analysis": {
+                "ir_sha256": onboarding_cli._ir_sha256(part),
+                "analysis_revision": onboarding_cli.COPILOT_ANALYSIS_REVISION,
+                "attachment_points": [], "bypass_risks": [], "review_findings": [],
+                "execution_paths": [], "coverage": {}, "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(onboarding_cli, "_post_copilot", post)
+    with pytest.raises(SystemExit, match="temporary Core failure"):
+        REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    assert not (tmp_path / ".agenticdome" / "copilot-analysis.json").exists()
+    REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    assert calls == ["app.py", "sdk/client.py", "sdk/client.py"]
+
+
 def test_incomplete_scope_cannot_be_presented_as_a_placement_plan(tmp_path, monkeypatch):
     (tmp_path / "a.py").write_text("def a():\n    pass\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    pass\n", encoding="utf-8")
@@ -85,6 +243,17 @@ def test_oversized_source_is_visible_as_a_scope_gap(tmp_path, monkeypatch):
     assert report["scope"]["complete"] is False
     assert report["scope"]["unexamined_source_counts"]["oversized_source_files"] == 1
     assert all(function["path"] != "large.py" for function in report["copilot_ir"]["functions"])
+    with pytest.raises(SystemExit, match="Split or isolate the required agent code"):
+        integration_plan(tmp_path)
+
+
+def test_unparsed_source_is_a_scope_gap_not_a_protected_path(tmp_path):
+    (tmp_path / "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+    report = inspect_repository(tmp_path, remote_analysis=False)
+    assert report["scope"]["complete"] is False
+    assert report["copilot_ir"]["coverage"]["limit_reason"] == "parse_or_read_error"
+    with pytest.raises(SystemExit, match="could not be parsed"):
+        integration_plan(tmp_path)
 
 
 def _private_analysis(*, points=None, bypasses=None, reviews=None, confidence="high"):
@@ -317,24 +486,34 @@ def test_device_connect_sets_policy_only_for_new_workloads(tmp_path, monkeypatch
         "runtime": {"api_base": "https://runtime.example", "region": "au", "execution_broker": {"sdk_mode": "policy", "status": "pending_runtime_readiness"}},
         "copilot": {"api_key": "test-copilot-only"},
     }
+    metadata_requests = []
     def request(url, data, *args, **kwargs):
         if url.endswith("/device"):
             return {"verification_uri_complete": "https://portal.example/device", "user_code": "TEST", "device_code": "test", "expires_in": 600}
         if url.endswith("/token"):
             return session
-        if url.endswith("/analyze"):
-            digest = hashlib.sha256(json.dumps(data["ir"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            return {"schema": "agenticdome.copilot-plan.v1", "tenant_id": "2", "semantic_analysis": {"ir_sha256": digest}}
+        if url.endswith("/metadata"):
+            metadata_requests.append(data)
         return {}
     monkeypatch.setattr(connect, "_request", request)
     monkeypatch.setattr(connect.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(connect, "_approve_metadata", lambda *args: None)
     monkeypatch.setattr(connect, "ensure_attestation_key", lambda directory: ("test-private", "test-public"))
+    monkeypatch.setattr(onboarding_cli, "_copilot_semantic_analysis", lambda root, ir, required: {
+        "ir_sha256": onboarding_cli._ir_sha256(ir), "attachment_points": [], "bypass_risks": [],
+        "workload_coverage": {"selected_parts": 2, "analyzed_parts": 2, "cross_part_flow_proven": False},
+    })
+    monkeypatch.setattr(onboarding_cli, "_active_copilot_catalog_binding", lambda root: {"schema": "test"})
     monkeypatch.setattr(onboarding_cli, "create_scaffold", lambda root: root / ".agenticdome/scaffold/agenticdome.patch")
     result = connect.run_connect(root, argparse.Namespace(portal="https://portal.example", no_browser=True, yes=True, workload_name="test", environment="test", open_pr=False))
     assert json.loads((state / "config.json").read_text())["execution_broker_mode"] == (existing_mode or "policy")
     assert result["execution_broker"]["sdk_mode"] == (existing_mode or "policy")
     assert result["execution_broker"]["status"] == "pending_runtime_readiness"
+    assert result["cross_part_review_required"] is True
+    assert "cross-part call paths" in result["next_action"]
+    assert metadata_requests[0]["ir"]["metadata_kind"] == "bounded_workload_summary"
+    assert metadata_requests[0]["ir"]["functions"] == []
+    assert metadata_requests[0]["signed_plan"]["aggregation"]["signature_scope"] == "individual_sidecar_parts_only"
     if original:
         assert (state / "config.json").read_text() == original
 
@@ -843,10 +1022,11 @@ def test_openclaw_protect_records_exact_runtime_hooks_without_source_changes(tmp
 
 def test_openclaw_verify_requires_exact_hooks_and_live_decisions(tmp_path, monkeypatch):
     monkeypatch.setattr(onboarding_cli, "_openclaw_runtime_inspection", lambda _root: _openclaw_protection())
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda _root: {"mcp_protection": {"detected": False}})
     monkeypatch.setattr(
         onboarding_cli,
         "verify_project",
-        lambda _root, live, run_tests: (0, {
+        lambda _root, live, run_tests, plan: (0, {
             "schema": "agenticdome.verification-result.v1",
             "source_upload": False,
             "decision_cases": [
@@ -868,3 +1048,49 @@ def test_openclaw_verify_requires_exact_hooks_and_live_decisions(tmp_path, monke
     assert result["openclaw_verification"]["exact_hook_contract"] is True
     assert result["openclaw_verification"]["live_tenant_decisions"] is True
     assert result["openclaw_verification"]["telemetry_confirmation"] == "control_plane_certificate_required"
+
+
+def test_openclaw_verify_includes_mcp_proof_when_same_workload_uses_mcp(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboarding_cli, "_openclaw_runtime_inspection", lambda _root: _openclaw_protection())
+    plan = {"mcp_protection": {"detected": True}}
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda _root: plan)
+    calls = []
+
+    def mcp_verify(_root, *, live, run_tests, plan):
+        calls.append((live, run_tests, plan))
+        return 0, {
+            "decision_cases": [{"case": "allowed", "passed": True}, {"case": "blocked", "passed": True}],
+            "mcp_verification": {"schema": "agenticdome.mcp-verification.v1", "ready": True},
+            "ready": True,
+            "report_sha256": "0" * 64,
+        }
+
+    monkeypatch.setattr(onboarding_cli, "verify_mcp_project", mcp_verify)
+    exit_code, result = verify_openclaw_project(tmp_path)
+
+    assert exit_code == 0
+    assert calls == [(True, True, plan)]
+    assert result["mcp_verification"]["ready"] is True
+    assert result["openclaw_verification"]["ready"] is True
+
+
+def test_openclaw_verify_does_not_pass_when_combined_mcp_proof_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboarding_cli, "_openclaw_runtime_inspection", lambda _root: _openclaw_protection())
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda _root: {"mcp_protection": {"detected": True}})
+    monkeypatch.setattr(
+        onboarding_cli,
+        "verify_mcp_project",
+        lambda _root, *, live, run_tests, plan: (2, {
+            "decision_cases": [{"case": "allowed", "passed": True}, {"case": "blocked", "passed": True}],
+            "mcp_verification": {"schema": "agenticdome.mcp-verification.v1", "ready": False},
+            "ready": False,
+            "report_sha256": "0" * 64,
+        }),
+    )
+
+    exit_code, result = verify_openclaw_project(tmp_path)
+
+    assert exit_code == 2
+    assert result["ready"] is False
+    assert result["mcp_verification"]["ready"] is False
+    assert result["openclaw_verification"]["ready"] is True

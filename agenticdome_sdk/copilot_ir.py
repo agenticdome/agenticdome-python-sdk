@@ -350,11 +350,13 @@ def _collect_typescript(root: Path, paths: Sequence[Path]) -> Tuple[List[Dict[st
 def _typescript_fallback(root: Path, paths: Sequence[Path], reason: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     functions: List[Dict[str, Any]] = []
     parsed = 0
+    read_errors = 0
     call_pattern = re.compile(r"\b([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(")
     for path in paths:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
+            read_errors += 1
             continue
         events = []
         for line_number, line in enumerate(lines, start=1):
@@ -368,7 +370,7 @@ def _typescript_fallback(root: Path, paths: Sequence[Path], reason: str) -> Tupl
         "engine": "typescript-structural-fallback",
         "available": False,
         "files_parsed": parsed,
-        "parse_errors": 0,
+        "parse_errors": read_errors,
         "reason": reason,
         "claim": "Generic structural collection only; install TypeScript for compiler AST evidence",
     }
@@ -382,7 +384,10 @@ def collect_repository_ir(root: Path, paths: Sequence[Path]) -> Dict[str, Any]:
     python_functions, python_engine = _collect_python(root, python_paths)
     typescript_functions, typescript_engine = _collect_typescript(root, typescript_paths)
     functions = python_functions + typescript_functions
-    complete = len(paths) <= MAX_IR_FILES and len(functions) <= MAX_IR_FUNCTIONS
+    collection_errors = int(python_engine.get("parse_errors", 0)) + int(typescript_engine.get("parse_errors", 0))
+    files_parsed = int(python_engine.get("files_parsed", 0)) + int(typescript_engine.get("files_parsed", 0))
+    complete = (len(paths) <= MAX_IR_FILES and len(functions) <= MAX_IR_FUNCTIONS
+                and collection_errors == 0 and files_parsed == len(paths))
     return {
         "schema": IR_SCHEMA,
         "source_upload": False,
@@ -394,7 +399,8 @@ def collect_repository_ir(root: Path, paths: Sequence[Path]) -> Dict[str, Any]:
             "files_selected": len(selected),
             "symbols_found": len(functions),
             "complete": complete,
-            "limit_reason": "file_limit" if len(paths) > MAX_IR_FILES else "symbol_limit" if len(functions) > MAX_IR_FUNCTIONS else None,
+            "limit_reason": "file_limit" if len(paths) > MAX_IR_FILES else "symbol_limit" if len(functions) > MAX_IR_FUNCTIONS
+                else "parse_or_read_error" if collection_errors or files_parsed != len(paths) else None,
         },
         "privacy": {
             "source_text": False,

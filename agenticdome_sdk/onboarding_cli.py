@@ -16,9 +16,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -38,14 +40,21 @@ from .copilot_ir import collect_repository_ir
 SCHEMA = "agenticdome.onboarding-report.v1"
 CONFIG_SCHEMA = "agenticdome.project-config.v1"
 COPILOT_ANALYSIS_REVISION = 4
+COPILOT_MAX_WORKLOAD_BYTES = 4_000_000
+COPILOT_MAX_WORKLOAD_PARTS = 24
+COPILOT_MAX_EVENTS_PER_FUNCTION = 2_048
+COPILOT_MAX_EVENTS_PER_PART = 100_000
 MAX_FILES = 5_000
-MAX_TEXT_BYTES = 512_000
+# Parse one source file at a time. Large generated files still fail with an
+# explicit scope gap rather than being silently counted as protected.
+MAX_TEXT_BYTES = 2_000_000
 IGNORED_DIRECTORIES = {
     ".git", ".hg", ".svn", ".idea", ".vscode", ".tox", ".venv", "venv",
     "node_modules", "dist", "build", "coverage", "__pycache__", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".next", ".agenticdome", ".harness_runtime",
     ".harness_runtime_ts", ".nuxt", ".turbo", ".cache", ".yarn",
-    ".pnpm-store", "target", "tests", "test", "__tests__", "spec",
+    ".pnpm-store", ".nvm", ".npm", ".cargo", ".rustup",
+    "target", "tests", "test", "__tests__", "spec",
 }
 TEXT_SUFFIXES = {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".txt", ".yaml", ".yml"}
 SENSITIVE_FILE_PATTERN = re.compile(
@@ -229,19 +238,28 @@ def _post_copilot(api_base: str, api_key: str, tenant_id: str, path: str, body: 
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
     request = urllib.request.Request(api_base + path, data=body, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - tenant sidecar URL is explicit configuration
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    for attempt in range(3):
         try:
-            payload = json.loads(exc.read().decode("utf-8"))
-            detail = str(payload.get("detail") or "")[:240] if isinstance(payload, dict) else ""
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            pass
-        raise SystemExit(f"Integration Copilot sidecar request failed ({exc.code}): {detail or exc.reason}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Integration Copilot sidecar request failed safely: {exc}") from exc
+            with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - tenant sidecar URL is explicit configuration
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 2:
+                try:
+                    retry_after = max(1, min(int(exc.headers.get("Retry-After", "2")), 65))
+                except (ValueError, TypeError):
+                    retry_after = 2
+                time.sleep(retry_after)
+                continue
+            detail = ""
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+                detail = str(payload.get("detail") or "")[:240] if isinstance(payload, dict) else ""
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            raise SystemExit(f"Integration Copilot sidecar request failed ({exc.code}): {detail or exc.reason}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"Integration Copilot sidecar request failed safely: {exc}") from exc
     if not isinstance(result, dict):
         raise SystemExit("Integration Copilot returned an invalid JSON response.")
     return result
@@ -332,6 +350,200 @@ def _copilot_catalog_binding_matches_sdk(binding: Any) -> bool:
     )
 
 
+def _copilot_workload_parts(root: Path, ir: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    """Partition structural metadata by the nearest deployable package.
+
+    This is a transport/analysis boundary, not a claim that calls between
+    packages have been proven safe. Every collected function is assigned once.
+    No source contents are sent or used to decide the grouping.
+    """
+    markers = ("pyproject.toml", "package.json", "requirements.txt", "setup.py", "setup.cfg", "Dockerfile")
+    grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    package_cache: Dict[str, str] = {}
+    functions = ir.get("functions", [])
+    if not isinstance(functions, list):
+        raise SystemExit("The local Copilot collector did not return a function inventory.")
+    for function in functions:
+        if not isinstance(function, dict):
+            raise SystemExit("The local Copilot collector returned an invalid function entry.")
+        relative = Path(str(function.get("path") or ""))
+        if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+            raise SystemExit("The local Copilot collector returned a non-relative source path.")
+        events = function.get("events", [])
+        if not isinstance(events, list) or len(events) > COPILOT_MAX_EVENTS_PER_FUNCTION:
+            raise SystemExit(
+                f"{relative} contains a function above the {COPILOT_MAX_EVENTS_PER_FUNCTION}-event "
+                "analysis boundary. Split that function or select a narrower deployable workload."
+            )
+        directory = relative.parent.as_posix()
+        key = package_cache.get(directory)
+        if key is None:
+            package = Path(".")
+            for parent in relative.parents:
+                if parent == Path("."):
+                    break
+                if any((root / parent / marker).is_file() for marker in markers):
+                    package = parent
+                    break
+            key = package.as_posix()
+            package_cache[directory] = key
+        grouped.setdefault(key, {}).setdefault(relative.as_posix(), []).append(function)
+
+    parts: List[Tuple[str, Dict[str, Any]]] = []
+    for package, files in sorted(grouped.items()):
+        batch: List[Dict[str, Any]] = []
+        byte_count = 0
+        event_count = 0
+        ordinal = 0
+        for filename, file_functions in sorted(files.items()):
+            file_bytes = sum(len(json.dumps(item, sort_keys=True, separators=(",", ":")).encode("utf-8")) + 1 for item in file_functions)
+            file_events = sum(len(item.get("events", [])) for item in file_functions)
+            if file_bytes > COPILOT_MAX_WORKLOAD_BYTES or file_events > COPILOT_MAX_EVENTS_PER_PART:
+                raise SystemExit(
+                    f"{filename} alone exceeds the bounded Copilot analysis unit. "
+                    "Select a smaller package or split this source file; no coverage has been claimed."
+                )
+            if batch and (byte_count + file_bytes > COPILOT_MAX_WORKLOAD_BYTES or event_count + file_events > COPILOT_MAX_EVENTS_PER_PART):
+                parts.append((f"{package}#{ordinal}", _copilot_part_ir(ir, batch)))
+                ordinal += 1
+                batch, byte_count, event_count = [], 0, 0
+            batch.extend(file_functions)
+            byte_count += file_bytes
+            event_count += file_events
+        if batch:
+            parts.append((f"{package}#{ordinal}", _copilot_part_ir(ir, batch)))
+    if not parts:
+        return [(".#0", ir)]
+    if len(parts) > COPILOT_MAX_WORKLOAD_PARTS:
+        raise SystemExit(
+            f"The selection contains {len(parts)} bounded Copilot analysis units "
+            f"(limit {COPILOT_MAX_WORKLOAD_PARTS}). Select a deployable application or package; "
+            "the tool will not silently omit the remaining units."
+        )
+    if sum(len(part["functions"]) for _, part in parts) != len(functions):
+        raise SystemExit("Copilot workload coverage did not account for every collected function.")
+    return parts
+
+
+def _copilot_part_ir(ir: Dict[str, Any], functions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    part = {key: value for key, value in ir.items() if key not in {"functions", "coverage"}}
+    part["functions"] = functions
+    paths = {str(function.get("path") or "") for function in functions}
+    part["coverage"] = {
+        "candidate_source_files": len(paths), "files_selected": len(paths),
+        "symbols_found": len(functions), "complete": True, "limit_reason": None,
+    }
+    return part
+
+
+def _merge_copilot_parts(
+    ir: Dict[str, Any], results: List[Tuple[str, Dict[str, Any]]],
+    parts: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    result_caps = {"attachment_points": 100, "bypass_risks": 60, "review_findings": 100, "execution_paths": 40}
+    at_cap = sorted({field for _, result in results for field, cap in result_caps.items() if len(result.get(field, [])) >= cap})
+    if len(results) == 1:
+        semantic = dict(results[0][1])
+        semantic["ir_sha256"] = _ir_sha256(ir)
+        if at_cap:
+            semantic["limitations"] = list(semantic.get("limitations", [])) + [
+                "One or more result lists reached the per-workload display cap; additional findings may exist."
+            ]
+        semantic["workload_coverage"] = {
+            "complete": True, "selected_parts": 1, "analyzed_parts": 1,
+            "cross_part_flow_proven": True,
+            "result_lists_at_cap": at_cap,
+            "parts": [{"name": results[0][0], "symbols": semantic.get("symbols_indexed", 0)}],
+        }
+        return semantic
+    first = results[0][1]
+    merged = dict(first)
+    for field in ("attachment_points", "bypass_risks", "review_findings", "execution_paths"):
+        merged[field] = [item for _, result in results for item in result.get(field, [])]
+    for field in ("symbols_indexed", "call_edges", "protected_sinks", "events_analyzed"):
+        merged[field] = sum(int(result.get(field, 0) or 0) for _, result in results)
+    coverage: Dict[str, Dict[str, Any]] = {}
+    for _, result in results:
+        for boundary, values in result.get("coverage", {}).items():
+            if not isinstance(values, dict):
+                continue
+            totals = coverage.setdefault(boundary, {})
+            for key, value in values.items():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    totals[key] = totals.get(key, 0) + value
+    merged["coverage"] = coverage
+    merged["scope"] = ir.get("scope", {})
+    merged["ir_sha256"] = _ir_sha256(ir)
+    merged["analysis_mode"] = "private_bounded_workload_flow"
+    merged["confidence"] = "partial"
+    merged["workload_coverage"] = {
+        "complete": True, "selected_parts": len(results), "analyzed_parts": len(results),
+        "cross_part_flow_proven": False,
+        "cross_part_review_required": True,
+        "cross_part_edges": _cross_part_edges(ir, parts or []),
+        "result_lists_at_cap": at_cap,
+        "parts": [{"name": name, "symbols": result.get("symbols_indexed", 0), "ir_sha256": result.get("ir_sha256")} for name, result in results],
+    }
+    merged["limitations"] = list(dict.fromkeys(
+        [item for _, result in results for item in result.get("limitations", [])]
+        + ["All selected parts were analyzed separately. Cross-part call flow and guard dominance are not proven; review integration boundaries before claiming production readiness."]
+        + (["One or more result lists reached a per-workload display cap; additional findings may exist."] if at_cap else [])
+    ))
+    return merged
+
+
+def _cross_part_edges(ir: Dict[str, Any], parts: List[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """Inventory resolvable inter-part calls for human review, not proof of safety.
+
+    Qualified or unambiguous local names are linked using the same conservative
+    shape as Core. Dynamic calls and external dependencies are not certified.
+    """
+    functions = ir.get("functions", [])
+    if not isinstance(functions, list):
+        return {"observed_count": 0, "display_capped": False, "examples": []}
+    owners: Dict[str, str] = {}
+    for name, part in parts:
+        for function in part.get("functions", []):
+            owners[str(function.get("path") or "") + "\0" + str(function.get("symbol") or "")] = name
+    by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    by_tail: Dict[str, List[Dict[str, Any]]] = {}
+    for function in functions:
+        symbol = str(function.get("symbol") or "").lower()
+        by_symbol.setdefault(symbol, []).append(function)
+        by_tail.setdefault(symbol.rsplit(".", 1)[-1], []).append(function)
+    examples: List[Dict[str, Any]] = []
+    observed = 0
+    for caller in functions:
+        caller_symbol = str(caller.get("symbol") or "")
+        caller_part = owners.get(str(caller.get("path") or "") + "\0" + caller_symbol)
+        for event in caller.get("events", []):
+            if not isinstance(event, dict) or event.get("event") != "call":
+                continue
+            callee = str(event.get("callee") or "").lower()
+            targets = by_symbol.get(callee, [])
+            if not targets and (callee.startswith("self.") or callee.startswith("cls.")):
+                resolved = caller_symbol.lower().rsplit(".", 1)[0] + "." + callee.rsplit(".", 1)[-1]
+                targets = by_symbol.get(resolved, [])
+            if not targets and "." not in callee:
+                tail = by_tail.get(callee, [])
+                targets = tail if len(tail) == 1 else []
+            if len(targets) != 1:
+                continue
+            target = targets[0]
+            target_part = owners.get(str(target.get("path") or "") + "\0" + str(target.get("symbol") or ""))
+            if not caller_part or not target_part or caller_part == target_part:
+                continue
+            observed += 1
+            if len(examples) < 40:
+                examples.append({
+                    "from_part": caller_part, "from_path": str(caller.get("path") or ""),
+                    "from_symbol": caller_symbol[:240], "line": int(event.get("line") or caller.get("line") or 1),
+                    "to_part": target_part, "to_path": str(target.get("path") or ""),
+                    "to_symbol": str(target.get("symbol") or "")[:240],
+                })
+    return {"observed_count": observed, "display_capped": observed > len(examples), "examples": examples}
+
+
 def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool) -> Dict[str, Any]:
     ir_digest = _ir_sha256(ir)
     api_base = os.getenv("AGENTICDOME_API_BASE", "").strip().rstrip("/")
@@ -363,45 +575,87 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
         ):
             return semantic
 
-    body = json.dumps({
-        "schema": "agenticdome.copilot-request.v1",
-        "ir": ir,
-        "catalog_binding": {
-            "schema": CATALOG_SCHEMA,
-            "catalog_digest": expected_catalog_digest,
-            "verified_at": CATALOG_VERIFIED_AT,
-        },
-    }, separators=(",", ":")).encode("utf-8")
-    idempotency_key = hashlib.sha256(
-        f"{tenant_id}\n{api_base}\n{ir_digest}\n{expected_catalog_digest}".encode("utf-8")
-    ).hexdigest()
-    result = (
-        _chunked_copilot_request(api_base, api_key, tenant_id, ir, ir_digest, idempotency_key)
-        if len(body) > 8_000_000 else
-        _post_copilot(api_base, api_key, tenant_id, "/integration-copilot/v1/analyze", body, idempotency_key=idempotency_key)
-    )
-
-    if not isinstance(result, dict) or result.get("schema") != "agenticdome.copilot-plan.v1":
-        raise SystemExit("Integration Copilot returned an unsupported response contract.")
-    if str(result.get("tenant_id") or "") != tenant_id:
-        raise SystemExit("Integration Copilot tenant binding did not match the requested tenant.")
-    semantic = result.get("semantic_analysis")
-    if not isinstance(semantic, dict) or semantic.get("ir_sha256") != ir_digest:
-        raise SystemExit("Integration Copilot response is not bound to the submitted structural IR.")
-    if semantic.get("analysis_revision") != COPILOT_ANALYSIS_REVISION:
-        raise SystemExit(
-            "Integration Copilot Core is older than this SDK's required analysis revision. "
-            "Update the assigned control plane and sidecar, then rerun the Copilot."
-        )
-    response_binding = result.get("catalog_binding")
+    parts = _copilot_workload_parts(root, ir)
+    part_cache_path = _agenticdome_dir(root) / "copilot-parts.json"
+    part_cache: Dict[str, Any] = {}
+    if part_cache_path.exists():
+        try:
+            part_cache = _load_json(part_cache_path)
+        except SystemExit:
+            part_cache = {}
     if (
-        not _copilot_catalog_binding_matches_sdk(response_binding)
+        part_cache.get("schema") != "agenticdome.copilot-part-cache.v1"
+        or part_cache.get("tenant_id") != tenant_id
+        or part_cache.get("api_base") != api_base
+        or part_cache.get("catalog_digest") != expected_catalog_digest
+        or part_cache.get("selected_ir_sha256") != ir_digest
+        or not isinstance(part_cache.get("parts"), dict)
     ):
-        raise SystemExit(
-            "Integration Copilot's signed hook catalog does not match this installed SDK. "
-            "Upgrade the SDK; if it is already current, ask the control-plane administrator "
-            "to refresh the assigned sidecar's signed catalog, then rerun the Copilot."
-        )
+        part_cache = {
+            "schema": "agenticdome.copilot-part-cache.v1", "tenant_id": tenant_id,
+            "api_base": api_base, "catalog_digest": expected_catalog_digest,
+            "selected_ir_sha256": ir_digest, "parts": {},
+        }
+    analyzed: List[Tuple[str, Dict[str, Any]]] = []
+    response_binding: Dict[str, Any] = {}
+    for ordinal, (name, part) in enumerate(parts, start=1):
+        part_digest = _ir_sha256(part)
+        cached_part = part_cache.get("parts", {}).get(part_digest)
+        if isinstance(cached_part, dict):
+            cached_semantic = cached_part.get("semantic_analysis")
+            cached_binding = cached_part.get("catalog_binding")
+            if (
+                isinstance(cached_semantic, dict)
+                and cached_semantic.get("ir_sha256") == part_digest
+                and cached_semantic.get("analysis_revision") == COPILOT_ANALYSIS_REVISION
+                and _copilot_catalog_binding_matches_sdk(cached_binding)
+            ):
+                print(f"Integration Copilot: part {ordinal}/{len(parts)} already analyzed; resuming.", file=sys.stderr)
+                analyzed.append((name, cached_semantic))
+                response_binding = cached_binding
+                continue
+        print(f"Integration Copilot: analyzing part {ordinal}/{len(parts)}; completed parts are saved locally.", file=sys.stderr)
+        body = json.dumps({
+            "schema": "agenticdome.copilot-request.v1", "ir": part,
+            "catalog_binding": {
+                "schema": CATALOG_SCHEMA, "catalog_digest": expected_catalog_digest,
+                "verified_at": CATALOG_VERIFIED_AT,
+            },
+        }, separators=(",", ":")).encode("utf-8")
+        if len(body) > 4_500_000:
+            raise SystemExit(f"Bounded Copilot unit {name} exceeds its transport budget; no partial plan was saved.")
+        idempotency_key = hashlib.sha256(
+            f"{tenant_id}\n{api_base}\n{part_digest}\n{expected_catalog_digest}".encode("utf-8")
+        ).hexdigest()
+        try:
+            result = _post_copilot(api_base, api_key, tenant_id, "/integration-copilot/v1/analyze", body, idempotency_key=idempotency_key)
+        except SystemExit as exc:
+            raise SystemExit(
+                f"Integration Copilot stopped at part {ordinal}/{len(parts)}. "
+                f"The first {len(analyzed)} completed part(s) are saved for retry. {exc}"
+            ) from exc
+        if not isinstance(result, dict) or result.get("schema") != "agenticdome.copilot-plan.v1":
+            raise SystemExit("Integration Copilot returned an unsupported response contract.")
+        if str(result.get("tenant_id") or "") != tenant_id:
+            raise SystemExit("Integration Copilot tenant binding did not match the requested tenant.")
+        part_semantic = result.get("semantic_analysis")
+        if not isinstance(part_semantic, dict) or part_semantic.get("ir_sha256") != part_digest:
+            raise SystemExit("Integration Copilot response is not bound to the submitted workload metadata.")
+        if part_semantic.get("analysis_revision") != COPILOT_ANALYSIS_REVISION:
+            raise SystemExit("Integration Copilot Core is older than this SDK. Update the assigned control plane and sidecar.")
+        response_binding = result.get("catalog_binding")
+        if not _copilot_catalog_binding_matches_sdk(response_binding):
+            raise SystemExit("Integration Copilot's signed hook catalog does not match this installed SDK.")
+        analyzed.append((name, part_semantic))
+        part_cache["parts"][part_digest] = {
+            "semantic_analysis": part_semantic, "catalog_binding": response_binding,
+        }
+        _write_json(part_cache_path, part_cache)
+        # The sidecar allows ten expensive analyses per tenant-minute. Pace
+        # unusually broad selections rather than overwhelming its Core queue.
+        if len(parts) > 10 and len(analyzed) < len(parts):
+            time.sleep(6.1)
+    semantic = _merge_copilot_parts(ir, analyzed, parts)
     _write_json(cached_path, {
         "schema": "agenticdome.copilot-cache.v1",
         "source_upload": False,
@@ -614,7 +868,7 @@ def _detect_mcp_protection(root: Path, paths: Sequence[Path], languages: Sequenc
     }
 
 
-def inspect_repository(root: Path) -> Dict[str, Any]:
+def inspect_repository(root: Path, *, remote_analysis: bool = True) -> Dict[str, Any]:
     root = root.resolve()
     languages = set()
     framework_hits: Dict[str, set[str]] = {key: set() for key in FRAMEWORK_MARKERS}
@@ -699,7 +953,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
     copilot_ir["scope"] = scope
     semantic = (
         _copilot_semantic_analysis(root, copilot_ir, required=False)
-        if scope["complete"] else _pending_semantic_analysis(copilot_ir)
+        if scope["complete"] and remote_analysis else _pending_semantic_analysis(copilot_ir)
     )
     if not scope["complete"]:
         semantic["limitations"].append("The selected workload was not completely collected; narrow the scope before requesting a placement plan.")
@@ -714,7 +968,7 @@ def inspect_repository(root: Path) -> Dict[str, Any]:
         "schema": SCHEMA,
         "generated_by": "agenticdome local CLI",
         "source_upload": False,
-        "project": {"name": root.name, "root_disclosed": False},
+        "project": {"name": root.name, "workload_id": _read_workload_id(root), "root_disclosed": False},
         "languages": sorted(languages),
         "frameworks": detected,
         "scanned_files": scanned_files,
@@ -751,13 +1005,46 @@ def _exportable_inspection(report: Dict[str, Any]) -> Dict[str, Any]:
     return exported
 
 
+def _scope_gap_message(report: Dict[str, Any]) -> str:
+    gaps = report.get("scope", {}).get("unexamined_source_counts", {})
+    if int(gaps.get("oversized_source_files", 0)):
+        return (
+            f"{gaps['oversized_source_files']} source file(s) exceed the {MAX_TEXT_BYTES // 1_000_000} MB per-file analysis limit. "
+            "Split or isolate the required agent code, then rerun. Do not omit an execution path just to pass onboarding."
+        )
+    if int(gaps.get("unreadable_directories", 0)) or int(gaps.get("unreadable_files", 0)):
+        return "Some source paths were unreadable. Fix local permissions and rerun; no source was sent."
+    if report.get("copilot_ir", {}).get("coverage", {}).get("limit_reason") == "parse_or_read_error":
+        return (
+            "One or more source files could not be parsed for structural analysis. "
+            "Fix the local syntax or language tooling and rerun; the uncovered paths are not certified."
+        )
+    if report.get("scan_limit_reached") or report.get("copilot_ir", {}).get("coverage", {}).get("limit_reason"):
+        return (
+            "The selected root exceeded a file or symbol limit. Choose the independently deployable application or package "
+            "that owns the agent path, then rerun. If that complete workload still exceeds the limit, contact support; "
+            "unexamined code must not be reported as protected."
+        )
+    return "The selected workload was not completely inspected. Resolve the local coverage gap before planning or importing."
+
+
 def _agenticdome_dir(root: Path) -> Path:
     return root / ".agenticdome"
 
 
 def _write_json(path: Path, value: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    descriptor, staged = tempfile.mkstemp(prefix=".agenticdome-json-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged, path)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -770,12 +1057,43 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return value
 
 
+def _read_workload_id(root: Path) -> Optional[str]:
+    config_path = _agenticdome_dir(root) / "config.json"
+    identity_path = _agenticdome_dir(root) / "workload.json"
+    for path in (config_path, identity_path):
+        if not path.exists():
+            continue
+        value = _load_json(path).get("workload_id")
+        if value is None:
+            continue
+        try:
+            canonical = str(uuid.UUID(str(value)))
+        except (ValueError, AttributeError) as exc:
+            raise SystemExit(f"{path} contains an invalid workload ID; restore its original value before inspecting.") from exc
+        if str(value) != canonical:
+            raise SystemExit(f"{path} contains a non-canonical workload ID; use the UUID shown when the workload was initialized.")
+        return canonical
+    return None
+
+
+def _ensure_workload_id(root: Path) -> str:
+    existing = _read_workload_id(root)
+    if existing:
+        return existing
+    value = str(uuid.uuid4())
+    _write_json(_agenticdome_dir(root) / "workload.json", {"workload_id": value, "source_upload": False})
+    return value
+
+
 def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
     target = _agenticdome_dir(root) / "config.json"
     # Reassessment must not silently migrate an established integration.
     if target.exists():
+        _ensure_workload_id(root)
         return _load_json(target)
-    report = inspect_repository(root)
+    # Creating local configuration must not depend on sidecar availability.
+    # The explicit inspect/plan steps perform authenticated remote analysis.
+    report = inspect_repository(root, remote_analysis=False)
     detected = [item["key"] for item in report["frameworks"]]
     frameworks = list(dict.fromkeys(args.framework or detected or ["custom-python"]))
     unknown = sorted(set(frameworks) - set(FRAMEWORK_MARKERS))
@@ -783,6 +1101,7 @@ def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
         raise SystemExit("Unsupported framework key(s): " + ", ".join(unknown))
     config = {
         "schema": CONFIG_SCHEMA,
+        "workload_id": str(uuid.uuid4()),
         "frameworks": frameworks,
         "business_purpose": args.business_purpose or "Protect agent prompts, tools, delegation and output",
         "sensitive_tools": list(dict.fromkeys(args.sensitive_tool or [])),
@@ -797,6 +1116,7 @@ def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
         "execution_broker_mode": "policy",
     }
     _write_json(target, config)
+    report["project"]["workload_id"] = config["workload_id"]
     _write_json(_agenticdome_dir(root) / "inspection.json", _exportable_inspection(report))
     return config
 
@@ -991,10 +1311,7 @@ def _hook_plans(
 def integration_plan(root: Path) -> Dict[str, Any]:
     report = inspect_repository(root)
     if report.get("scope", {}).get("complete") is not True:
-        raise SystemExit(
-            "The selected workload exceeds the complete local analysis boundary. "
-            "Choose a narrower application or package root; unexamined code must not be reported as protected."
-        )
+        raise SystemExit(_scope_gap_message(report))
     config_path = _agenticdome_dir(root) / "config.json"
     config = _load_json(config_path) if config_path.exists() else {
         "schema": CONFIG_SCHEMA,
@@ -1070,7 +1387,12 @@ def integration_plan(root: Path) -> Dict[str, Any]:
             "unresolved_bypasses": len(semantic_bypasses),
             "high_severity_bypasses": sum(1 for item in semantic_bypasses if item.get("severity") == "high"),
             "review_required": len(semantic_reviews),
-            "production_ready": not semantic_bypasses and not semantic_reviews and semantic.get("confidence") in {"high", "partial"},
+            "production_ready": not semantic_bypasses and not semantic_reviews and semantic.get("confidence") in {"high", "partial"}
+            and semantic.get("workload_coverage", {}).get("cross_part_flow_proven", True)
+            and not any(item in {"attachment_points", "bypass_risks", "review_findings"}
+                        for item in semantic.get("workload_coverage", {}).get("result_lists_at_cap", [])),
+            "cross_workload_review_required": semantic.get("workload_coverage", {}).get("cross_part_flow_proven") is False,
+            "cross_part_edges_observed": int(semantic.get("workload_coverage", {}).get("cross_part_edges", {}).get("observed_count", 0)),
         },
         "coverage": {"counts": counts, "required": required, "gaps": gaps},
         "recommended_order": [
@@ -1594,13 +1916,14 @@ def protect_mcp(root: Path) -> Dict[str, Any]:
     }
 
 
-def verify_mcp_project(root: Path, *, live: bool = True, run_tests: bool = True) -> Tuple[int, Dict[str, Any]]:
+def verify_mcp_project(root: Path, *, live: bool = True, run_tests: bool = True,
+                       plan: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
     from .mcp_verification import run_mcp_transport_verification
 
+    plan = plan or integration_plan(root)
     transport = run_mcp_transport_verification()
-    exit_code, result = verify_project(root, live=live, run_tests=run_tests)
-    report = inspect_repository(root)
-    topology = report.get("mcp_protection") if isinstance(report.get("mcp_protection"), dict) else {}
+    exit_code, result = verify_project(root, live=live, run_tests=run_tests, plan=plan)
+    topology = plan.get("mcp_protection") if isinstance(plan.get("mcp_protection"), dict) else {}
     known_transport = topology.get("detected") is True and "unknown_dynamic" not in topology.get("transports", [])
     # Raw forwarding locations are candidates until the signed semantic plan
     # proves whether the protected wrapper dominates them. The production gate
@@ -1772,9 +2095,15 @@ def protect_openclaw(root: Path) -> Dict[str, Any]:
 
 
 def verify_openclaw_project(root: Path, *, live: bool = True, run_tests: bool = True) -> Tuple[int, Dict[str, Any]]:
-    """Verify the real OpenClaw hook contract plus tenant policy decisions."""
+    """Verify OpenClaw hooks and, when present, MCP transport in one report."""
     protection = _openclaw_runtime_inspection(root)
-    exit_code, result = verify_project(root, live=live, run_tests=run_tests)
+    plan = integration_plan(root)
+    mcp_topology = plan.get("mcp_protection")
+    mcp_detected = isinstance(mcp_topology, dict) and mcp_topology.get("detected") is True
+    if mcp_detected:
+        exit_code, result = verify_mcp_project(root, live=live, run_tests=run_tests, plan=plan)
+    else:
+        exit_code, result = verify_project(root, live=live, run_tests=run_tests, plan=plan)
     decisions_ready = live and all(item.get("passed") for item in result.get("decision_cases", []))
     openclaw_ready = bool(protection.get("ready")) and decisions_ready
     result["openclaw_verification"] = {
@@ -1850,10 +2179,11 @@ def _run_existing_tests(root: Path) -> Dict[str, Any]:
     }
 
 
-def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> Tuple[int, Dict[str, Any]]:
+def verify_project(root: Path, live: bool = False, run_tests: bool = False,
+                   *, plan: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
     from .client import AgenticDomeClient
 
-    plan = integration_plan(root)
+    plan = plan or integration_plan(root)
     config_path = _agenticdome_dir(root) / "config.json"
     broker_options = _onboarding_broker_options(_load_json(config_path)) if config_path.exists() else {}
     required_env = ["AGENTICDOME_API_BASE", "AGENTICDOME_API_KEY", "AGENTICDOME_TENANT_ID"]
@@ -1901,6 +2231,7 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
         "clarification": "Use --run-tests for the production onboarding gate.",
     }
     semantic_gate = plan.get("semantic_gate", {})
+    cross_part_review_required = bool(semantic_gate.get("cross_workload_review_required"))
     semantic_ready = (
         semantic_gate.get("confidence") in {"high", "partial"}
         and int(semantic_gate.get("unresolved_bypasses", 0)) == 0
@@ -1923,13 +2254,16 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False) -> T
             "high_severity_bypasses": int(semantic_gate.get("high_severity_bypasses", 0)),
             "review_required": int(semantic_gate.get("review_required", 0)),
             "passed": semantic_ready,
+            "cross_part_review_required": cross_part_review_required,
+            "cross_part_edges_observed": int(semantic_gate.get("cross_part_edges_observed", 0)),
+            "production_ready": semantic_ready and not cross_part_review_required,
         },
         "application_tests": application_tests,
         "ready": all(item["passed"] for item in outcomes)
             and not plan["coverage"]["gaps"]
             and (not run_tests or semantic_ready)
             and (not run_tests or application_tests["passed"] is True),
-        "clarification": "Decision cases use fixed payloads. Production verification also requires no statically observable semantic bypass and passing workload tests; dynamic paths still require runtime coverage.",
+        "clarification": "Decision cases use fixed payloads. ready=true means local checks passed, not production approval. Split analyses also require a tenant-admin review of cross-part paths, workload-specific integration tests and live runtime evidence; dynamic paths remain outside static proof.",
     }
     canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
     result["report_sha256"] = hashlib.sha256(canonical).hexdigest()

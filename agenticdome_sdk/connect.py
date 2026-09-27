@@ -17,9 +17,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .attestation import ensure_attestation_key
-from .hook_catalog import CATALOG_SCHEMA, CATALOG_VERIFIED_AT, catalog_digest
-
-
 SCOPES = ["onboarding:read", "metadata:write", "evidence:write", "workload:write", "repository:prepare"]
 
 
@@ -124,7 +121,10 @@ def _approve_metadata(ir: Dict[str, Any], assume_yes: bool) -> None:
 
 def run_connect(root: Path, args: Any) -> Dict[str, Any]:
     # Import lazily to avoid a module cycle and keep the public client purely orchestration code.
-    from .onboarding_cli import _installed_sdk_version, inspect_repository
+    from .onboarding_cli import (
+        _active_copilot_catalog_binding, _copilot_semantic_analysis,
+        _ensure_workload_id, _installed_sdk_version, _scope_gap_message, inspect_repository,
+    )
 
     portal = str(args.portal).rstrip("/")
     if not portal.startswith("https://") and not getattr(args, "allow_insecure_http", False):
@@ -155,12 +155,23 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
     if not session.get("runtime") or not session.get("copilot"):
         raise SystemExit("Authentication succeeded, but no eligible runtime is assigned. The saved portal session can be resumed after an administrator enables an assignment policy.")
 
-    report = inspect_repository(root)
+    local_workload_id = _ensure_workload_id(root)
+    report = inspect_repository(root, remote_analysis=False)
+    if report.get("scope", {}).get("complete") is not True:
+        raise SystemExit(_scope_gap_message(report))
     ir = report["copilot_ir"]
     _approve_metadata(ir, bool(args.yes))
     private_pem, public_pem = ensure_attestation_key(root / ".agenticdome")
     del private_pem
-    workload_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, session["tenant_id"] + ":" + root.name))
+    workload_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, session["tenant_id"] + ":" + local_workload_id))
+    previous_session_path = root / ".agenticdome" / "connect-session.json"
+    if previous_session_path.is_file():
+        try:
+            previous_session = json.loads(previous_session_path.read_text(encoding="utf-8"))
+            if previous_session.get("tenant_id") == session["tenant_id"]:
+                workload_uuid = str(uuid.UUID(str(previous_session["workload_uuid"])))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
+            raise SystemExit("The previous Connect workload identity is unreadable. Restore its connect-session.json before retrying to avoid creating a duplicate workload.")
     frameworks = [item["key"] for item in report.get("frameworks", [])]
     _request(portal + "/api/agentguard/connect/workloads", {
         "session_uuid": session["session_uuid"], "workload_uuid": workload_uuid,
@@ -171,38 +182,51 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
 
     runtime_base = str(session["runtime"]["api_base"]).rstrip("/")
     copilot_key = str(session["copilot"]["api_key"])
-    ir_digest = hashlib.sha256(json.dumps(ir, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-    plan = _request(runtime_base + "/integration-copilot/v1/analyze", {
-        "schema": "agenticdome.copilot-request.v1", "ir": ir,
-        "catalog_binding": {"schema": CATALOG_SCHEMA, "catalog_digest": catalog_digest(), "verified_at": CATALOG_VERIFIED_AT},
-    }, headers={"X-API-Key": copilot_key, "X-Tenant-Id": session["tenant_id"], "Idempotency-Key": hashlib.sha256((session["tenant_id"] + ir_digest + catalog_digest()).encode()).hexdigest()})
-    if plan.get("schema") != "agenticdome.copilot-plan.v1" or plan.get("tenant_id") != session["tenant_id"]:
-        raise SystemExit("The assigned private Copilot returned an invalid tenant-bound plan.")
-    semantic = plan.get("semantic_analysis") or {}
-    if semantic.get("ir_sha256") != ir_digest:
-        raise SystemExit("The private Copilot plan was not bound to the submitted metadata.")
-    _request(portal + "/api/agentguard/connect/sessions/" + session["session_uuid"] + "/metadata", {"ir": ir, "signed_plan": plan}, session["access_token"])
-
+    from .onboarding_cli import _ir_sha256
+    ir_digest = _ir_sha256(ir)
     state_dir = root / ".agenticdome"
     state_dir.mkdir(parents=True, exist_ok=True)
-    cache = {"schema": "agenticdome.copilot-cache.v1", "source_upload": False, "tenant_id": session["tenant_id"], "api_base": runtime_base, "semantic_analysis": semantic, "catalog_binding": plan.get("catalog_binding")}
-    (state_dir / "copilot-analysis.json").write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     config_path = state_dir / "config.json"
     if not config_path.exists():
         config_path.write_text(json.dumps({
-            "schema": "agenticdome.project-config.v1", "frameworks": frameworks or ["custom-python"],
+            "schema": "agenticdome.project-config.v1", "workload_id": local_workload_id,
+            "frameworks": frameworks or ["custom-python"],
             "execution_broker_mode": "policy",
             "business_purpose": "REVIEW_REQUIRED_NOT_INVENTED", "sensitive_tools": [],
             "deployment": {"preference": "managed", "region": session["runtime"].get("region") or "auto"},
             "source_upload": False,
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    resumable = {"schema": "agenticdome.connect-state.v1", "portal": portal, "tenant_id": session["tenant_id"], "session_uuid": session["session_uuid"], "workload_uuid": workload_uuid, "token_expires_at": session["expires_at"], "access_token": session["access_token"]}
-    state_path = state_dir / "connect-session.json"
-    state_path.write_text(json.dumps(resumable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.chmod(state_path, 0o600)
     previous = {name: os.environ.get(name) for name in ("AGENTICDOME_API_BASE", "AGENTICDOME_COPILOT_API_KEY", "AGENTICDOME_TENANT_ID")}
     os.environ.update({"AGENTICDOME_API_BASE": runtime_base, "AGENTICDOME_COPILOT_API_KEY": copilot_key, "AGENTICDOME_TENANT_ID": session["tenant_id"]})
     try:
+        semantic = _copilot_semantic_analysis(root, ir, required=True)
+        binding = _active_copilot_catalog_binding(root)
+        if semantic.get("ir_sha256") != ir_digest or not binding:
+            raise SystemExit("The private Copilot result was not bound to this workload and the installed SDK catalog.")
+        # The portal stores a compact inventory, never the potentially large
+        # per-function graph. Every selected part was analyzed at the sidecar.
+        portal_ir = {
+            "schema": "agenticdome.copilot-ir.v1", "source_upload": False,
+            "metadata_kind": "bounded_workload_summary", "selected_ir_sha256": ir_digest,
+            "files": [], "functions": [],
+            "features": {"functions": len(ir.get("functions", []))},
+            "scope": {
+                "complete": True, "fingerprint": ir.get("scope", {}).get("fingerprint"),
+                "eligible_files_scanned": ir.get("scope", {}).get("eligible_files_scanned", 0),
+            },
+            "workload_coverage": {
+                "selected_parts": semantic.get("workload_coverage", {}).get("selected_parts", 1),
+                "analyzed_parts": semantic.get("workload_coverage", {}).get("analyzed_parts", 1),
+                "cross_part_flow_proven": semantic.get("workload_coverage", {}).get("cross_part_flow_proven", True),
+            },
+        }
+        plan = {
+            "schema": "agenticdome.copilot-plan.v1", "tenant_id": session["tenant_id"],
+            "semantic_analysis": semantic, "catalog_binding": binding,
+            "aggregation": {"kind": "sdk_local_bounded_parts", "signature_scope": "individual_sidecar_parts_only"},
+        }
+        _request(portal + "/api/agentguard/connect/sessions/" + session["session_uuid"] + "/metadata", {"ir": portal_ir, "signed_plan": plan}, session["access_token"])
+
         from .onboarding_cli import create_scaffold
         patch_path = create_scaffold(root)
     finally:
@@ -211,6 +235,11 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+    resumable = {"schema": "agenticdome.connect-state.v1", "portal": portal, "tenant_id": session["tenant_id"], "session_uuid": session["session_uuid"], "workload_uuid": workload_uuid, "token_expires_at": session["expires_at"], "access_token": session["access_token"]}
+    state_path = state_dir / "connect-session.json"
+    state_path.write_text(json.dumps(resumable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(state_path, 0o600)
     pull_request = None
     if args.open_pr:
         if not args.repository_connection:
@@ -222,6 +251,15 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
         "next_action": "Ask AgenticDome to confirm policy-aware sidecar readiness before live verification.",
     })
     broker_setup["sdk_mode"] = effective_config.get("execution_broker_mode", "existing_sdk_or_environment_default")
+    cross_part_review_required = semantic.get("workload_coverage", {}).get("cross_part_flow_proven") is False
+    next_action = (
+        "Review the generated pull request and run agenticdome verify. Then review cross-part call paths and workload-specific tests in the portal before activation."
+        if args.open_pr else
+        "Review the generated patch, apply it on a branch, and run agenticdome verify. Then review cross-part call paths and workload-specific tests in the portal before activation."
+    ) if cross_part_review_required else (
+        "Review the generated pull request and run agenticdome verify."
+        if args.open_pr else "Review the generated patch, apply it on a branch, then run agenticdome verify."
+    )
     return {
         "status": "changeset_ready", "source_upload": False, "tenant_id": session["tenant_id"],
         "session_uuid": session["session_uuid"], "workload_uuid": workload_uuid,
@@ -229,9 +267,10 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
         "execution_broker": broker_setup,
         "attachment_points": len(semantic.get("attachment_points") or []),
         "bypass_risks": len(semantic.get("bypass_risks") or []),
+        "cross_part_review_required": cross_part_review_required,
         "patch": str(patch_path.relative_to(root)),
         "pull_request": pull_request,
-        "next_action": "Review the generated pull request and run agenticdome verify." if pull_request else "Review the generated patch, apply it on a branch, then run agenticdome verify.",
+        "next_action": next_action,
         "sdk_version": _installed_sdk_version(),
     }
 
