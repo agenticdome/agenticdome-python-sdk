@@ -64,23 +64,41 @@ agenticdome inspect --output agenticdome-inspection.json
 
 `init` writes the secret-free inspection and local configuration. For the
 certified onboarding path, obtain the assigned sidecar and a dedicated
-`integration_copilot` key, run the tenant-bound `agenticdome plan`, attach
-and test the selected boundaries, then run
+`integration_copilot` key, run `agenticdome integrate preview`, review its
+local exact diff and change summary, explicitly approve a supported edit or
+attach other boundaries manually, then run
 `agenticdome verify --run-tests --output .agenticdome/verification.json`.
-The private plan is required because production verification consumes its
-signed, catalog-bound semantic analysis. `agenticdome scaffold` remains
-optional and writes an unapplied patch for review.
+Preview obtains the private, signed, catalog-bound semantic plan and keeps
+application source on your machine. `agenticdome integrate apply` creates a
+local Git review branch but never commits, pushes or deploys. Existing-source
+automatic edits are currently limited to one exact certified smolagents run
+pattern; all other paths need manual integration. The older `agenticdome plan`
+and `agenticdome scaffold` remain available as advanced review-only commands.
 
 For an MCP client, host, gateway or server workload, use the focused path:
 
 ```bash
 agenticdome mcp protect
-# review the detected role/transport, boundaries, registry and unapplied patch
+# Review the detected role/transport and boundaries, then preview exact local files:
+agenticdome integrate preview --target mcp
+# Review .agenticdome/scaffold/guided-integration.patch and
+# .agenticdome/scaffold/proposed/AGENTICDOME-CHANGES.md
+agenticdome integrate status
+# Optional, after approval: add review files on a local Git branch.
+agenticdome integrate apply
+# Manually attach the wrapper to the real MCP forwarder and reroute clients.
+agenticdome inspect --output agenticdome-inspection.json
 agenticdome mcp verify
 ```
 
-`mcp protect` adds no customer source changes. `mcp verify` runs the workload's
-tests, a real JSON-RPC stdio subprocess interception rehearsal and live
+`mcp protect` and `integrate preview --target mcp` do not edit customer source.
+An approved `integrate apply` adds only missing MCP review/wrapper files to a
+local Git branch; it does not rewrite an existing forwarder, route clients,
+commit or deploy. If there are no new MCP review files, apply refuses. Undo
+removes only unchanged files added by the approval. Actual interception still
+requires manually connecting the wrapper to the real request/response path,
+trusted identity and purpose, runtime credentials, client routing and tests.
+`mcp verify` runs the workload's tests, a real JSON-RPC stdio subprocess interception rehearsal and live
 assigned-sidecar decisions. The customer Control Panel combines that evidence
 with retained runtime evidence before representing production readiness.
 
@@ -103,6 +121,11 @@ agenticdome openclaw verify --output .agenticdome/verification.json
 
 `openclaw protect` fails unless the active OpenClaw runtime reports the loaded
 AgenticDome plugin, explicit consent and the exact certified typed hooks.
+The official `openclaw plugins install`, `enable`, `config set` and gateway
+restart commands are the actual runtime configuration change; the Python CLI
+does not apply or undo them. No application source patch is needed for native
+hooks. Custom skill paths outside those hooks need a reviewed manual
+`protectedExecute()` integration and workload-specific tests.
 `agenticdome plan` returns source-free, tenant-bound Integration Copilot
 guidance for review. `openclaw verify` adds workspace-test and assigned-tenant
 policy evidence. If the same deployable workload also uses MCP, this command

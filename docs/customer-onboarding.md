@@ -42,21 +42,22 @@ For a Developer Integration:
    tool, delegation, retrieval and output boundaries without uploading source.
 2. **Required — confirm workload intent.** Record business purpose, sensitive
    actions and deployment preference in the Customer Control Panel.
-3. **Required plan; optional scaffold.** Run the tenant-bound Integration
-   Copilot plan. Review a suggested scaffold, or use the framework guide and
-   integrate manually.
+3. **Required signed Copilot preview; optional guided apply.** Run
+   `agenticdome integrate preview` with the tenant-bound Copilot key. Review
+   the exact local diff and manual-review items. Apply only a supported,
+   approved edit; attach all other boundaries manually.
 4. **Required — verify before production.** Recheck coverage, run application
    tests, import the evidence and prove exact tenant/runtime binding.
 
-The same discovery logic feeds planning, the optional scaffold and final
-verification. It does not silently apply code changes.
+The same discovery logic feeds the guided preview, optional advanced scaffold
+and final verification. It does not silently apply code changes.
 
-The thin local Integration Assistant collects generic structure and renders a
-reviewable scaffold. Authenticated `plan` sends only source-free structural IR
-through the assigned sidecar to the private Integration Copilot Core, which
-performs the protected flow and placement reasoning. `verify` is the required
-evidence gate rather than a code generator. The Customer Control Panel explains
-and records the journey; it does not inspect the repository.
+The local Integration Assistant collects source-free structure and prepares a
+reviewable local diff. Guided `integrate preview` obtains a signed, tenant-bound
+plan through the assigned sidecar; only source-free structural IR reaches the
+private Integration Copilot Core. `verify` is the required evidence gate rather
+than a code generator. The Customer Control Panel explains and records the
+journey; it does not inspect the repository.
 
 ## Step 1: start the local Integration Assistant
 
@@ -144,16 +145,18 @@ The Control Panel returns the assigned API base when provisioning is complete.
 Runtime/SDK API keys remain in the key-management path and secret managers;
 they are never included in the downloadable onboarding configuration.
 
-## Step 3: obtain a private plan and optionally generate a reviewable scaffold
+## Step 3: preview, review and approve integration changes
 
 ```bash
 python -m pip install --upgrade agenticdome-python-sdk
 export AGENTICDOME_API_BASE="https://your-assigned-sidecar.example"
 export AGENTICDOME_TENANT_ID="your_tenant_id"
 export AGENTICDOME_COPILOT_API_KEY="your_dedicated_copilot_key"
-agenticdome plan
-agenticdome scaffold
-git apply --stat .agenticdome/scaffold/agenticdome.patch
+agenticdome integrate preview
+# Review .agenticdome/scaffold/guided-integration.patch and
+# .agenticdome/scaffold/proposed/AGENTICDOME-CHANGES.md
+agenticdome integrate status
+agenticdome integrate apply
 agenticdome inspect --output agenticdome-inspection.json
 agenticdome verify --run-tests --output .agenticdome/verification.json
 ```
@@ -166,13 +169,59 @@ request, supplies its signed SDK Harness catalog, and verifies the private
 Core's signed response. The CLI rejects a catalog digest that differs from its
 installed SDK and binds cached results to the tenant, sidecar origin and IR.
 
-The tenant-bound plan is required for certified verification. Scaffolding is
-an optional accelerator. It writes `integration-plan.json`, a review README, a secret-free
-environment example, Python and/or TypeScript wrapper code, and
-`agenticdome.patch` under `.agenticdome/scaffold`. The patch represents those
-review files; it does not edit application source. Copy or adapt the wrapper at
-the real prompt ingress, final tool executor, receiving delegation boundary,
-retrieval boundary and output/stream egress appropriate to the framework.
+The tenant-bound plan is required for certified verification. Guided preview
+writes an exact local diff, file-by-file before/after hashes and manual-review
+list under `.agenticdome/scaffold`; it does not edit application source or
+send source to Copilot. Apply asks for the displayed approval code and requires
+a Git working tree with no tracked workload changes. It creates a local review
+branch, checks the source hashes again and edits only a certified, exact
+smolagents `agent.run(task)` pattern with an explicit `session_id`. Unrelated
+tracked source edits must be committed or stashed first; preview-generated
+`.agenticdome` artifacts do not count as a source conflict. It also
+adds reviewed, secret-free integration files. The CLI does not commit, push
+or deploy. For other frameworks or indirect paths, attach protection manually
+at the real prompt ingress, final tool executor, receiving delegation,
+retrieval and output/stream egress boundaries. If no safe existing-source edit
+is found for an application target, apply refuses rather than presenting
+generated files as protection. The explicit MCP target below can add review
+files, but does not claim an existing forwarder was protected.
+Before making later edits, `agenticdome integrate undo` can restore only the
+unchanged files it applied; it refuses to overwrite subsequent customer work.
+If you preview the workload again after an approved edit, the CLI archives the
+earlier local record and preserves its backup. Use
+`agenticdome integrate undo --revision <earlier-approval-code>` to target that
+older revision; a newer edit touching the same file must be reviewed and
+undone first.
+The older `agenticdome plan` and `agenticdome scaffold` commands remain as
+advanced, unapplied review-only options.
+
+### MCP: same review flow, different attachment boundary
+
+From one deployable MCP workload, run `agenticdome mcp protect`, then
+`agenticdome integrate preview --target mcp`. Review the exact local patch and
+`AGENTICDOME-CHANGES.md`. After explicit approval, `agenticdome integrate
+apply` creates a Git branch and adds only missing MCP registry, wrapper and
+review files; it does not edit an existing client/server forwarder. If no new
+MCP review file remains, apply refuses. Use `agenticdome integrate undo` only
+before changing those files yourself; it will not remove changed customer work.
+
+Manually connect the reviewed wrapper to the real MCP request and response
+forwarder, provide authenticated identity and genuine purpose, route clients
+through it, and test allowed and blocked calls. Then run `agenticdome inspect
+--output agenticdome-inspection.json` and `agenticdome mcp verify`. Neither
+the added files nor a passing packaged transport rehearsal alone prove that
+every customer MCP path is intercepted.
+
+### OpenClaw: native plugin rather than a source patch
+
+OpenClaw protection is installed and enabled through the official OpenClaw
+plugin/config commands in its onboarding page. Those commands change the
+active gateway configuration; plan a safe restart window. `agenticdome
+openclaw protect` verifies the loaded plugin, consent and hook contract, while
+`agenticdome openclaw verify` adds workload and tenant decision evidence.
+`agenticdome integrate apply` does not install, configure or undo the active
+OpenClaw plugin. Native hooks need no source rewrite; custom skill paths that
+bypass them require a reviewed `protectedExecute()` attachment and tests.
 
 The separate Control Panel download, `agenticdome-onboarding.json`, is a tenant
 connection reference. It contains confirmed Step 2 choices, tenant ID,
@@ -180,7 +229,7 @@ assigned API base and environment-variable names. It contains no key, source
 or executable patch and is not consumed automatically by the CLI. Store the
 real Runtime/SDK key separately in an environment variable or secret manager.
 
-Import `.agenticdome/inspection.json` and the generated
+Import the refreshed `agenticdome-inspection.json` and the generated
 `.agenticdome/verification.json` into Developer Integration. These contain
 bounded metadata and pass/fail evidence only; they do not upload the
 repository, include test output or apply the patch.

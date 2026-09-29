@@ -839,6 +839,8 @@ def test_init_console_points_to_inspection_file_not_console_copy(tmp_path, capsy
     assert terminal["config_path"] == ".agenticdome/config.json"
     assert terminal["inspection_path"] == ".agenticdome/inspection.json"
     assert "do not paste" in terminal["next_action"].lower()
+    assert "run agenticdome integrate preview" in terminal["next_action"]
+    assert "import that refreshed file" in terminal["next_action"]
 
 
 def test_verification_can_run_detected_tests_without_including_test_output(tmp_path, monkeypatch):

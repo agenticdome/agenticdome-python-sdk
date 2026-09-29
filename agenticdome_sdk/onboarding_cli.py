@@ -1912,7 +1912,7 @@ def protect_mcp(root: Path) -> Dict[str, Any]:
         "plan": _relative(plan_path, root),
         "patch": _relative(patch_path, root),
         "customer_source_modified": False,
-        "next_action": "Review the MCP plan, supply genuine identity and business-purpose context, resolve every bypass, then manually apply suitable additions and run agenticdome mcp verify.",
+        "next_action": "Review the MCP plan, then run agenticdome integrate preview --target mcp for an exact local file diff. Approval can add review files on a Git branch, but the real MCP forwarder and client routing still require manual attachment and tests before agenticdome mcp verify.",
     }
 
 
@@ -2277,6 +2277,22 @@ def _print(value: Any, as_json: bool = False) -> None:
         print(value)
 
 
+def _guided_cli_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "state": result.get("state"),
+        "integration_target": result.get("integration_target", "application"),
+        "existing_source_edits": int(result.get("source_edits", 0)),
+        "new_files": sum(item.get("kind") == "added" for item in result.get("changes", [])),
+        "manual_review_items": len(result.get("manual_review", [])),
+        "patch": result.get("patch"),
+        "change_summary": ".agenticdome/scaffold/proposed/AGENTICDOME-CHANGES.md",
+        "approval_code": result.get("approval_code"),
+        "branch": result.get("branch"),
+        "prior_applied_revision": result.get("prior_applied_revision"),
+        "next_action": result.get("next_action"),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agenticdome", description="Local-first AgenticDome integration assistant.")
     parser.add_argument(
@@ -2320,6 +2336,16 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--output")
 
     subparsers.add_parser("scaffold", help="Generate an unapplied patch and review files under .agenticdome/scaffold.")
+    integrate_parser = subparsers.add_parser("integrate", help="Preview, approve and safely apply local integration edits.")
+    integrate_subparsers = integrate_parser.add_subparsers(dest="integrate_command", required=True)
+    integrate_preview = integrate_subparsers.add_parser("preview", help="Plan once, then generate an exact local diff and change summary without editing application source.")
+    integrate_preview.add_argument("--target", choices=["application", "mcp"], default="application",
+                                   help="Use mcp for reviewable MCP gateway files; real forwarding still needs manual attachment.")
+    integrate_apply = integrate_subparsers.add_parser("apply", help="Apply the reviewed proposal on a new Git branch; never commit or deploy automatically.")
+    integrate_apply.add_argument("--approve", help="Approval code printed by preview; required when stdin is non-interactive.")
+    integrate_subparsers.add_parser("status", help="Show the saved change summary without rerunning Copilot.")
+    integrate_undo = integrate_subparsers.add_parser("undo", help="Restore only unchanged AgenticDome-applied files from exact local backups.")
+    integrate_undo.add_argument("--revision", help="An earlier approval code shown in status; required when undoing an archived applied revision.")
     verify_parser = subparsers.add_parser("verify", help="Run fixed allowed/blocked decisions and boundary coverage checks.")
     verify_parser.add_argument("--live", action="store_true")
     verify_parser.add_argument(
@@ -2397,6 +2423,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if args.command in {"inspect", "doctor"}:
         report = _exportable_inspection(inspect_repository(root))
+        from .guided_integration import export_summary
+        try:
+            guided_summary = export_summary(root)
+        except (RuntimeError, ValueError) as exc:
+            raise SystemExit("The local guided integration record is invalid: " + str(exc)) from exc
+        if guided_summary is not None:
+            report["guided_integration"] = guided_summary
+            report.pop("report_sha256", None)
+            report["report_sha256"] = hashlib.sha256(
+                json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
         if args.output:
             _write_json(Path(args.output), report)
             _print({
@@ -2417,7 +2454,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "status": "created",
             "config_path": ".agenticdome/config.json",
             "inspection_path": ".agenticdome/inspection.json",
-            "next_action": "Upload .agenticdome/inspection.json in Control Panel Step 1; do not paste this output. If the dot-folder is hidden, run: agenticdome inspect --output agenticdome-inspection.json",
+            "next_action": "Local initialization is complete; do not paste this output. Next, use your tenant's Integration Copilot key to run agenticdome integrate preview, review the exact local diff, approve only safe edits or attach guards manually, then run agenticdome inspect --output agenticdome-inspection.json and import that refreshed file in Onboarding > Integrate.",
             "config": config,
         })
         return 0
@@ -2431,10 +2468,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         patch_path = create_scaffold(root)
         _print({"status": "generated_not_applied", "patch": _relative(patch_path, root)})
         return 0
+    if args.command == "integrate":
+        from .guided_integration import _load_manifest, apply, preview, undo
+        try:
+            if args.integrate_command == "preview":
+                result = preview(root, target=args.target)
+            elif args.integrate_command == "apply":
+                result = apply(root, approval_code=args.approve)
+            elif args.integrate_command == "undo":
+                result = undo(root, revision=args.revision)
+            else:
+                result = _load_manifest(root)
+        except (RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        _print(_guided_cli_summary(result))
+        return 0
     if args.command == "verify":
         exit_code, result = verify_project(root, live=args.live, run_tests=args.run_tests)
         if args.output:
             _write_json(Path(args.output), result)
+        from .guided_integration import record_verification
+        record_verification(root, result)
         _print(result)
         return exit_code
     if args.command == "mcp" and args.mcp_command == "protect":
@@ -2454,6 +2508,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if not output.is_absolute():
                 output = root / output
             _write_json(output, result)
+        from .guided_integration import record_verification
+        record_verification(root, result)
         _print(result)
         return exit_code
     if args.command == "openclaw" and args.openclaw_command == "protect":
