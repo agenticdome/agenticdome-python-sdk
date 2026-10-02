@@ -38,6 +38,30 @@ geographic region, subject to availability. A contracted Sovereign runtime is
 inside the customer-controlled environment. Normal SDK calls do not require
 customer-managed Redis; see [runtime location and Redis responsibilities](../runtime-deployment.md).
 
+If your application has one explicit tool dispatcher, the guided preview can
+propose this small, reviewable edit instead of asking you to hand-write the
+authorization call:
+
+```python
+from agenticdome_sdk.generic_python import guarded_tool_executor
+
+@guarded_tool_executor
+def execute_tool(tool_name, tool_args, agent_id, session_id, registered_tools):
+    action = registered_tools[tool_name]
+    return action(**tool_args)
+```
+
+The decorator requires those four named parameters, checks the assigned
+runtime before entering the function body, refuses blocked/unknown decisions,
+refuses offline simulation for a real action, and substitutes returned
+sanitized arguments. Both synchronous and asynchronous
+dispatchers are supported. The application must obtain `agent_id` and
+`session_id` from trusted request/session context—not from untrusted prompt
+text—and route every tool through the decorated function. Output review,
+delegated-token verification, and executors outside this dispatcher remain
+separate work. If the CLI cannot identify this exact pattern, it leaves the
+source unchanged and gives you the manual core-client pattern below.
+
 ```python
 from typing import Any, Callable, Dict
 

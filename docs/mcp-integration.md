@@ -228,11 +228,58 @@ second route that calls the raw transport for sensitive MCP operations.
 
 Call `firewall.close()` during application shutdown.
 
+### Provider-backed booking rules (opt-in)
+
+For a booking MCP tool, allow-listing the tool is not enough to establish that
+the logged-in member owns the reservation. The provider can add an exact-tool
+guard at its forwarding boundary:
+
+```python
+from agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall, ProviderActionRule
+
+async def provider_facts(tool_name: str, final_args: dict) -> dict:
+    # These are examples of provider-owned interfaces, not SDK APIs.
+    # server_session is request-local and set by authenticated middleware.
+    member_id = server_session.require_authenticated_member_id()
+    if tool_name == "booking.cancel":
+        reservation = await booking_store.get(final_args["reservation_id"])
+        return {
+            "principal_id": member_id,
+            "reservation_id": reservation.id,
+            "owner_id": reservation.member_id,
+        }
+    return {
+        "principal_id": member_id,
+        "latest_allowed_date": (await booking_store.latest_allowed_local_date(member_id)).isoformat(),
+    }
+
+firewall = AgenticDomeMCPHostFirewall(
+    provider_action_rules={
+        "booking.cancel": ProviderActionRule(action="cancel_booking"),
+        "booking.create": ProviderActionRule(action="create_booking"),
+    },
+    resolve_provider_facts=provider_facts,
+)
+```
+
+The default argument names are `reservation_id` and `booking_date`; the latter
+must be a provider-local `YYYY-MM-DD` date. Set the rule's
+`reservation_id_argument` or `booking_date_argument` for a different schema.
+The callback receives the **final policy-approved arguments** immediately before
+forwarding. Configured rules deny if the provider facts, authenticated member,
+exact reservation match, or horizon are unavailable, including when the
+sidecar fails and the SDK is otherwise configured to fail open. Do not source
+`principal_id`, `owner_id`, or the horizon from MCP arguments, `user_id`, an
+agent claim, or request-supplied policy context. Bind the callback to the real
+authenticated request scope. This is a pre-write guard, not a replacement for
+the booking backend's atomic authorization and booking-window checks; it does
+not protect a browser/API route that bypasses this MCP integration.
+
 ## If your gateway owns response handling
 
 Use `preflight_request()` before the transport and
-`sanitize_mcp_result()` before the result is returned, stored, logged, or fed
-back to a model:
+`review_forwarded_response()` before the JSON-RPC response is returned, stored,
+logged, or fed back to a model:
 
 ```python
 gated = await firewall.preflight_request(
@@ -244,16 +291,22 @@ if "error" in gated:
     return gated
 
 response = await forward_to_mcp_server(gated)
-if "result" in response:
-    response["result"] = await firewall.sanitize_mcp_result(
-        tool_output=response["result"],
-        context=context,
-    )
-return response
+return await firewall.review_forwarded_response(
+    mcp_request=gated,
+    response=response,
+    context=context,
+)
 ```
 
 `forward_with_firewall()` is preferred because it keeps request authorization
-and response handling together.
+and response handling together. With output review enabled, the bounded JSON
+payload is reviewed as a whole: ordinary `content`, `structuredContent`, error
+data and sibling extension fields are not silently skipped. Invalid redacted
+JSON and shape-changing replacements are blocked. Opaque/base64 encodings,
+unwrapped transports and explicitly disabled or fail-open output review are
+not covered by that statement. Runtime-reported scan or echo truncation is
+blocked; large reviews without explicit no-truncation evidence are also
+blocked rather than assumed safe.
 
 ## Low-code Streamable HTTP gateway
 
@@ -362,10 +415,12 @@ Install the TypeScript client when a Node.js gateway owns the tool boundary:
 npm install agenticdome-sdk
 ```
 
-Use `mcpGuardrailValidate()` immediately before the existing MCP transport,
-check the returned JSON-RPC result, and use `meshValidate()` on returned text
-before planner reuse. The application remains responsible for making the real
-transport call only after an allowed decision. See the
+Use `AgenticDomeMCPGateway` at the existing transport boundary to authorize
+the final tool arguments and review the bounded JSON-RPC response payload,
+including `structuredContent` and sibling fields, before planner reuse. A
+manual `mcpGuardrailValidate()` call followed by scanning only returned text
+is not equivalent. The application remains responsible for routing every
+sensitive call through the wrapper. See the
 [TypeScript SDK MCP guide](https://github.com/agenticdome/agenticdome-sdk-ts/blob/main/docs/mcp-integration.md)
 for a complete example.
 

@@ -805,6 +805,12 @@ class AgenticDomeClient:
                 raise AgenticDomeError(
                     "AgenticDome execution broker did not return a verified, atomically consumed decision"
                 )
+        if tool_name and os.environ.get("AGENTICDOME_ACTION_PROOF_FILE"):
+            from .action_path_proof import record_policy_decision
+            record_policy_decision(
+                tool_name=tool_name, platform=platform, direction=normalized_direction,
+                response=response, live=not self.is_simulation,
+            )
         return response
 
     @staticmethod

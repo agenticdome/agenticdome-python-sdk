@@ -154,6 +154,41 @@ def test_existing_project_keeps_config_and_gets_stable_workload_identity(tmp_pat
     assert (config_dir / "config.json").read_text(encoding="utf-8") == original
 
 
+def test_init_scans_once_and_reports_current_scope(tmp_path, monkeypatch, capsys):
+    (tmp_path / "app.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    original_inspect = onboarding_cli.inspect_repository
+    scans = []
+
+    def counted_inspect(root, *, remote_analysis=True):
+        scans.append(remote_analysis)
+        return original_inspect(root, remote_analysis=remote_analysis)
+
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", counted_inspect)
+    assert onboarding_cli.main(["--path", str(tmp_path), "init"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert scans == [False]
+    assert output["status"] == "created"
+    assert output["scope_complete_now"] is True
+
+
+def test_init_does_not_present_incomplete_scope_as_ready(tmp_path, monkeypatch, capsys):
+    (tmp_path / "app.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    original_inspect = onboarding_cli.inspect_repository
+
+    def incomplete_inspect(root, *, remote_analysis=True):
+        report = original_inspect(root, remote_analysis=remote_analysis)
+        report["scope"]["complete"] = False
+        report["scan_limit_reached"] = True
+        return report
+
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", incomplete_inspect)
+    assert onboarding_cli.main(["--path", str(tmp_path), "init"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "scope_review_required"
+    assert output["scope_complete_now"] is False
+    assert "do not import this incomplete inspection" in output["next_action"]
+
+
 def test_cross_part_inventory_identifies_a_resolvable_call_without_claiming_proof():
     caller = {"path": "app.py", "symbol": "run", "line": 1,
               "events": [{"event": "call", "callee": "execute", "line": 3}]}
@@ -338,6 +373,21 @@ def test_framework_names_in_prose_do_not_become_installed_frameworks(tmp_path):
     frameworks = {item["key"] for item in report["frameworks"]}
 
     assert frameworks == {"langgraph", "custom-python"}
+
+
+def test_bespoke_python_dispatcher_is_detected_alongside_an_agent_framework(tmp_path):
+    (tmp_path / "requirements.txt").write_text("langgraph\n", encoding="utf-8")
+    (tmp_path / "actions.py").write_text(
+        "def execute_tool(tool_name, tool_args, agent_id, session_id):\n"
+        "    return registry[tool_name](**tool_args)\n",
+        encoding="utf-8",
+    )
+
+    report = inspect_repository(tmp_path)
+    frameworks = {item["key"] for item in report["frameworks"]}
+
+    assert {"langgraph", "custom-python"}.issubset(frameworks)
+    assert report["boundary_counts"]["tool_execution"] >= 1
 
 
 def test_boto3_alone_does_not_claim_aws_bedrock(tmp_path):
@@ -827,6 +877,7 @@ def test_command_inspect_output_prints_summary_not_full_report(tmp_path, capsys)
     assert terminal["status"] == "inspection_written"
     assert terminal["source_upload"] is False
     assert "boundaries" not in terminal
+    assert terminal["existing_sdk_wiring"]["runtime_proof"] == "not_assessed"
     assert saved["schema"] == SCHEMA
 
 
@@ -841,6 +892,55 @@ def test_init_console_points_to_inspection_file_not_console_copy(tmp_path, capsy
     assert "do not paste" in terminal["next_action"].lower()
     assert "run agenticdome integrate preview" in terminal["next_action"]
     assert "import that refreshed file" in terminal["next_action"]
+
+    prior_inspection = (tmp_path / ".agenticdome" / "inspection.json").read_bytes()
+    assert main(["--path", str(tmp_path), "init"]) == 0
+    repeated = json.loads(capsys.readouterr().out)
+    assert repeated["status"] == "already_initialized"
+    assert repeated["existing_sdk_wiring_now"]["runtime_proof"] == "not_assessed"
+    assert repeated["config"] == terminal["config"]
+    assert (tmp_path / ".agenticdome" / "inspection.json").read_bytes() == prior_inspection
+
+
+def test_preview_rechecks_new_frameworks_without_rewriting_saved_config(tmp_path, capsys):
+    source = tmp_path / "app.py"
+    source.write_text("def run():\n    return 'ready'\n", encoding="utf-8")
+    assert main(["--path", str(tmp_path), "init"]) == 0
+    capsys.readouterr()
+    config_path = tmp_path / ".agenticdome" / "config.json"
+    saved_config = config_path.read_bytes()
+
+    source.write_text("from crewai import Agent\ndef run():\n    return Agent\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("crewai==1.15.5\n", encoding="utf-8")
+    plan = integration_plan(tmp_path)
+
+    assert plan["framework_reconciliation"]["included_from_current_scan"] == ["crewai"]
+    assert plan["framework_reconciliation"]["config_changed"] is False
+    assert "crewai" in plan["frameworks"]
+    assert next(row for row in plan["framework_hook_plans"] if row["framework"] == "crewai")["selection_source"] == "newly_detected"
+    recommendation = next(row for row in plan["hook_recommendations"] if row["framework"] == "crewai")
+    assert recommendation["method"] == "import agenticdome_sdk.crewai"
+    assert recommendation["state"] == "not_observed_in_selected_source"
+    assert recommendation["runtime_proof"] == "not_assessed"
+    assert any(row["framework"] == "crewai" and row["surface"] == "tool_execution"
+               for row in plan["surface_hook_recommendations"])
+    assert config_path.read_bytes() == saved_config
+
+    assert main(["--path", str(tmp_path), "init"]) == 0
+    repeated = json.loads(capsys.readouterr().out)
+    assert repeated["framework_reconciliation_now"]["included_from_current_scan"] == ["crewai"]
+
+
+def test_agenticdome_policy_probe_is_not_misclassified_as_customer_mcp(tmp_path):
+    source = tmp_path / "security_client.py"
+    source.write_text(
+        "async def validate_mcp(self, arguments):\n"
+        "    payload = {'method': 'tools/call', 'params': {'name': 'guardrail.validate', 'arguments': arguments}}\n"
+        "    return await self._post('/mcp', payload)\n",
+        encoding="utf-8",
+    )
+    report = inspect_repository(tmp_path, remote_analysis=False)
+    assert report["mcp_protection"]["detected"] is False
 
 
 def test_verification_can_run_detected_tests_without_including_test_output(tmp_path, monkeypatch):
@@ -1050,6 +1150,7 @@ def test_openclaw_verify_requires_exact_hooks_and_live_decisions(tmp_path, monke
     assert result["openclaw_verification"]["exact_hook_contract"] is True
     assert result["openclaw_verification"]["live_tenant_decisions"] is True
     assert result["openclaw_verification"]["telemetry_confirmation"] == "control_plane_certificate_required"
+    assert "does not prove that the serving OpenClaw Gateway ran a hook" in result["openclaw_verification"]["claim_boundary"]
 
 
 def test_openclaw_verify_includes_mcp_proof_when_same_workload_uses_mcp(tmp_path, monkeypatch):

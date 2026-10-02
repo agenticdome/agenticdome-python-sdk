@@ -3,6 +3,8 @@ from .identity import IDENTITY_CONTEXT_VERSION, canonicalize_identity_context, e
 from .proof import create_dpop_proof, generate_rsa_proof_key, jwk_thumbprint
 from ._mode import LIVE_MODE, LOCAL_SIM_MODE, is_local_sim_mode, resolve_mode
 from .lifecycle import VerifiedActionContext, VerifiedActionDenied, VerifiedActionReporter, verified_action
+from .action_path_proof import ExecutionSpy
+from .generic_python import AgenticDomeActionDenied, guarded_tool_executor
 
 __all__ = [
     "AgenticDomeClient",
@@ -22,4 +24,7 @@ __all__ = [
     "VerifiedActionDenied",
     "VerifiedActionReporter",
     "verified_action",
+    "ExecutionSpy",
+    "AgenticDomeActionDenied",
+    "guarded_tool_executor",
 ]

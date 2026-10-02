@@ -35,6 +35,8 @@ from .hook_catalog import (
     version_satisfies_certification,
 )
 from .copilot_ir import collect_repository_ir
+from .existing_integration import detect_existing_integration
+from .framework_edits import has_explicit_python_tool_dispatcher
 
 
 SCHEMA = "agenticdome.onboarding-report.v1"
@@ -90,7 +92,7 @@ FRAMEWORK_MARKERS: Dict[str, Tuple[str, ...]] = {
     "bedrock": ("bedrock-agent", "bedrock-runtime", "agenticdome_sdk.aws_bedrock"),
     "mcp": ("from mcp", "import mcp", "@modelcontextprotocol", "model-context-protocol"),
     "openclaw": ("openclaw", "agenticdome-openclaw-security"),
-    "custom-python": ("fastapi", "django", "flask", "celery"),
+    "custom-python": ("fastapi", "django", "flask", "celery", "agenticdome_sdk.generic_python"),
 }
 
 BOUNDARY_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
@@ -100,7 +102,7 @@ BOUNDARY_PATTERNS: Dict[str, Tuple[re.Pattern[str], ...]] = {
         re.compile(r"@(app|router)\.(post|put|patch)\b", re.I),
     ),
     "tool_execution": (
-        re.compile(r"\b(call_tool|invoke_tool|execute_tool|run_tool|tools/call|function_tool|authorize_tool_call)\b", re.I),
+        re.compile(r"\b(call_tool|invoke_tool|execute_tool|dispatch_tool|run_tool|tools/call|function_tool|authorize_tool_call)\b", re.I),
         re.compile(r"\b(authorize_tool|policy\.authorize|tool_registry\.dispatch|gateway\.execute)\s*\(", re.I),
         re.compile(r"\.dispatch\s*\(.*\btool_name\s*=", re.I),
         re.compile(r"(^|\s)@tool\b", re.I),
@@ -733,6 +735,16 @@ def _detect_mcp_protection(root: Path, paths: Sequence[Path], languages: Sequenc
     for path in paths:
         relative = _relative(path, root)
         text = _read_text(path)
+        # A client asking AgenticDome's own /mcp policy endpoint to run
+        # guardrail.validate is not a customer MCP forwarder. Do not suggest
+        # an MCP onboarding path from that protocol-shaped probe alone.
+        policy_probe_only = (
+            bool(re.search(r"['\"]name['\"]\s*:\s*['\"]guardrail\.validate['\"]", text))
+            and bool(re.search(r"_post\s*\(\s*['\"]/mcp['\"]", text))
+            and not re.search(r"\b(?:from\s+mcp|import\s+mcp|FastMCP|McpServer|ClientSession|StdioClientTransport|SSEClientTransport)\b|@modelcontextprotocol", text)
+        )
+        if policy_probe_only:
+            continue
         if not re.search(
             r"(?:\b(?:from\s+mcp|import\s+mcp|FastMCP|MCPClient|McpClient|McpServer|ClientSession|"
             r"StdioClientTransport|StdioServerParameters|SSEClientTransport|tools/call|"
@@ -915,6 +927,8 @@ def inspect_repository(root: Path, *, remote_analysis: bool = True) -> Dict[str,
                 source_markers = tuple(marker for marker in markers if marker != "agents")
             if framework_evidence and any(marker.lower() in framework_evidence for marker in source_markers):
                 framework_hits[framework].add(relative)
+        if suffix == ".py" and has_explicit_python_tool_dispatcher(text):
+            framework_hits["custom-python"].add(relative)
 
         if suffix not in {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx"}:
             continue
@@ -958,6 +972,7 @@ def inspect_repository(root: Path, *, remote_analysis: bool = True) -> Dict[str,
     if not scope["complete"]:
         semantic["limitations"].append("The selected workload was not completely collected; narrow the scope before requesting a placement plan.")
     mcp_protection = _detect_mcp_protection(root, semantic_paths, sorted(languages))
+    existing_integration = detect_existing_integration(root, semantic_paths, scope_complete=scope["complete"])
 
     boundaries = sorted(boundaries, key=lambda item: (item["path"], item["line"], item["boundary"]))[:500]
     boundary_counts = {
@@ -980,6 +995,7 @@ def inspect_repository(root: Path, *, remote_analysis: bool = True) -> Dict[str,
         "copilot_ir": copilot_ir,
         "semantic_analysis": semantic,
         "mcp_protection": mcp_protection,
+        "existing_integration": existing_integration,
         "limitations": [
             "The local CLI collects generic AST/compiler metadata; proprietary flow reasoning runs through the assigned sidecar.",
             "No source content, secrets, environment values, or absolute paths are included.",
@@ -1085,7 +1101,7 @@ def _ensure_workload_id(root: Path) -> str:
     return value
 
 
-def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
+def init_project(root: Path, args: argparse.Namespace, *, inspection_report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     target = _agenticdome_dir(root) / "config.json"
     # Reassessment must not silently migrate an established integration.
     if target.exists():
@@ -1093,7 +1109,7 @@ def init_project(root: Path, args: argparse.Namespace) -> Dict[str, Any]:
         return _load_json(target)
     # Creating local configuration must not depend on sidecar availability.
     # The explicit inspect/plan steps perform authenticated remote analysis.
-    report = inspect_repository(root, remote_analysis=False)
+    report = inspection_report if inspection_report is not None else inspect_repository(root, remote_analysis=False)
     detected = [item["key"] for item in report["frameworks"]]
     frameworks = list(dict.fromkeys(args.framework or detected or ["custom-python"]))
     unknown = sorted(set(frameworks) - set(FRAMEWORK_MARKERS))
@@ -1308,6 +1324,138 @@ def _hook_plans(
     return plans
 
 
+def _reconcile_frameworks(config: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
+    """Include newly observed frameworks in a preview without rewriting local choices."""
+    saved_frameworks = config.get("frameworks") if isinstance(config.get("frameworks"), list) else []
+    detected_rows = report.get("frameworks") if isinstance(report.get("frameworks"), list) else []
+    configured = list(dict.fromkeys(
+        value for value in saved_frameworks
+        if isinstance(value, str) and value
+    ))
+    detected = list(dict.fromkeys(
+        row["key"] for row in detected_rows
+        if isinstance(row, dict) and isinstance(row.get("key"), str) and row["key"]
+    ))
+    effective = list(dict.fromkeys([*configured, *detected])) or ["custom-python"]
+    return {
+        "configured": configured,
+        "detected_now": detected,
+        "included_from_current_scan": [key for key in detected if key not in configured],
+        "configured_without_current_evidence": [key for key in configured if key not in detected],
+        "planned": effective,
+        "config_changed": False,
+        "claim": "Current detections are included for review; .agenticdome/config.json is not silently changed. A detected framework or listed hook is not proof of attachment.",
+    }
+
+
+_PRIMARY_HOOKS = {
+    "crewai": ("import agenticdome_sdk.crewai", "Global CrewAI prompt, tool and output hooks; protect high-risk tools explicitly too."),
+    "pydanticai": ("create_hooks", "Attach native Hooks as Agent capabilities so tool execution and output are reviewed."),
+    "langgraph": ("as_langchain_middleware", "Attach middleware at langchain.agents.create_agent; raw StateGraph paths need explicit guarded nodes."),
+    "microsoft-agent": ("install_on_agent", "Attach middleware to the actual agent; separately secure real tool handlers."),
+    "autogen": ("wrap_team", "Run the real AgentChat team through its secured wrapper; review individual tool handlers."),
+    "foundry": ("install_on_client", "Attach Foundry middleware and secure actual function-tool executors."),
+    "openai-agents": ("wrap_tool_handler", "Wrap each consequential function tool; add input/output guardrails or secured run separately."),
+    "claude": ("install_on_options", "Merge native prompt, PreToolUse and PostToolUse hooks into the options used by the live client."),
+    "smolagents": ("run_agent_securely", "Route the actual agent run through input, tool and output protection."),
+    "agno": ("attach_firewall", "Attach pre, tool and post hooks to the actual Agno agent or team."),
+    "google-adk": ("build_callback_kwargs", "Pass model, tool and agent callbacks into the Agent constructor."),
+    "llamaindex": ("to_function_tool", "Wrap each consequential LlamaIndex function tool; add retrieval and output review separately."),
+    "bedrock": ("wrap_tool_handler", "Wrap each Bedrock action-group or local tool executor before calling it."),
+    "mcp": ("forward_with_firewall", "Route the real MCP forwarder and responses through the host firewall."),
+    "custom-python": ("guardrail_validate", "Call the runtime immediately before each real tool executor and enforce its returned verdict; explicit dispatchers can use guarded_tool_executor."),
+}
+
+# These are conditional attachment choices, not assertions that the selected
+# workload uses every surface.  They mirror the public adapter API/README and
+# remain suggestions until an actual action-path test exercises the hook.
+_SURFACE_HOOKS = {
+    "crewai": [("tool_execution", ("secure_tool",), "Wrap high-impact local tools even when global CrewAI hooks are registered.")],
+    "pydanticai": [("tool_execution", ("secure_tool",), "Use a secured tool wrapper for consequential handlers in addition to native capabilities.")],
+    "langgraph": [("tool_execution", ("wrap_tool_node", "as_langchain_middleware"), "Use middleware for create_agent; guard raw StateGraph tool nodes explicitly.")],
+    "microsoft-agent": [
+        ("prompt_ingress", ("run_agent_securely", "create_middleware"), "Protect the actual agent run or register middleware in its live runtime."),
+        ("tool_execution", ("wrap_tool_handler", "secure_tool"), "Wrap the function actually invoked by a Microsoft agent tool."),
+        ("delegation", ("secure_delegated_tool", "wrap_delegated_tool_handler"), "Bind and verify the authority used by delegated specialists."),
+    ],
+    "autogen": [
+        ("prompt_ingress", ("wrap_team",), "Run the real AgentChat team through the secured wrapper."),
+        ("tool_execution", ("create_intervention_handler", "wrap_tool_handler"), "Register a Core runtime intervention handler or secure each local tool executor."),
+    ],
+    "foundry": [
+        ("prompt_ingress", ("run_secure", "create_middleware"), "Protect the actual Foundry run boundary."),
+        ("tool_execution", ("wrap_tool_executor",), "Wrap the function executor registered with Foundry, not just its client."),
+    ],
+    "openai-agents": [
+        ("prompt_ingress", ("run_agent_securely", "create_input_guardrail"), "Screen the real Runner input path."),
+        ("tool_execution", ("wrap_tool_handler", "secure_tool"), "Wrap consequential function-tool handlers before exposing them to Agent."),
+        ("delegation", ("wrap_delegated_tool_handler", "authorize_manager_handoff"), "Authorize and verify handoffs that can execute specialist tools."),
+    ],
+    "claude": [("tool_execution", ("secure_sdk_tool", "install_on_options"), "Use native PreToolUse hooks for built-ins and secure custom SDK/MCP tools explicitly.")],
+    "smolagents": [("tool_execution", ("attach_firewall", "run_agent_securely"), "Protect the actual Tool and CodeAgent executor, not only the final result.")],
+    "agno": [("tool_execution", ("secure_tool", "attach_firewall"), "Attach native tool hooks and wrap consequential local handlers.")],
+    "google-adk": [("tool_execution", ("wrap_tool_handler", "build_callback_kwargs"), "Install native callbacks and wrap consequential local tools.")],
+    "llamaindex": [
+        ("tool_execution", ("wrap_tool_function", "to_function_tool"), "Wrap FunctionTool handlers before the LlamaIndex agent can invoke them."),
+        ("retrieval", ("wrap_query_engine", "wrap_retriever"), "Protect the query engine or retriever that handles untrusted documents."),
+    ],
+    "bedrock": [
+        ("prompt_ingress", ("converse_securely", "invoke_agent_securely"), "Route the actual Bedrock model or agent invocation through the secure wrapper."),
+        ("tool_execution", ("wrap_action_group_lambda", "wrap_tool_handler"), "Protect the action-group Lambda or local tool executor before side effects."),
+    ],
+    "mcp": [("tool_execution", ("forward_with_firewall", "preflight_request"), "Route the actual JSON-RPC forwarder and response path through the MCP host firewall.")],
+    "custom-python": [
+        ("tool_execution", ("guardrail_validate", "guarded_tool_executor"), "Enforce the returned verdict immediately before the real executor; the decorator requires explicit trusted agent and session identity."),
+        ("output_egress", ("mesh_validate",), "Review the final response before release to a user or external destination."),
+        ("delegation", ("a2a_authorize_tool", "a2a_verify_decision_token_rpc"), "Authorize the handoff and verify its token at the receiving executor."),
+    ],
+}
+
+
+def _surface_hook_recommendations(hook: Dict[str, Any], existing: Dict[str, Any], boundaries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    framework = str(hook.get("framework") or "")
+    framework_paths = set(hook.get("detection_evidence_files") or [])
+    observed = {
+        item.get("method") for item in existing.get("observations", [])
+        if isinstance(item, dict) and item.get("kind") == "sdk_call_candidate"
+        and (not framework_paths or item.get("path") in framework_paths)
+    }
+    boundary_types = {item.get("boundary") for item in boundaries if isinstance(item, dict)}
+    rows = []
+    for surface, methods, guidance in _SURFACE_HOOKS.get(framework, []):
+        call_seen = any(method in observed for method in methods)
+        rows.append({
+            "framework": framework, "surface": surface, "method": methods[0],
+            "alternatives": list(methods[1:]),
+            "state": "call_candidate_observed" if call_seen else "not_observed_in_selected_source",
+            "surface_observed": surface in boundary_types or framework == "mcp",
+            "guidance": guidance, "catalog_status": hook.get("status"),
+            "runtime_proof": "not_assessed",
+        })
+    return rows
+
+
+def _recommend_hook(hook: Dict[str, Any], existing: Dict[str, Any]) -> Dict[str, Any]:
+    framework = str(hook.get("framework") or "")
+    method, rationale = _PRIMARY_HOOKS.get(framework, ("review_catalog", "Review the certified hook catalog for this runtime."))
+    observed_methods = {item.get("method") for item in existing.get("observations", []) if isinstance(item, dict)}
+    imports = set(existing.get("sdk_import_modules", []))
+    observed = (
+        "agenticdome_sdk.crewai" in imports if framework == "crewai" else method in observed_methods
+    )
+    if framework == "custom-python" and "guarded_tool_executor" in observed_methods:
+        observed = True
+    return {
+        "framework": framework,
+        "method": method,
+        "state": "call_candidate_observed" if observed else "not_observed_in_selected_source",
+        "reason": rationale,
+        "catalog_status": hook.get("status"),
+        "runtime_proof": "not_assessed",
+        "qualification": "A missing static call may live in another package or dynamic path; an observed call is not proof that the real executor is protected.",
+    }
+
+
 def integration_plan(root: Path) -> Dict[str, Any]:
     report = inspect_repository(root)
     if report.get("scope", {}).get("complete") is not True:
@@ -1349,8 +1497,36 @@ def integration_plan(root: Path) -> Dict[str, Any]:
     }
     required = ["prompt_ingress", "tool_execution", "output_egress"]
     gaps = [boundary for boundary in required if not counts.get(boundary)]
-    frameworks = config.get("frameworks", [])
+    reconciliation = _reconcile_frameworks(config, report)
+    frameworks = reconciliation["planned"]
     hook_plans = _hook_plans(root, report, frameworks, active_catalog_binding)
+    evidence_by_framework = {
+        item["key"]: item.get("evidence_files", [])
+        for item in report["frameworks"] if isinstance(item, dict) and isinstance(item.get("key"), str)
+    }
+    for hook in hook_plans:
+        key = hook["framework"]
+        if key in reconciliation["configured"] and key in reconciliation["detected_now"]:
+            hook["selection_source"] = "configured_and_detected"
+        elif key in reconciliation["detected_now"]:
+            hook["selection_source"] = "newly_detected"
+        elif key == "typescript" and "typescript/javascript" in report["languages"]:
+            hook["selection_source"] = "language_detected"
+        elif key in reconciliation["configured"]:
+            hook["selection_source"] = "configured_only"
+        else:
+            hook["selection_source"] = "language_fallback"
+        hook["detection_evidence_files"] = evidence_by_framework.get(key, [])
+        if hook["selection_source"] == "configured_only":
+            hook["required_actions"].append("This configured framework was not found in the selected workload scan; confirm it is still used before attaching hooks.")
+        elif hook["selection_source"] == "language_fallback":
+            hook["required_actions"].append("JavaScript or TypeScript source was observed, but no specific supported TypeScript framework was identified; confirm the generic contract fits this workload.")
+        hook["recommended_attachment"] = _recommend_hook(hook, report.get("existing_integration", {}))
+        hook["surface_recommendations"] = _surface_hook_recommendations(
+            hook, report.get("existing_integration", {}), report["boundaries"]
+        )
+        if hook["recommended_attachment"]["state"] == "not_observed_in_selected_source":
+            hook["required_actions"].append("No candidate use of " + hook["recommended_attachment"]["method"] + " was observed in this selected source; attach it at the real execution path or document the external integration.")
     semantic_bypasses = semantic.get("bypass_risks", []) if isinstance(semantic, dict) else []
     semantic_reviews = semantic.get("review_findings", []) if isinstance(semantic, dict) else []
     return {
@@ -1373,12 +1549,17 @@ def integration_plan(root: Path) -> Dict[str, Any]:
         },
         "languages": report["languages"],
         "frameworks": frameworks,
+        "detected_frameworks": [item["key"] for item in report["frameworks"]],
+        "framework_reconciliation": reconciliation,
         "framework_hook_plans": hook_plans,
+        "hook_recommendations": [item["recommended_attachment"] for item in hook_plans],
+        "surface_hook_recommendations": [row for item in hook_plans for row in item["surface_recommendations"]],
         "business_purpose": config.get("business_purpose"),
         "deployment": config.get("deployment", {}),
         "candidate_boundaries": report["boundaries"],
         "semantic_analysis": semantic,
         "mcp_protection": report.get("mcp_protection", {}),
+        "existing_integration": report.get("existing_integration", {}),
         "semantic_gate": {
             "confidence": semantic.get("confidence", "unavailable") if isinstance(semantic, dict) else "unavailable",
             "symbols_indexed": int(semantic.get("symbols_indexed", 0)) if isinstance(semantic, dict) else 0,
@@ -1485,6 +1666,24 @@ def _framework_hooks_markdown(plan: Dict[str, Any]) -> str:
             "",
         ])
         adapter = item.get("adapter", {})
+        lines.append("- Why included: `" + str(item.get("selection_source", "configured")) + "`")
+        recommendation = item.get("recommended_attachment") or {}
+        if recommendation:
+            lines.append("- Suggested hook: `" + str(recommendation.get("method")) + "` — " + str(recommendation.get("reason")))
+            lines.append("- Observed in this selected source: `" + str(recommendation.get("state")) + "` (not runtime proof)")
+        if item.get("detection_evidence_files"):
+            lines.append("- Current evidence: " + ", ".join("`" + str(path) + "`" for path in item["detection_evidence_files"][:10]))
+        if item.get("surface_recommendations"):
+            lines.extend(["", "Conditional hooks by action surface (static candidates only):", ""])
+            for row in item["surface_recommendations"]:
+                alternatives = ", or `".join(row.get("alternatives") or [])
+                alternatives = ("; alternatively `" + alternatives + "`") if alternatives else ""
+                lines.append(
+                    "- **" + str(row.get("surface")) + "**: `" + str(row.get("method")) + "`" +
+                    alternatives + " — " + str(row.get("state")) +
+                    ("; boundary candidate found" if row.get("surface_observed") else "; surface not confirmed by static scan") +
+                    ". " + str(row.get("guidance"))
+                )
         if adapter.get("module"):
             lines.append("- Adapter module: `" + str(adapter["module"]) + "`")
         if adapter.get("class"):
@@ -1847,7 +2046,7 @@ def create_scaffold(root: Path, plan: Optional[Dict[str, Any]] = None) -> Path:
     output = _agenticdome_dir(root) / "scaffold"
     output.mkdir(parents=True, exist_ok=True)
     _write_json(output / "integration-plan.json", plan)
-    files = _scaffold_files(config, plan)
+    files = _scaffold_files({**config, "frameworks": plan.get("frameworks", config.get("frameworks", []))}, plan)
     patch_lines: List[str] = []
     for relative, content in files.items():
         target = output / relative
@@ -1947,7 +2146,7 @@ def verify_mcp_project(root: Path, *, live: bool = True, run_tests: bool = True,
         "telemetry_confirmation": "control_plane_certificate_required" if live else "not_run",
         "production_readiness_certificate": "eligible_in_control_plane" if mcp_ready and live else "not_eligible",
         "ready": mcp_ready and live,
-        "claim_boundary": "The CLI proves interception and live decisions. The customer Control Panel confirms retained telemetry and issues the point-in-time production-readiness certificate.",
+        "claim_boundary": "The CLI exercises a local MCP transport rehearsal and live SDK-to-sidecar policy decisions. It does not prove the customer's real MCP forwarder routes through the firewall. Test allowed and blocked calls through that forwarder and confirm matching retained action evidence before claiming production interception.",
     }
     result["ready"] = bool(result.get("ready")) and bool(result["mcp_verification"]["ready"])
     result.pop("report_sha256", None)
@@ -2039,7 +2238,7 @@ def _openclaw_runtime_inspection(root: Path) -> Dict[str, Any]:
             "core_sdk": str((inventory.get("agenticdome-sdk") or {}).get("installed") or "unknown")[:64],
         },
         "ready": status == "loaded" and exact_hooks and allow_conversation,
-        "claim_boundary": "This proves the real OpenClaw runtime loaded the published plugin and exact typed hooks. Live policy behavior and retained telemetry are separate required gates.",
+        "claim_boundary": "This checks plugin registration and consent in the inspecting CLI process. OpenClaw plugins inspect --runtime does not prove that the serving Gateway loaded the plugin or ran a hook. Test an actual Gateway tool call separately.",
     }
 
 
@@ -2090,7 +2289,7 @@ def protect_openclaw(root: Path) -> Dict[str, Any]:
         "evidence": _relative(protection_path, root),
         "customer_source_modified": False,
         "runtime_environment": {"AGENTICDOME_EXECUTION_BROKER_MODE": _onboarding_broker_options(config)["execution_broker_mode"]} if _onboarding_broker_options(config) else {},
-        "next_action": "Generate and review agenticdome plan with the tenant's Copilot key. Load the reported runtime_environment in the OpenClaw process (existing settings are not changed), then run agenticdome openclaw verify with its Runtime / SDK key and a compatible sidecar.",
+        "next_action": "Check the serving Gateway with openclaw gateway status --require-rpc; generate and review agenticdome plan; then test an actual Gateway tool call and inspect its policy evidence. This CLI-local hook inspection alone is not live interception proof. Load the reported runtime_environment in the Gateway process and run agenticdome openclaw verify with a Runtime / SDK key.",
     }
 
 
@@ -2118,7 +2317,7 @@ def verify_openclaw_project(root: Path, *, live: bool = True, run_tests: bool = 
         "telemetry_confirmation": "control_plane_certificate_required" if live else "not_run",
         "production_readiness_certificate": "eligible_in_control_plane" if openclaw_ready else "not_eligible",
         "ready": openclaw_ready,
-        "claim_boundary": "The CLI proves the real OpenClaw hook registration and live tenant decisions. The Control Panel confirms retained telemetry before activation.",
+        "claim_boundary": "The CLI checks plugin registration in its own process and obtains live SDK-to-sidecar decisions. It does not prove that the serving OpenClaw Gateway ran a hook on a customer tool call; verify that path separately and inspect its runtime evidence.",
     }
     result["ready"] = bool(result.get("ready")) and openclaw_ready
     result.pop("report_sha256", None)
@@ -2182,6 +2381,7 @@ def _run_existing_tests(root: Path) -> Dict[str, Any]:
 def verify_project(root: Path, live: bool = False, run_tests: bool = False,
                    *, plan: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
     from .client import AgenticDomeClient
+    from .action_path_proof import load_action_path_proof
 
     plan = plan or integration_plan(root)
     config_path = _agenticdome_dir(root) / "config.json"
@@ -2259,6 +2459,7 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
             "production_ready": semantic_ready and not cross_part_review_required,
         },
         "application_tests": application_tests,
+        "action_path_proof": load_action_path_proof(root),
         "ready": all(item["passed"] for item in outcomes)
             and not plan["coverage"]["gaps"]
             and (not run_tests or semantic_ready)
@@ -2278,7 +2479,7 @@ def _print(value: Any, as_json: bool = False) -> None:
 
 
 def _guided_cli_summary(result: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    summary = {
         "state": result.get("state"),
         "integration_target": result.get("integration_target", "application"),
         "existing_source_edits": int(result.get("source_edits", 0)),
@@ -2291,6 +2492,25 @@ def _guided_cli_summary(result: Dict[str, Any]) -> Dict[str, Any]:
         "prior_applied_revision": result.get("prior_applied_revision"),
         "next_action": result.get("next_action"),
     }
+    if isinstance(result.get("recommended_path"), dict):
+        summary["recommended_path"] = result["recommended_path"]
+    if isinstance(result.get("framework_reconciliation"), dict):
+        summary["framework_reconciliation"] = result["framework_reconciliation"]
+    detection = result.get("workload_detection")
+    if isinstance(detection, dict):
+        summary["workload_detection"] = detection
+    existing = result.get("existing_integration")
+    if isinstance(existing, dict):
+        summary["existing_integration"] = {
+            key: existing.get(key) for key in (
+                "state", "sdk_imports", "sdk_call_candidates", "framework_hook_call_candidates", "a2a_call_candidates",
+                "surface_call_candidates", "local_wrapper_call_candidates",
+                "scope_complete", "runtime_proof", "claim",
+            )
+        }
+    if isinstance(result.get("semantic_gap_counts"), dict):
+        summary["semantic_gap_counts"] = result["semantic_gap_counts"]
+    return summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2339,8 +2559,8 @@ def build_parser() -> argparse.ArgumentParser:
     integrate_parser = subparsers.add_parser("integrate", help="Preview, approve and safely apply local integration edits.")
     integrate_subparsers = integrate_parser.add_subparsers(dest="integrate_command", required=True)
     integrate_preview = integrate_subparsers.add_parser("preview", help="Plan once, then generate an exact local diff and change summary without editing application source.")
-    integrate_preview.add_argument("--target", choices=["application", "mcp"], default="application",
-                                   help="Use mcp for reviewable MCP gateway files; real forwarding still needs manual attachment.")
+    integrate_preview.add_argument("--target", choices=["auto", "application", "mcp"], default="auto",
+                                   help="Auto-detect the workload path; use mcp explicitly for a mixed workload's separate MCP gateway review.")
     integrate_apply = integrate_subparsers.add_parser("apply", help="Apply the reviewed proposal on a new Git branch; never commit or deploy automatically.")
     integrate_apply.add_argument("--approve", help="Approval code printed by preview; required when stdin is non-interactive.")
     integrate_subparsers.add_parser("status", help="Show the saved change summary without rerunning Copilot.")
@@ -2354,6 +2574,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also run detected pytest and npm test commands locally (up to 15 minutes each); no output is included in evidence.",
     )
     verify_parser.add_argument("--output")
+
+    action_parser = subparsers.add_parser(
+        "verify-action",
+        help="Run one safe customer test and correlate the real SDK hook, live verdict and handler spy.",
+    )
+    action_parser.add_argument("--tool", required=True, help="Exact tool name used by the protected route.")
+    action_parser.add_argument("--expect-verdict", required=True, choices=["ALLOWED", "BLOCKED", "REDACTED"])
+    action_parser.add_argument("--expect-executed", required=True, choices=["yes", "no"])
+    action_parser.add_argument("--output", default=".agenticdome/action-proof.json",
+                               help="Local JSON proof report path (default: .agenticdome/action-proof.json).")
+    action_parser.add_argument("test_command", nargs=argparse.REMAINDER,
+                               help="After --, the safe test command to run without a shell, e.g. pytest -q tests/test_agent_action.py")
 
     mcp_parser = subparsers.add_parser(
         "mcp",
@@ -2443,18 +2675,49 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "scanned_files": report["scanned_files"],
                 "frameworks": [item["key"] for item in report["frameworks"]],
                 "candidate_boundaries": len(report["boundaries"]),
+                "existing_sdk_wiring": {
+                    "state": report["existing_integration"]["state"],
+                    "sdk_call_candidates": report["existing_integration"]["sdk_call_candidates"],
+                    "local_wrapper_call_candidates": report["existing_integration"]["local_wrapper_call_candidates"],
+                    "runtime_proof": "not_assessed",
+                },
+                "mcp_boundary_detected": report["mcp_protection"]["detected"],
                 "report_sha256": report["report_sha256"],
             })
         else:
             _print(report, args.json)
         return 0
     if args.command == "init":
-        config = init_project(root, args)
+        already_initialized = (_agenticdome_dir(root) / "config.json").exists()
+        local_report = inspect_repository(root, remote_analysis=False)
+        config = init_project(root, args, inspection_report=local_report)
+        local_report["project"]["workload_id"] = _read_workload_id(root)
+        framework_reconciliation = _reconcile_frameworks(config, local_report)
+        inspection_path = _agenticdome_dir(root) / "inspection.json"
+        if not inspection_path.exists():
+            _write_json(inspection_path, _exportable_inspection(local_report))
+        detected_frameworks = [item["key"] for item in local_report["frameworks"]]
+        existing = local_report["existing_integration"]
+        scope_complete = local_report.get("scope", {}).get("complete") is True
         _print({
-            "status": "created",
+            "status": "scope_review_required" if not scope_complete else "already_initialized" if already_initialized else "created",
             "config_path": ".agenticdome/config.json",
             "inspection_path": ".agenticdome/inspection.json",
-            "next_action": "Local initialization is complete; do not paste this output. Next, use your tenant's Integration Copilot key to run agenticdome integrate preview, review the exact local diff, approve only safe edits or attach guards manually, then run agenticdome inspect --output agenticdome-inspection.json and import that refreshed file in Onboarding > Integrate.",
+            "scope_complete_now": scope_complete,
+            "detected_frameworks_now": detected_frameworks,
+            "framework_reconciliation_now": framework_reconciliation,
+            "mcp_boundary_detected_now": local_report["mcp_protection"]["detected"],
+            "existing_sdk_wiring_now": {
+                "state": existing["state"],
+                "sdk_call_candidates": existing["sdk_call_candidates"],
+                "local_wrapper_call_candidates": existing["local_wrapper_call_candidates"],
+                "runtime_proof": "not_assessed",
+            },
+            "next_action": _scope_gap_message(local_report) + " Keep the local config, but do not import this incomplete inspection or claim protection."
+                           if not scope_complete else
+                           "Existing configuration and prior inspection were kept unchanged; do not paste this console output. Next, run agenticdome integrate preview to reassess this workload and its existing SDK hooks; review the suggested path and exact diff before any change. Run agenticdome inspect --output agenticdome-inspection.json when you are ready to export fresh evidence."
+                           if already_initialized else
+                           "Local configuration is ready; do not paste this console output. Next, use your Integration Copilot key to run agenticdome integrate preview; review the detected path, existing hooks and exact diff. Then run workload tests, refresh the inspection, and import that refreshed file in Onboarding > Integrate.",
             "config": config,
         })
         return 0
@@ -2489,6 +2752,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _write_json(Path(args.output), result)
         from .guided_integration import record_verification
         record_verification(root, result)
+        _print(result)
+        return exit_code
+    if args.command == "verify-action":
+        from .action_path_proof import run_action_path_test
+        command = list(args.test_command)
+        if command and command[0] == "--":
+            command.pop(0)
+        try:
+            exit_code, result = run_action_path_test(
+                root, tool_name=args.tool, expected_verdict=args.expect_verdict,
+                expected_calls=1 if args.expect_executed == "yes" else 0,
+                command=command,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if args.output:
+            output = Path(args.output)
+            if not output.is_absolute():
+                output = root / output
+            _write_json(output, result)
         _print(result)
         return exit_code
     if args.command == "mcp" and args.mcp_command == "protect":

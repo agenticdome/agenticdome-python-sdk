@@ -64,16 +64,51 @@ agenticdome inspect --output agenticdome-inspection.json
 
 `init` writes the secret-free inspection and local configuration. For the
 certified onboarding path, obtain the assigned sidecar and a dedicated
-`integration_copilot` key, run `agenticdome integrate preview`, review its
+`integration_copilot` key, run `agenticdome integrate preview` and
+`agenticdome integrate status`, review the saved
 local exact diff and change summary, explicitly approve a supported edit or
 attach other boundaries manually, then run
 `agenticdome verify --run-tests --output .agenticdome/verification.json`.
 Preview obtains the private, signed, catalog-bound semantic plan and keeps
 application source on your machine. `agenticdome integrate apply` creates a
 local Git review branch but never commits, pushes or deploys. Existing-source
-automatic edits are currently limited to one exact certified smolagents run
-pattern; all other paths need manual integration. The older `agenticdome plan`
+automatic edits cover unambiguous CrewAI bootstrap, PydanticAI `Agent(...)`,
+LangChain `create_agent(...)`, Google ADK agent construction, Claude options,
+Agno `Agent(...)`, direct LlamaIndex `FunctionTool.from_defaults(...)`, direct
+OpenAI Agents `FunctionTool(...)` handlers, explicit custom-Python tool
+dispatchers, and the exact smolagents run pattern.
+The CLI leaves dynamic construction,
+existing handwritten AgenticDome calls, MCP forwarding and other framework
+paths for explicit review; a patch never proves all routes are intercepted.
+The older `agenticdome plan`
 and `agenticdome scaffold` remain available as advanced review-only commands.
+Preview auto-selects an application or pure-MCP review path and reports
+existing Python SDK call-site candidates, including handwritten local
+wrappers. Discovery uses the versioned framework hook catalog plus documented
+prompt, tool, A2A/delegation, MCP and output API methods; categories may
+overlap and TypeScript call sites are not parsed by this Python checker. Mixed
+application/MCP workloads get a separate MCP review path.
+Each preview rescans the selected workload. If code added a framework after
+`init`, its certified hook contract is included in the new plan and flagged for
+review without changing `.agenticdome/config.json`; a framework still in that
+config but absent from the current scan is flagged for confirmation. Run
+`agenticdome integrate status` for the saved next action and import a fresh
+`agenticdome inspect --output agenticdome-inspection.json` after reviewing it.
+These static observations do not prove interception; the CLI avoids
+overlapping automatic rewrites and requires real blocked-action tests.
+
+For one consequential tool, run your own safe integration test through the
+actual application route with an `ExecutionSpy` around its test handler, then
+correlate the SDK adapter call, live-mode verdict and handler invocation:
+
+```bash
+agenticdome verify-action --tool billing.refund --expect-verdict BLOCKED --expect-executed no -- pytest -q tests/test_blocked_refund.py
+```
+
+The test must call `spy.assert_calls(0)` (or `1` for an allowed test); see the
+[real action-path test guide](docs/customer-onboarding.md#prove-one-real-action-path).
+This opt-in command does not execute a business action itself, and a fixed
+`agenticdome verify` probe is not a substitute for the real-path test.
 
 For an MCP client, host, gateway or server workload, use the focused path:
 
@@ -111,6 +146,7 @@ openclaw plugins install npm:agenticdome-openclaw-security
 openclaw plugins enable agenticdome-security
 openclaw config set plugins.entries.agenticdome-security.hooks.allowConversationAccess true
 openclaw gateway restart
+openclaw gateway status --require-rpc
 agenticdome openclaw protect
 # With AGENTICDOME_API_BASE, AGENTICDOME_TENANT_ID and the dedicated
 # AGENTICDOME_COPILOT_API_KEY set, generate and review the signed plan:
@@ -119,8 +155,11 @@ agenticdome plan
 agenticdome openclaw verify --output .agenticdome/verification.json
 ```
 
-`openclaw protect` fails unless the active OpenClaw runtime reports the loaded
-AgenticDome plugin, explicit consent and the exact certified typed hooks.
+`openclaw protect` checks the AgenticDome plugin, explicit consent and exact
+typed hooks in the inspecting CLI process. `gateway status` checks the serving
+Gateway's RPC reachability; neither proves that this Gateway ran a hook on a
+customer tool call. Exercise a safe tool through the actual Gateway and inspect
+the matching AgenticDome runtime decision before claiming that route is protected.
 The official `openclaw plugins install`, `enable`, `config set` and gateway
 restart commands are the actual runtime configuration change; the Python CLI
 does not apply or undo them. No application source patch is needed for native
@@ -133,7 +172,8 @@ includes the MCP transport rehearsal and both `mcp_verification` and
 `openclaw_verification` in one report. Both sections must be ready before the
 report is imported; `mcp verify` alone is not a combined-workload proof. The
 customer Control Panel separately confirms tenant binding and retained
-telemetry; neither command silently modifies customer source.
+telemetry for its probes; neither command silently modifies customer source or
+proves that every live Gateway tool route was intercepted.
 
 When `.agenticdome/inspection.json` is imported into Developer Integration,
 the Control Panel adds its detected frameworks to the workload. Frameworks,
@@ -1468,6 +1508,13 @@ async def lookup_customer(customer_id: str) -> str:
         {"customer_id": customer_id},
     )
 ```
+
+If you construct `agents.FunctionTool` directly, its `on_invoke_tool`
+handler receives JSON text. Use `handler_args_format="json"` with
+`wrap_tool_handler` so the approved or sanitized arguments reach the original
+handler in that same format. The guided integration preview offers this edit
+only for a direct, statically named `FunctionTool` with an identifiable
+handler; other tool factories require manual review and a real-route test.
 
 **Delegated specialist tool pattern:**
 

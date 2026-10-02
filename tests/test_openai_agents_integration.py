@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from agenticdome_sdk.openai_agents import (
     FirewallConfig,
     InMemoryDecisionTokenStore,
     OpenAIAgentsFirewallDenied,
+    OpenAIAgentsFirewallConfigurationError,
 )
 
 
@@ -153,6 +155,28 @@ def test_wrap_tool_handler_applies_sanitized_args():
 
     assert result == {"customer_id": "safe"}
     assert original == {"customer_id": "safe"}
+
+
+def test_wrap_tool_handler_can_preserve_direct_function_tool_json_contract():
+    fw, client = make_firewall()
+    client.guardrail_response = {"result": {"verdict": "ALLOWED", "sanitized_tool_args": {"customer_id": "safe", "_agenticdome_decision_token": "drop"}}}
+    seen = []
+
+    async def handler(ctx, args_json):
+        seen.append(args_json)
+        return json.loads(args_json)["customer_id"]
+
+    secured = fw.wrap_tool_handler(tool_name="crm.customer.read", handler=handler, handler_args_format="json")
+    result = asyncio.run(secured(SimpleNamespace(agent_id="agent-a", session_id="s1"), '{"customer_id":"unsafe"}'))
+
+    assert result == "safe"
+    assert seen == ['{"customer_id":"safe"}']
+
+
+def test_wrap_tool_handler_rejects_unknown_handler_args_format():
+    fw, _ = make_firewall()
+    with pytest.raises(OpenAIAgentsFirewallConfigurationError):
+        fw.wrap_tool_handler(tool_name="crm.customer.read", handler=lambda ctx, args: args, handler_args_format="tuple")
 
 
 def test_tool_schema_validation_blocks_bad_args():

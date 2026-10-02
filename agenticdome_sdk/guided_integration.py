@@ -281,15 +281,42 @@ def _manual_note(path: str, reason: str) -> Dict[str, str]:
     return {"path": path, "reason": reason}
 
 
-def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = "application") -> Dict[str, Any]:
+def _select_target(plan: Dict[str, Any], requested: str) -> Dict[str, Any]:
+    if requested not in {"auto", "application", "mcp"}:
+        raise ValueError("Choose auto, application or mcp for the guided integration target.")
+    detected = set(plan.get("detected_frameworks") or plan.get("frameworks") or [])
+    mcp_detected = (plan.get("mcp_protection") or {}).get("detected") is True
+    if requested == "auto" and detected == {"openclaw"}:
+        raise RuntimeError("This is an OpenClaw workload. Run agenticdome openclaw protect to check the native plugin and hooks; a generic source patch is not the right path.")
+    selected = requested if requested != "auto" else ("mcp" if detected == {"mcp"} and mcp_detected else "application")
+    secondary = ["mcp"] if selected == "application" and mcp_detected else []
+    scope_warning = (
+        "Many framework families were found in this selected tree. Confirm it is one deployable workload; otherwise run from the smaller application or package root."
+        if len(detected) >= 5 else None
+    )
+    return {
+        "requested": requested,
+        "selected": selected,
+        "detected_frameworks": sorted(detected),
+        "secondary_targets": secondary,
+        "scope_warning": scope_warning,
+        "reason": (
+            "Explicit customer selection." if requested != "auto" else
+            "Only an MCP workload was detected; prepare MCP forwarder review files." if selected == "mcp" else
+            "Mixed application and MCP signals; assess the application first and review the MCP forwarder separately." if mcp_detected else
+            "Application workload detected; evaluate its certified source-edit patterns and existing SDK hooks."
+        ),
+    }
+
+
+def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = "auto") -> Dict[str, Any]:
     from .onboarding_cli import _load_json, _scaffold_files, create_scaffold, integration_plan
 
-    integration_target = target
-    if integration_target not in {"application", "mcp"}:
-        raise ValueError("Choose application or mcp for the guided integration target.")
     root = root.resolve()
     manifest_path, patch_path, proposed_root = _paths(root)
     plan = plan or integration_plan(root)
+    workload_detection = _select_target(plan, target)
+    integration_target = workload_detection["selected"]
     mcp_plan = plan.get("mcp_protection")
     if integration_target == "mcp" and (not isinstance(mcp_plan, dict) or mcp_plan.get("detected") is not True):
         raise RuntimeError("No MCP boundary was found in the current plan. Run agenticdome mcp protect from the MCP workload first.")
@@ -322,7 +349,12 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
                 _write_json(history_manifest, prior)
     create_scaffold(root, plan=plan)
     config = _load_json(root / ".agenticdome" / "config.json")
-    generated = _scaffold_files(config, plan)
+    generated = _scaffold_files({**config, "frameworks": plan.get("frameworks", config.get("frameworks", []))}, plan)
+    existing = plan.get("existing_integration") if isinstance(plan.get("existing_integration"), dict) else {}
+    framework_reconciliation = plan.get("framework_reconciliation") if isinstance(plan.get("framework_reconciliation"), dict) else {}
+    existing_surfaces = existing.get("surface_call_candidates") if isinstance(existing.get("surface_call_candidates"), dict) else {}
+    existing_state = str(existing.get("state", "not_assessed"))
+    semantic_gate = plan.get("semantic_gate") if isinstance(plan.get("semantic_gate"), dict) else {}
     changes: List[Dict[str, Any]] = []
     patch_parts: List[str] = []
     manual: List[Dict[str, str]] = []
@@ -348,24 +380,54 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
                         "summary": "Add a generated MCP integration review file; forwarding is not connected."
                         if relative in MCP_GENERATED_FILES else "Add a generated integration review file."})
 
-    hook_ready = integration_target == "application" and any(item.get("framework") == "smolagents" and item.get("status") == "ready_for_attachment"
-                     and "run_agent_securely" in (item.get("adapter") or {}).get("attachment_methods", [])
-                     for item in plan.get("framework_hook_plans", []) if isinstance(item, dict))
+    from .framework_edits import propose_framework_edits
+
+    auto_recipe_hooks = {
+        "custom-python": "guardrail_validate",
+        "crewai": "attach", "pydanticai": "install_native_hooks", "langgraph": "as_langchain_middleware",
+        "google-adk": "build_callback_kwargs", "claude": "install_on_options", "agno": "attach_firewall", "llamaindex": "to_function_tool", "openai-agents": "wrap_tool_handler", "smolagents": "run_agent_securely",
+    }
+    ready_frameworks = {
+        item["framework"] for item in plan.get("framework_hook_plans", []) if isinstance(item, dict)
+        and item.get("framework") in auto_recipe_hooks and item.get("status") == "ready_for_attachment"
+        and auto_recipe_hooks[item["framework"]] in (item.get("adapter") or {}).get("attachment_methods", [])
+    } if integration_target == "application" else set()
     binding_ready = (plan.get("hook_catalog") or {}).get("sidecar_binding", {}).get("verified") is True
     paths, capped = _candidate_paths(plan)
-    if hook_ready and binding_ready:
-        local_paths, local_capped = _local_smolagents_paths(root)
-        combined_paths = sorted(set(paths).union(local_paths))
+    if ready_frameworks and binding_ready:
+        evidence_paths = {
+            str(path) for item in plan.get("framework_hook_plans", []) if isinstance(item, dict)
+            and item.get("framework") in ready_frameworks
+            for path in item.get("detection_evidence_files", [])
+            if isinstance(path, str) and path.endswith(".py")
+        }
+        local_paths, local_capped = _local_smolagents_paths(root) if "smolagents" in ready_frameworks else ([], False)
+        combined_paths = sorted(set(paths).union(local_paths).union(evidence_paths))
         paths = combined_paths[:MAX_CANDIDATE_FILES]
         capped = capped or local_capped or len(combined_paths) > MAX_CANDIDATE_FILES
     if capped:
         manual.append(_manual_note("workload", "The bounded local Python candidate scan reached its 200-candidate or 5,000-file limit; remaining files were not auto-edited."))
+    if existing_state in {"sdk_calls_found", "wrapper_calls_found"}:
+        manual.append(_manual_note("existing-sdk-hooks", "Customer-written SDK call sites were found. This is a static signal, not proof that every tool path passes through them or that failures stop execution. Review the listed call sites and test the real executor."))
+    elif existing_state == "sdk_imports_only":
+        manual.append(_manual_note("existing-sdk-hooks", "An AgenticDome SDK import was found, but no supported call site was observed. An import alone does not protect an action."))
+    if framework_reconciliation.get("included_from_current_scan"):
+        manual.append(_manual_note("framework-drift", "The current scan detected additional frameworks and included their certified hook contracts in this preview. The saved local config was not changed; review the framework list and package versions before attaching hooks."))
+    if any(item.get("boundary") == "delegation" for item in plan.get("candidate_boundaries", []) if isinstance(item, dict)) and not existing_surfaces.get("a2a", 0):
+        manual.append(_manual_note("a2a-handoff", "Delegation-like source patterns were found but no Python A2A authorization or receiving-agent verification call was observed. Review the actual framework handoff path; a native wrapper may provide the calls internally. Test both handoff authorization and bound-token verification at the receiving executor."))
+    mcp_topology = plan.get("mcp_protection") if isinstance(plan.get("mcp_protection"), dict) else {}
+    if integration_target == "application" and mcp_topology.get("detected") is True and not existing_surfaces.get("mcp", 0):
+        manual.append(_manual_note("mcp-routing", "MCP use was detected but no Python MCP firewall call was observed in this workload. Identify the real client, host or gateway and run the separate MCP review path. A TypeScript or external gateway is not assessed by this Python call-site check."))
     if integration_target == "mcp":
         manual.append(_manual_note("mcp-forwarding", "Generated MCP files are only preparation. Attach the wrapper to each real forwarder, supply trusted identity and purpose, reroute clients, and test allowed/blocked requests. No traffic is protected by copying files alone."))
-    elif not hook_ready or not binding_ready:
-        manual.append(_manual_note("workload", "Existing-source edits require a verified sidecar catalog and a certified smolagents run_agent_securely adapter. Other frameworks remain manual-review paths."))
+    elif not ready_frameworks or not binding_ready:
+        manual.append(_manual_note("workload", "An existing-source edit requires a verified sidecar catalog and a certified recipe for the detected framework/package version. Review the framework hook plan and attach unsupported paths manually."))
     else:
+        existing_paths = {item.get("path") for item in existing.get("observations", []) if isinstance(item, dict)}
         for relative in paths:
+            if relative in existing_paths:
+                manual.append(_manual_note(relative, "Customer-written AgenticDome calls already exist in this file. Review their placement and fail-closed behavior; no overlapping automatic rewrite was proposed."))
+                continue
             try:
                 target = _target(root, relative)
             except ValueError as exc:
@@ -376,12 +438,23 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
                     manual.append(_manual_note(relative, "Not a readable Python file within the 300 KB local edit limit."))
                     continue
                 before = target.read_bytes()
-                after_text, line_numbers = _smolagents_edit(before.decode("utf-8"))
+                original_text = before.decode("utf-8")
+                after_text = original_text
+                recipes = []
+                if "smolagents" in ready_frameworks:
+                    smol_text, smol_lines = _smolagents_edit(after_text)
+                    if smol_text:
+                        after_text = smol_text
+                        recipes.append(("smolagents", "run_agent_securely", smol_lines))
+                framework_text, framework_edits = propose_framework_edits(after_text, ready_frameworks)
+                if framework_text:
+                    after_text = framework_text
+                    recipes.extend((item.framework, item.attachment, [item.line]) for item in framework_edits)
             except (OSError, UnicodeDecodeError):
                 manual.append(_manual_note(relative, "Source could not be read as UTF-8; no edit proposed."))
                 continue
-            if after_text is None:
-                manual.append(_manual_note(relative, "No exact supported pattern: a fresh local smolagents agent, direct return of agent.run(task), and explicit session_id are required."))
+            if not recipes:
+                manual.append(_manual_note(relative, "No unambiguous certified attachment pattern was found in this file. The framework hook plan names the supported method; review the actual construction and execution path manually."))
                 continue
             after = after_text.encode("utf-8")
             if after == before:
@@ -393,8 +466,9 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
             changes.append({"path": relative, "kind": "modified", "before_sha256": _sha(before),
                             "after_sha256": _sha(after), "before_mode": _file_mode(target),
                             "after_mode": _file_mode(target),
-                            "summary": "Route a direct smolagents run through input, tool and output enforcement.",
-                            "lines": line_numbers, "adapter": "AgenticDomeSmolagentsFirewall.run_agent_securely"})
+                            "summary": "Propose catalog-qualified " + ", ".join(sorted({item[0] for item in recipes})) + " hooks at reviewed construction or execution sites; exercise the real route before claiming protection.",
+                            "lines": sorted({line for _, _, lines in recipes for line in lines}),
+                            "adapters": [framework + "." + method for framework, method, _ in recipes]})
 
     if any(item["kind"] == "modified" for item in changes):
         manual.append(_manual_note("deployment", "Add the certified AgenticDome SDK to the actual application deployment and supply a genuine stable session_id and Runtime / SDK key. Installing the CLI in a separate virtual environment is not enough."))
@@ -406,8 +480,46 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
     summary_lines = [
         "# AgenticDome proposed changes", "",
         "This is a local proposal, not proof that production actions are protected.", "",
-        "## Exact file summary", "",
+        "## Workload and existing integration", "",
+        "- Selected path: `" + integration_target + "` (" + workload_detection["reason"] + ")",
+        "- Detected frameworks: " + (", ".join(workload_detection["detected_frameworks"]) or "none"),
+        "- Frameworks planned now: " + (", ".join(plan.get("frameworks", [])) or "none"),
+        "- Newly detected since local config: " + (", ".join(framework_reconciliation.get("included_from_current_scan", [])) or "none"),
+        "- Existing SDK wiring: `" + existing_state + "` (static candidates, not runtime proof)",
+        "- Observed Python call candidates: framework hooks " + str(existing.get("framework_hook_call_candidates", 0))
+        + ", A2A " + str(existing.get("a2a_call_candidates", 0))
+        + ", MCP " + str(existing_surfaces.get("mcp", 0))
+        + " (categories may overlap; no customer action was exercised)",
+        "- Action-required semantic findings: " + str(semantic_gate.get("action_required", "not assessed")),
+        "- Review-required semantic findings: " + str(semantic_gate.get("review_required", "not assessed")),
+        "",
+        "## Framework hooks to attach or verify", "",
     ]
+    for recommendation in plan.get("hook_recommendations", []):
+        if not isinstance(recommendation, dict):
+            continue
+        summary_lines.append(
+            "- `" + str(recommendation.get("framework")) + "`: `" + str(recommendation.get("method")) +
+            "` — " + str(recommendation.get("state")) + ". " + str(recommendation.get("reason"))
+        )
+    summary_lines.extend(["", "## Conditional hooks by action surface", ""])
+    for recommendation in plan.get("surface_hook_recommendations", []):
+        if not isinstance(recommendation, dict):
+            continue
+        summary_lines.append(
+            "- `" + str(recommendation.get("framework")) + "` / `" + str(recommendation.get("surface")) +
+            "`: `" + str(recommendation.get("method")) + "` — " + str(recommendation.get("state")) +
+            ("; candidate boundary found. " if recommendation.get("surface_observed") else "; conditional, surface not confirmed. ") +
+            str(recommendation.get("guidance"))
+        )
+    summary_lines.extend([
+        "", "Static observation is not proof of attachment. Review each actual tool, delegation and output route.", "",
+        "## Exact file summary", "",
+    ])
+    if workload_detection["secondary_targets"]:
+        summary_lines.insert(summary_lines.index("## Exact file summary"), "- Also assess MCP routing: `agenticdome integrate preview --target mcp` (separate proposal).")
+    if workload_detection["scope_warning"]:
+        summary_lines.insert(summary_lines.index("## Exact file summary"), "- Scope caution: " + workload_detection["scope_warning"])
     for item in changes:
         summary_lines.append("- `" + item["path"] + "` — " + item["kind"] + ": " + item["summary"])
         summary_lines.append("  - Before SHA-256: `" + (item["before_sha256"] or "file absent") + "`; after SHA-256: `" + item["after_sha256"] + "`")
@@ -423,6 +535,7 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
                           "Review the exact diff and framework hook report; run application tests and `agenticdome mcp verify`." if integration_target == "mcp"
                           else "Review the exact diff and framework hook report; run application tests and `agenticdome verify --run-tests`.",
                           "Exercise an allowed and blocked action through the actual connected tool boundary.",
+                          "For an application tool, instrument the actual test handler with `ExecutionSpy`, call `spy.assert_calls(0)` for a blocked fixture, then run `agenticdome verify-action --tool YOUR_TOOL --expect-verdict BLOCKED --expect-executed no -- pytest -q tests/YOUR_SAFE_TEST.py`. Repeat with an allowed fixture and one handler call. See `docs/customer-onboarding.md`; no production action should be used.",
                           "The optional CI and generic wrapper templates remain under `.agenticdome/scaffold`; they are not applied automatically.", ""])
     summary_bytes = "\n".join(summary_lines).encode("utf-8")
     _atomic_write(_target(proposed_root, summary_path), summary_bytes, 0o600)
@@ -436,21 +549,48 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
     patch = "".join(patch_parts).encode("utf-8")
     _atomic_write(patch_path, patch, 0o600)
     digest = _sha(patch)
+    source_edits = sum(item["kind"] == "modified" for item in changes)
+    mcp_review_files = integration_target == "mcp" and any(item["path"] in MCP_GENERATED_FILES for item in changes)
+    recommended_path = (
+        {"kind": "review_source_edit", "headline": "Review one exact source edit", "may_apply": True,
+         "instruction": "Open the patch and change summary. Apply only if the edit fits your real execution path; then test an allowed and blocked action."}
+        if source_edits else
+        {"kind": "review_mcp_files", "headline": "Attach the MCP forwarder", "may_apply": True,
+         "instruction": "Review the generated MCP files before adding them on a branch. You must still connect the wrapper and reroute clients."}
+        if mcp_review_files else
+        {"kind": "validate_existing_hooks", "headline": "Check your existing AgenticDome calls", "may_apply": False,
+         "instruction": "No source edit is offered. Follow the listed call sites through the real executor, close bypasses and test fail-closed behavior."}
+        if existing_state in {"sdk_calls_found", "wrapper_calls_found"} else
+        {"kind": "manual_integration", "headline": "Connect the suggested hooks manually", "may_apply": False,
+         "instruction": "No certified automatic source edit was found. Use the framework hook plan and semantic review to attach protection at the real action boundary."}
+    )
     result: Dict[str, Any] = {
         "schema": SCHEMA, "state": "preview", "source_upload": False,
         "integration_target": integration_target,
+        "workload_detection": workload_detection,
+        "framework_reconciliation": framework_reconciliation,
+        "hook_recommendations": plan.get("hook_recommendations", []),
+        "surface_hook_recommendations": plan.get("surface_hook_recommendations", []),
+        "existing_integration": existing,
+        "semantic_gap_counts": {
+            "action_required": semantic_gate.get("action_required"),
+            "review_required": semantic_gate.get("review_required"),
+        },
         "created_at": _now(), "plan_sha256": _sha(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")),
         "patch_sha256": digest, "approval_code": digest[:12],
         "patch": ".agenticdome/scaffold/guided-integration.patch",
         "prior_applied_revision": prior_applied_revision,
         "changes": changes, "manual_review": manual,
-        "source_edits": sum(item["kind"] == "modified" for item in changes),
+        "source_edits": source_edits,
+        "recommended_path": recommended_path,
         "next_action": ("Review the exact diff and change summary. If approved, run agenticdome integrate apply. "
                         "This installs review files only; connect the real MCP forwarder manually and run agenticdome mcp verify before claiming protection."
                         if integration_target == "mcp" and any(item["path"] in MCP_GENERATED_FILES for item in changes)
                         else "Review the local patch and exact file summary, then run agenticdome integrate apply. "
                         "Protection is not proven until the real workload and blocked-tool tests pass."
                         if any(item["kind"] == "modified" for item in changes)
+                        else "Existing SDK call sites were found, but no certified existing-source edit is available. Review their real call paths and SEMANTIC-REVIEW.md, close the listed gaps, and run workload and live blocked-tool tests. Do not claim complete protection from this preview."
+                        if existing_state in {"sdk_calls_found", "wrapper_calls_found"}
                         else "No safe existing-source edit was identified. Review SEMANTIC-REVIEW.md and integrate manually; do not claim this workload is protected."),
     }
     _write_json(manifest_path, result)
@@ -568,6 +708,10 @@ def apply(root: Path, approval_code: Optional[str] = None) -> Dict[str, Any]:
         raise
     manifest["state"] = "applied"
     manifest["applied_at"] = _now()
+    manifest["recommended_path"] = {
+        "kind": "verify_applied_change", "headline": "Test the changed execution path", "may_apply": False,
+        "instruction": "The local branch contains the approved change. Run workload tests and send an allowed and blocked action through the actual connected boundary.",
+    }
     manifest["next_action"] = (
         "MCP review files were added on a local Git branch. No existing forwarder was rewired and no traffic is protected yet. "
         "Attach the wrapper to the real request/response path, reroute clients, run workload tests and agenticdome mcp verify."
@@ -611,6 +755,10 @@ def undo(root: Path, revision: Optional[str] = None) -> Dict[str, Any]:
             _atomic_write(target, backup, item["before_mode"])
     manifest["state"] = "undone"
     manifest["undone_at"] = _now()
+    manifest["recommended_path"] = {
+        "kind": "preview_again", "headline": "Preview again when ready", "may_apply": False,
+        "instruction": "The local edit was restored. Reassess the workload and review a new exact diff before any further change.",
+    }
     manifest["next_action"] = "Local edits were restored. The review branch remains available; no Git reset or delete was performed."
     _write_json(manifest_path, manifest)
     return manifest
@@ -636,10 +784,59 @@ def record_verification(root: Path, result: Dict[str, Any]) -> None:
 
 def export_summary(root: Path) -> Optional[Dict[str, Any]]:
     """Return a bounded source-free change ledger for onboarding evidence."""
+    from .onboarding_cli import FRAMEWORK_MARKERS, _PRIMARY_HOOKS, _SURFACE_HOOKS
+
     manifest_path, _, _ = _paths(root.resolve())
     if not manifest_path.is_file():
         return None
     manifest = _load_manifest(root.resolve())
+    recommendation = manifest.get("recommended_path")
+    path_kind = recommendation.get("kind") if isinstance(recommendation, dict) else None
+    if path_kind not in {
+        "review_source_edit", "review_mcp_files", "validate_existing_hooks",
+        "manual_integration", "verify_applied_change", "preview_again",
+    }:
+        path_kind = None
+    raw_reconciliation = manifest.get("framework_reconciliation")
+    reconciliation = raw_reconciliation if isinstance(raw_reconciliation, dict) else {}
+    known_frameworks = set(FRAMEWORK_MARKERS) | {"typescript"}
+
+    def framework_list(key: str) -> List[str]:
+        values = reconciliation.get(key)
+        if not isinstance(values, list):
+            return []
+        return list(dict.fromkeys(value for value in values[:30] if isinstance(value, str) and value in known_frameworks))
+
+    hook_recommendations = []
+    for item in manifest.get("hook_recommendations", [])[:30] if isinstance(manifest.get("hook_recommendations"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        framework = item.get("framework")
+        if framework not in _PRIMARY_HOOKS or item.get("method") != _PRIMARY_HOOKS[framework][0]:
+            continue
+        hook_recommendations.append({
+            "framework": framework,
+            "method": item["method"],
+            "state": item.get("state") if item.get("state") in {"call_candidate_observed", "not_observed_in_selected_source"} else "not_observed_in_selected_source",
+            "runtime_proof": "not_assessed",
+        })
+
+    surface_recommendations = []
+    for item in manifest.get("surface_hook_recommendations", [])[:60] if isinstance(manifest.get("surface_hook_recommendations"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        framework = item.get("framework")
+        allowed = {surface: methods for surface, methods, _ in _SURFACE_HOOKS.get(framework, [])}
+        surface = item.get("surface")
+        if surface not in allowed or item.get("method") != allowed[surface][0]:
+            continue
+        surface_recommendations.append({
+            "framework": framework, "surface": surface, "method": item["method"],
+            "state": item.get("state") if item.get("state") in {"call_candidate_observed", "not_observed_in_selected_source"} else "not_observed_in_selected_source",
+            "surface_observed": item.get("surface_observed") is True,
+            "runtime_proof": "not_assessed",
+        })
+
     return {
         "schema": SCHEMA,
         "state": manifest.get("state"),
@@ -650,6 +847,15 @@ def export_summary(root: Path) -> Optional[Dict[str, Any]]:
         "prior_applied_revision": manifest.get("prior_applied_revision"),
         "source_edits": manifest.get("source_edits", 0),
         "manual_review_count": len(manifest.get("manual_review", [])),
+        "recommended_path": {"kind": path_kind, "may_apply": path_kind in {"review_source_edit", "review_mcp_files"}},
+        "framework_reconciliation": {
+            "planned": framework_list("planned"),
+            "included_from_current_scan": framework_list("included_from_current_scan"),
+            "configured_without_current_evidence": framework_list("configured_without_current_evidence"),
+            "config_changed": False,
+        },
+        "hook_recommendations": hook_recommendations,
+        "surface_hook_recommendations": surface_recommendations,
         "changes": [
             {key: item.get(key) for key in ("path", "kind", "before_sha256", "after_sha256", "before_mode", "after_mode", "summary")}
             for item in manifest.get("changes", [])[:250]

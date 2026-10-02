@@ -156,7 +156,7 @@ agenticdome integrate preview
 # Review .agenticdome/scaffold/guided-integration.patch and
 # .agenticdome/scaffold/proposed/AGENTICDOME-CHANGES.md
 agenticdome integrate status
-agenticdome integrate apply
+# Only after reviewing a supported proposed edit: agenticdome integrate apply
 agenticdome inspect --output agenticdome-inspection.json
 agenticdome verify --run-tests --output .agenticdome/verification.json
 ```
@@ -170,12 +170,33 @@ Core's signed response. The CLI rejects a catalog digest that differs from its
 installed SDK and binds cached results to the tenant, sidecar origin and IR.
 
 The tenant-bound plan is required for certified verification. Guided preview
-writes an exact local diff, file-by-file before/after hashes and manual-review
+writes the detected application/MCP path and any existing Python SDK call-site
+candidates into its local summary. On mixed workloads it defaults to the
+application path and points to `--target mcp` for a separate MCP-forwarder
+review; an OpenClaw-only workload uses `agenticdome openclaw protect` instead.
+Repeating `agenticdome init` keeps the existing config and prior inspection,
+but reports current local detections rather than saying it created a new
+configuration. `integrate preview` rescans the selected workload and includes
+newly detected frameworks in the current hook plan without silently editing
+that config; it also flags configured frameworks with no current scan evidence.
+`integrate status` shows the saved recommended next path, and a fresh `inspect`
+exports that path for the tenant onboarding page. A manually written SDK call is a candidate hook, not proof that
+all action paths are guarded; the CLI does not overwrite a file where it finds
+one of these hooks. Review the listed paths and semantic gaps, then test the
+actual executor with allowed and blocked cases.
+
+It also writes an exact local diff, file-by-file before/after hashes and manual-review
 list under `.agenticdome/scaffold`; it does not edit application source or
 send source to Copilot. Apply asks for the displayed approval code and requires
 a Git working tree with no tracked workload changes. It creates a local review
-branch, checks the source hashes again and edits only a certified, exact
-smolagents `agent.run(task)` pattern with an explicit `session_id`. Unrelated
+branch, checks the source hashes again and edits only a catalog-qualified,
+unambiguous attachment pattern: CrewAI bootstrap, PydanticAI `Agent(...)`,
+LangChain `create_agent(...)`, Google ADK agent construction, Claude options,
+Agno `Agent(...)`, direct LlamaIndex `FunctionTool.from_defaults(...)`, direct
+OpenAI Agents `FunctionTool(...)` handlers, explicit custom-Python tool
+dispatchers, or smolagents `agent.run(task)`
+with an explicit `session_id`. It skips
+ambiguous and already handwritten integration paths. Unrelated
 tracked source edits must be committed or stashed first; preview-generated
 `.agenticdome` artifacts do not count as a source conflict. It also
 adds reviewed, secret-free integration files. The CLI does not commit, push
@@ -194,6 +215,53 @@ older revision; a newer edit touching the same file must be reviewed and
 undone first.
 The older `agenticdome plan` and `agenticdome scaffold` commands remain as
 advanced, unapplied review-only options.
+
+| Workload path | Current guided result |
+| --- | --- |
+| Bespoke Python tool dispatcher with explicit `tool_name`, `tool_args`, trusted `agent_id` and `session_id` | Exact decorator proposal; sync and async handlers supported. It gates that function only. |
+| CrewAI, PydanticAI, LangChain `create_agent`, Google ADK, Claude, Agno, direct LlamaIndex `FunctionTool`, direct OpenAI Agents `FunctionTool`, exact smolagents run | Exact edit only where the local AST and signed catalog agree. Other paths in the same workload still need review. |
+| Microsoft Agent Framework, AutoGen, Microsoft AI Foundry, AWS Bedrock | Framework-specific hook plan, but no generic source rewrite: registration and tool-executor contracts depend on the customer's wiring. |
+| Python MCP hosts/gateways, TypeScript MCP, generic TypeScript | Review files and protocol-specific steps; the customer must route the actual forwarder or handler through the boundary. |
+| OpenClaw | Use the native plugin installation, consent and runtime verification path, not a Python source edit. |
+
+This table describes onboarding automation, **not** total SDK protocol support or
+production protection. No static edit can certify that all raw tool routes,
+delegation receivers, outputs and customer permissions are guarded.
+
+### Prove one real action path
+
+Use a safe test fixture, never a real payment, deletion, or production tool.
+Install `ExecutionSpy` around the actual business handler **in your test
+setup**, and invoke the normal application route. For example, if your app
+allows its refund handler to be injected in a test:
+
+```python
+from agenticdome_sdk.action_path_proof import ExecutionSpy
+
+def test_blocked_refund_reaches_firewall(app_factory, test_client):
+    spy = ExecutionSpy("billing.refund")
+    app = app_factory(refund_handler=spy.wrap(lambda **kwargs: None))
+    response = test_client(app).post("/refund", json={"order_id": "fixture-only"})
+    assert response.status_code == 403  # Adapt to your application's contract.
+    spy.assert_calls(0)
+```
+
+The test must really reach the selected framework adapter and assigned
+sidecar. Set the **Runtime / SDK** key, not the Copilot key, then run:
+
+```bash
+agenticdome verify-action --tool billing.refund --expect-verdict BLOCKED --expect-executed no -- pytest -q tests/test_blocked_refund.py
+```
+
+Run a separate allowed fixture with `--expect-verdict ALLOWED
+--expect-executed yes` and `spy.assert_calls(1)`. The command emits no prompt,
+arguments, test stdout, token or source. `passed` requires exactly one live-mode
+SDK tool decision through a recognised adapter and a matching assertion from
+the handler spy. A direct SDK call, missing spy, failed test, mismatched
+verdict or multiple matching calls reports `incomplete`. This is
+customer-operated integration evidence, not proof that *every* production
+route is covered; confirm the corresponding retained sidecar decision and
+repeat for consequential routes, A2A/MCP delegation and output boundaries.
 
 ### MCP: same review flow, different attachment boundary
 
@@ -217,8 +285,12 @@ every customer MCP path is intercepted.
 OpenClaw protection is installed and enabled through the official OpenClaw
 plugin/config commands in its onboarding page. Those commands change the
 active gateway configuration; plan a safe restart window. `agenticdome
-openclaw protect` verifies the loaded plugin, consent and hook contract, while
-`agenticdome openclaw verify` adds workload and tenant decision evidence.
+openclaw protect` checks plugin registration, consent and hook contract in a
+separate CLI process, while `agenticdome openclaw verify` adds workload and
+SDK-to-sidecar decision evidence. Check the serving Gateway with
+`openclaw gateway status --require-rpc`, then exercise a safe tool call
+through it and inspect the corresponding AgenticDome runtime decision. CLI-local
+registration and sidecar probes alone do not prove a Gateway hook fired.
 `agenticdome integrate apply` does not install, configure or undo the active
 OpenClaw plugin. Native hooks need no source rewrite; custom skill paths that
 bypass them require a reviewed `protectedExecute()` attachment and tests.

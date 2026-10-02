@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,8 @@ from urllib.parse import urlparse
 import requests
 
 from .mcp_host import AgenticDomeMCPHostFirewall
+
+logger = logging.getLogger("AgenticDome.mcp_http_gateway")
 
 
 class MCPGatewayConfigurationError(RuntimeError):
@@ -134,14 +137,8 @@ async def _review_sse_event(
             effective_request = {"method": "resources/list"}
         elif isinstance(result, dict) and isinstance(result.get("prompts"), list):
             effective_request = {"method": "prompts/list"}
-        elif "result" in payload:
-            reviewed_result = await firewall.sanitize_mcp_result(
-                tool_output=result,
-                context=context,
-                request_purpose="mcp_streaming_output_sanitization",
-            )
-            payload = dict(payload)
-            payload["result"] = reviewed_result
+        # Unknown GET/SSE methods still need complete response review below.
+        # Reviewing just result here would leave error and extension siblings raw.
     reviewed = await firewall.review_forwarded_response(
         mcp_request=effective_request,
         response=payload,
@@ -215,10 +212,11 @@ def build_handler(config: MCPHTTPGatewayConfig, firewall: AgenticDomeMCPHostFire
                     self.wfile.write(("\n".join(reviewed) + "\n\n").encode("utf-8"))
                     self.wfile.flush()
             except Exception as exc:
+                logger.warning("MCP GET gateway failed: %s", type(exc).__name__)
                 if response_started:
                     self.close_connection = True
                 else:
-                    self._json(502, firewall.jsonrpc_error(None, -32000, f"AgenticDome Blocked: {exc}"))
+                    self._json(502, firewall.jsonrpc_error(None, -32000, "AgenticDome Blocked: MCP gateway unavailable"))
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path.rstrip("/") != "/mcp":
@@ -272,10 +270,11 @@ def build_handler(config: MCPHTTPGatewayConfig, firewall: AgenticDomeMCPHostFire
                 )
                 self._json(upstream.status_code, reviewed)
             except Exception as exc:
+                logger.warning("MCP POST gateway failed: %s", type(exc).__name__)
                 if response_started:
                     self.close_connection = True
                 else:
-                    self._json(502, firewall.jsonrpc_error(None, -32000, f"AgenticDome Blocked: {exc}"))
+                    self._json(502, firewall.jsonrpc_error(None, -32000, "AgenticDome Blocked: MCP gateway unavailable"))
 
         def log_message(self, _format: str, *_args: Any) -> None:
             return None

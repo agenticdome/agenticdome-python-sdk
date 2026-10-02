@@ -93,13 +93,13 @@ def main() -> int:
     result = asyncio.run(run_demo())
     allowed_text = result["allowed"]["result"]["content"][0]["text"]
     blocked_message = result["blocked"]["error"]["message"]
-    poisoned_text = result["poisoned_result"]["result"]["content"][0]["text"]
+    poisoned_message = result["poisoned_result"]["error"]["message"]
 
     print("AgenticDome MCP Action Firewall — local simulation")
     print("Simulation only: no network, tenant policy, real MCP server, or tool execution.")
     print(f"ALLOWED request: forwarded safely -> {allowed_text}")
     print(f"BLOCKED request: not forwarded -> {blocked_message}")
-    print(f"POISONED result: replaced before planner reuse -> {poisoned_text}")
+    print(f"POISONED result: withheld before planner reuse -> {poisoned_message}")
     print(f"Forwarded demo tools: {', '.join(result['forwarded_tools'])}")
     return 0
 

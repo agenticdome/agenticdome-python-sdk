@@ -7,11 +7,14 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import time
 import uuid
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import date
 from inspect import isawaitable
 from threading import Lock
 from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Optional, Tuple
@@ -332,6 +335,15 @@ def _build_token_store(config: FirewallConfig) -> DecisionTokenStore:
     return InMemoryDecisionTokenStore(config.tenant_id)
 
 
+@dataclass(frozen=True)
+class ProviderActionRule:
+    """Opt-in, provider-backed guard for an exact MCP booking tool name."""
+
+    action: str  # "cancel_booking" or "create_booking"
+    reservation_id_argument: str = "reservation_id"
+    booking_date_argument: str = "booking_date"
+
+
 class AgenticDomeMCPHostFirewall:
     """Runtime firewall for MCP hosts, gateways, and JSON-RPC forwarding proxies.
 
@@ -346,6 +358,8 @@ class AgenticDomeMCPHostFirewall:
         client: Optional[AgenticDomeClient] = None,
         token_store: Optional[DecisionTokenStore] = None,
         lifecycle_reporter: Optional[VerifiedActionReporter] = None,
+        provider_action_rules: Optional[Dict[str, "ProviderActionRule"]] = None,
+        resolve_provider_facts: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
     ) -> None:
         self.config = config or load_config()
         if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
@@ -362,6 +376,8 @@ class AgenticDomeMCPHostFirewall:
         )
         self.token_store = token_store or _build_token_store(self.config)
         self.lifecycle_reporter = lifecycle_reporter or VerifiedActionReporter.from_env(tenant_id=self.config.tenant_id)
+        self.provider_action_rules = dict(provider_action_rules or {})
+        self.resolve_provider_facts = resolve_provider_facts
         self._rate_lock = Lock()
         self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
 
@@ -383,7 +399,8 @@ class AgenticDomeMCPHostFirewall:
         error: Dict[str, Any] = {"code": code, "message": message}
         if data is not None:
             error["data"] = data
-        return {"jsonrpc": "2.0", "id": id_, "error": error}
+        safe_id = id_ if AgenticDomeMCPHostFirewall._valid_jsonrpc_id(id_) else None
+        return {"jsonrpc": "2.0", "id": safe_id, "error": error}
 
     @staticmethod
     def jsonrpc_result(id_: Any, result: Any) -> Dict[str, Any]:
@@ -411,6 +428,10 @@ class AgenticDomeMCPHostFirewall:
     @staticmethod
     def _request_id(req: Dict[str, Any]) -> Any:
         return req.get("id")
+
+    @staticmethod
+    def _valid_jsonrpc_id(value: Any) -> bool:
+        return value is None or isinstance(value, str) or type(value) is int or (type(value) is float and math.isfinite(value))
 
     @staticmethod
     def _method(req: Dict[str, Any]) -> str:
@@ -496,9 +517,10 @@ class AgenticDomeMCPHostFirewall:
         env = self._extract_result(payload)
         return self._safe_str(env.get("reason") or env.get("message") or env.get("explanation") or payload)
 
-    def _sanitized_args(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _sanitized_args(self, payload: Dict[str, Any], *, explicit_only: bool = False) -> Optional[Dict[str, Any]]:
         env = self._extract_result(payload)
-        for key in ("sanitized_tool_args", "sanitized_args", "tool_args"):
+        keys = ("sanitized_tool_args", "sanitized_args") if explicit_only else ("sanitized_tool_args", "sanitized_args", "tool_args")
+        for key in keys:
             value = env.get(key)
             if isinstance(value, dict):
                 return self._strip_internal_args(value)
@@ -953,15 +975,16 @@ class AgenticDomeMCPHostFirewall:
         )
 
     async def _handle_blocking_decision(self, *, decision: Dict[str, Any], rid: Any, context: Dict[str, Any], method: str, operation: str) -> Optional[Dict[str, Any]]:
-        if self._verdict(decision) != "BLOCKED":
+        verdict = self._verdict(decision)
+        if verdict == "ALLOWED" or (verdict == "REDACTED" and self._sanitized_args(decision, explicit_only=True) is not None):
             return None
-        reason = self._reason(decision)
+        reason = self._reason(decision) if verdict == "BLOCKED" else "No usable policy verdict or safe replacement arguments"
         await self._report_incident_best_effort(
             agent_id=self._host_id(context),
             incident_type="blocked_mcp_operation",
             details=f"method={method} operation={operation} reason={reason}",
         )
-        return self.jsonrpc_error(rid, -32000, f"AgenticDome Blocked: {reason}", data={"method": method, "operation": operation})
+        return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: MCP action not authorized", data={"method": method})
 
     # ------------------------------------------------------------------
     # Output sanitization and filtering
@@ -995,12 +1018,28 @@ class AgenticDomeMCPHostFirewall:
             )
 
             env = self._extract_result(response)
-            if self._verdict(env) == "BLOCKED":
+            verdict = self._verdict(env)
+            coverage = env.get("context") if isinstance(env.get("context"), dict) else {}
+            if (
+                coverage.get("truncated_for_scan") is True
+                or coverage.get("truncated_for_echo") is True
+                or (len(bounded_text) > 6000 and not all(
+                    isinstance(coverage.get(key), bool) for key in ("truncated_for_scan", "truncated_for_echo")
+                ))
+            ):
+                return "[OUTPUT BLOCKED BY AgenticDome]"
+            if verdict not in {"ALLOWED", "REDACTED"}:
                 await self._report_incident_best_effort(
                     agent_id=host_id,
                     incident_type="blocked_output",
-                    details=self._reason(env),
+                    details=self._reason(env) if verdict == "BLOCKED" else "Unusable output policy verdict",
                 )
+                return "[OUTPUT BLOCKED BY AgenticDome]"
+
+            if verdict == "REDACTED":
+                for key in ("sanitized_text", "text"):
+                    if isinstance(env.get(key), str):
+                        return env[key]
                 return "[OUTPUT BLOCKED BY AgenticDome]"
 
             sanitized_text = env.get("text") or env.get("sanitized_text") or response.get("text") or response.get("sanitized_text")
@@ -1012,52 +1051,36 @@ class AgenticDomeMCPHostFirewall:
             return bounded_text
 
     async def sanitize_mcp_result(self, *, tool_output: Any, context: Dict[str, Any], request_purpose: str = "mcp_tool_output_sanitization") -> Any:
-        """Sanitize common MCP result shapes while preserving JSON-RPC response structure."""
+        """Review every JSON field in one bounded call, preserving its result shape."""
         if tool_output is None:
             return None
         if isinstance(tool_output, str):
             return await self.sanitize_text(text=tool_output, context=context, request_purpose=request_purpose)
-        if isinstance(tool_output, list):
-            return [await self.sanitize_mcp_result(tool_output=item, context=context, request_purpose=request_purpose) for item in tool_output]
-        if not isinstance(tool_output, dict):
-            return await self.sanitize_text(text=self._safe_str(tool_output), context=context, request_purpose=request_purpose)
-
-        out = copy.deepcopy(tool_output)
-        touched_text = False
-
-        for list_key in ("content", "messages"):
-            items = out.get(list_key)
-            if isinstance(items, list):
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    if isinstance(item.get("text"), str):
-                        item["text"] = await self.sanitize_text(text=item["text"], context=context, request_purpose=request_purpose)
-                        touched_text = True
-                    content = item.get("content")
-                    if isinstance(content, dict) and isinstance(content.get("text"), str):
-                        content["text"] = await self.sanitize_text(text=content["text"], context=context, request_purpose=request_purpose)
-                        touched_text = True
-                    elif isinstance(content, str):
-                        item["content"] = await self.sanitize_text(text=content, context=context, request_purpose=request_purpose)
-                        touched_text = True
-
-        for key in ("text", "description"):
-            if isinstance(out.get(key), str):
-                out[key] = await self.sanitize_text(text=out[key], context=context, request_purpose=request_purpose)
-                touched_text = True
-
-        if touched_text:
-            return out
-
-        serialized = json.dumps(out, default=str, sort_keys=True)
-        sanitized = await self.sanitize_text(text=serialized, context=context, request_purpose=request_purpose)
-        if sanitized == serialized:
-            return out
         try:
-            return json.loads(sanitized)
-        except Exception:
-            return sanitized
+            serialized = json.dumps(tool_output, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise MCPToolBlocked("MCP output is not JSON-serializable for complete review") from exc
+        if self.config.max_output_chars > 0 and len(serialized) > self.config.max_output_chars:
+            raise MCPToolBlocked("MCP output exceeds the configured complete-review limit")
+        sanitized = await self.sanitize_text(text=serialized, context=context, request_purpose=request_purpose)
+        try:
+            reviewed = json.loads(sanitized)
+        except (TypeError, ValueError) as exc:
+            raise MCPToolBlocked("MCP output review returned an invalid JSON replacement") from exc
+        def same_shape(original: Any, replacement: Any) -> bool:
+            if isinstance(original, dict):
+                return isinstance(replacement, dict) and original.keys() == replacement.keys() and all(
+                    same_shape(original[key], replacement[key]) for key in original
+                )
+            if isinstance(original, list):
+                return isinstance(replacement, list) and len(original) == len(replacement) and all(
+                    same_shape(left, right) for left, right in zip(original, replacement)
+                )
+            return type(original) is type(replacement)
+
+        if not same_shape(tool_output, reviewed):
+            raise MCPToolBlocked("MCP output review changed the response structure")
+        return reviewed
 
     async def _filter_named_list_result(
         self,
@@ -1083,11 +1106,12 @@ class AgenticDomeMCPHostFirewall:
             context=context,
             request_purpose=request_purpose,
         )
-        if self._verdict(decision) == "BLOCKED":
+        env = self._extract_result(decision)
+        allowed = next((env.get(key) for key in allowed_keys if isinstance(env.get(key), list)), None)
+        verdict = self._verdict(decision)
+        if verdict not in {"ALLOWED", "REDACTED"} or (verdict == "REDACTED" and allowed is None):
             filtered: List[Any] = []
         else:
-            env = self._extract_result(decision)
-            allowed = next((env.get(key) for key in allowed_keys if isinstance(env.get(key), list)), None)
             blocked = next((env.get(key) for key in blocked_keys if isinstance(env.get(key), list)), [])
             allowed_set = {self._safe_str(item) for item in allowed} if isinstance(allowed, list) else None
             blocked_set = {self._safe_str(item) for item in blocked} if isinstance(blocked, list) else set()
@@ -1158,11 +1182,56 @@ class AgenticDomeMCPHostFirewall:
     async def _sanitize_response_chunk(self, *, chunk: Any, context: Dict[str, Any]) -> Any:
         if isinstance(chunk, str):
             return await self.sanitize_text(text=chunk, context=context, request_purpose="mcp_streaming_output_sanitization")
-        if isinstance(chunk, dict) and "result" in chunk:
-            out = copy.deepcopy(chunk)
-            out["result"] = await self.sanitize_mcp_result(tool_output=out["result"], context=context, request_purpose="mcp_streaming_output_sanitization")
-            return out
+        if isinstance(chunk, dict) and chunk.get("jsonrpc") == "2.0":
+            return await self._sanitize_jsonrpc_payload(response=chunk, context=context, request_purpose="mcp_streaming_output_sanitization")
         return await self.sanitize_mcp_result(tool_output=chunk, context=context, request_purpose="mcp_streaming_output_sanitization")
+
+    async def _sanitize_jsonrpc_payload(self, *, response: Dict[str, Any], context: Dict[str, Any], request_purpose: str) -> Dict[str, Any]:
+        # Review the server-controlled ID too. For request/response exchanges it
+        # must match the caller's ID; for GET streams there may be no request ID.
+        payload = {key: value for key, value in response.items() if key != "jsonrpc"}
+        if not payload:
+            return response
+        reviewed = await self.sanitize_mcp_result(tool_output=payload, context=context, request_purpose=request_purpose)
+        if reviewed.get("id") != response.get("id"):
+            raise MCPToolBlocked("MCP output review changed the JSON-RPC request ID")
+        return {**response, **reviewed}
+
+    async def _check_provider_action(self, *, tool_name: str, arguments: Dict[str, Any]) -> None:
+        rule = self.provider_action_rules.get(tool_name)
+        if rule is None:
+            return
+        if self.resolve_provider_facts is None or rule.action not in {"cancel_booking", "create_booking"}:
+            raise MCPToolBlocked("Booking authorization is not configured")
+        try:
+            # This callback must be implemented inside the provider's trusted process.
+            # It must derive the human from auth/session and facts from its own DB/API.
+            facts = self.resolve_provider_facts(tool_name, copy.deepcopy(arguments))
+            if isawaitable(facts):
+                facts = await facts
+            if not isinstance(facts, dict):
+                raise ValueError("Missing provider facts")
+            if rule.action == "cancel_booking":
+                requested = arguments.get(rule.reservation_id_argument)
+                fetched = facts.get("reservation_id")
+                principal = facts.get("principal_id")
+                owner = facts.get("owner_id")
+                if not all(isinstance(value, str) and value.strip() for value in (requested, fetched, principal, owner)):
+                    raise ValueError("Missing owner or principal")
+                if requested != fetched or principal != owner:
+                    raise ValueError("Reservation ownership mismatch")
+            else:
+                requested = arguments.get(rule.booking_date_argument)
+                latest = facts.get("latest_allowed_date")
+                if not isinstance(facts.get("principal_id"), str) or not facts["principal_id"].strip():
+                    raise ValueError("Missing authenticated principal")
+                if not all(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) for value in (requested, latest)):
+                    raise ValueError("Missing booking horizon")
+                if date.fromisoformat(requested) > date.fromisoformat(latest):
+                    raise ValueError("Outside booking horizon")
+        except Exception as exc:
+            # A configured provider check never inherits the SDK's fail-open setting.
+            raise MCPToolBlocked("Booking authorization failed") from exc
 
     # ------------------------------------------------------------------
     # Main interceptor APIs
@@ -1193,7 +1262,9 @@ class AgenticDomeMCPHostFirewall:
                 blocked = await self._handle_blocking_decision(decision=decision, rid=rid, context=local_context, method=method, operation=tool_name)
                 if blocked:
                     return blocked
-                forwarded_args = self._sanitized_args(decision) or self._strip_internal_args(tool_args)
+                sanitized_args = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
+                forwarded_args = sanitized_args if sanitized_args is not None else self._strip_internal_args(tool_args)
+                await self._check_provider_action(tool_name=tool_name, arguments=forwarded_args)
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method, "operation": tool_name})
                 return self._replace_tool_args(mcp_request, forwarded_args)
 
@@ -1203,9 +1274,9 @@ class AgenticDomeMCPHostFirewall:
                 blocked = await self._handle_blocking_decision(decision=decision, rid=rid, context=local_context, method=method, operation=uri)
                 if blocked:
                     return blocked
-                sanitized_params = self._sanitized_args(decision)
+                sanitized_params = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method, "operation": uri})
-                return self._replace_params(mcp_request, sanitized_params) if sanitized_params else mcp_request
+                return self._replace_params(mcp_request, sanitized_params) if sanitized_params is not None else mcp_request
 
             if method == "prompts/get" and self.config.protect_prompts_get:
                 name, prompt_params = self._extract_prompt_get(mcp_request)
@@ -1213,18 +1284,18 @@ class AgenticDomeMCPHostFirewall:
                 blocked = await self._handle_blocking_decision(decision=decision, rid=rid, context=local_context, method=method, operation=name)
                 if blocked:
                     return blocked
-                sanitized_params = self._sanitized_args(decision)
+                sanitized_params = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method, "operation": name})
-                return self._replace_params(mcp_request, sanitized_params) if sanitized_params else mcp_request
+                return self._replace_params(mcp_request, sanitized_params) if sanitized_params is not None else mcp_request
 
             if method == "sampling/createMessage" and self.config.protect_sampling_create_message:
                 decision = await self.authorize_mcp_method(method=method, params=params, context=local_context, request_purpose="mcp_sampling_create_message")
                 blocked = await self._handle_blocking_decision(decision=decision, rid=rid, context=local_context, method=method, operation=method)
                 if blocked:
                     return blocked
-                sanitized_params = self._sanitized_args(decision)
+                sanitized_params = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method})
-                return self._replace_params(mcp_request, sanitized_params) if sanitized_params else mcp_request
+                return self._replace_params(mcp_request, sanitized_params) if sanitized_params is not None else mcp_request
 
             list_methods = {
                 "tools/list": self.config.protect_tools_list,
@@ -1237,14 +1308,17 @@ class AgenticDomeMCPHostFirewall:
                 if blocked:
                     return blocked
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method})
-                return mcp_request
+                sanitized_params = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
+                return self._replace_params(mcp_request, sanitized_params) if sanitized_params is not None else mcp_request
 
             return mcp_request
         except MCPToolBlocked as exc:
-            return self.jsonrpc_error(rid, -32000, f"AgenticDome Blocked: {exc}", data={"method": method})
+            return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: MCP request not authorized", data={"method": method})
         except (AgenticDomeHTTPError, Exception) as exc:
+            if method == "tools/call" and self._extract_tool_call(mcp_request)[0] in self.provider_action_rules:
+                return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: Booking authorization unavailable", data={"method": method})
             if self.config.fail_closed:
-                return self.jsonrpc_error(rid, -32000, f"AgenticDome Blocked: {exc}", data={"method": method})
+                return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: MCP preflight unavailable", data={"method": method})
             logger.warning("AgenticDome MCP preflight failed open. reason=%s", exc)
             return mcp_request
 
@@ -1259,33 +1333,36 @@ class AgenticDomeMCPHostFirewall:
         return response
 
     async def _sanitize_forwarded_response(self, *, method: str, response: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(response, dict) or "result" not in response:
-            return response
+        if not isinstance(response, dict):
+            raise MCPToolBlocked("MCP response is not a JSON-RPC object")
+        if response.get("jsonrpc") != "2.0":
+            raise MCPToolBlocked("MCP response is not a JSON-RPC 2.0 object")
+        if "id" in response and not self._valid_jsonrpc_id(response["id"]):
+            raise MCPToolBlocked("MCP response has an invalid JSON-RPC ID")
 
         sanitized_response = copy.deepcopy(response)
-        result = sanitized_response["result"]
-        if method == "tools/list" and self.config.protect_tools_list:
+        result = sanitized_response.get("result")
+        if "result" in sanitized_response and method == "tools/list" and self.config.protect_tools_list:
             sanitized_response["result"] = await self.filter_tools_list_result(tools_result=result, context=context)
-            return sanitized_response
-        if method == "resources/list" and self.config.protect_resources_list:
+        elif "result" in sanitized_response and method == "resources/list" and self.config.protect_resources_list:
             sanitized_response["result"] = await self.filter_resources_list_result(resources_result=result, context=context)
-            return sanitized_response
-        if method == "prompts/list" and self.config.protect_prompts_list:
+        elif "result" in sanitized_response and method == "prompts/list" and self.config.protect_prompts_list:
             sanitized_response["result"] = await self.filter_prompts_list_result(prompts_result=result, context=context)
+        enabled = {
+            "tools/call": self.config.sanitize_tool_output,
+            "resources/read": self.config.sanitize_resource_output,
+            "prompts/get": self.config.sanitize_prompt_output,
+            "sampling/createMessage": self.config.sanitize_sampling_output,
+            "tools/list": self.config.protect_tools_list,
+            "resources/list": self.config.protect_resources_list,
+            "prompts/list": self.config.protect_prompts_list,
+        }.get(method, self.config.sanitize_streaming_output)
+        if not enabled:
             return sanitized_response
-        if method == "resources/read" and self.config.sanitize_resource_output:
-            sanitized_response["result"] = await self.sanitize_mcp_result(tool_output=result, context=context, request_purpose="mcp_resource_output_sanitization")
-            return sanitized_response
-        if method == "prompts/get" and self.config.sanitize_prompt_output:
-            sanitized_response["result"] = await self.sanitize_mcp_result(tool_output=result, context=context, request_purpose="mcp_prompt_output_sanitization")
-            return sanitized_response
-        if method == "sampling/createMessage" and self.config.sanitize_sampling_output:
-            sanitized_response["result"] = await self.sanitize_mcp_result(tool_output=result, context=context, request_purpose="mcp_sampling_output_sanitization")
-            return sanitized_response
-        if method == "tools/call" and self.config.sanitize_tool_output:
-            sanitized_response["result"] = await self.sanitize_mcp_result(tool_output=result, context=context, request_purpose="mcp_tool_output_sanitization")
-            return sanitized_response
-        return sanitized_response
+        return await self._sanitize_jsonrpc_payload(
+            response=sanitized_response, context=context,
+            request_purpose=f"mcp_{method.replace('/', '_')}_output_sanitization",
+        )
 
     async def review_forwarded_response(
         self,
@@ -1305,6 +1382,14 @@ class AgenticDomeMCPHostFirewall:
         local_context = dict(context or {})
         local_context["mcp_method"] = method
         try:
+            if isinstance(mcp_request, dict) and "id" in mcp_request and (
+                not self._valid_jsonrpc_id(mcp_request["id"])
+                or not isinstance(response, dict)
+                or "id" not in response
+                or type(response.get("id")) is not type(mcp_request["id"])
+                or response.get("id") != mcp_request["id"]
+            ):
+                raise MCPToolBlocked("MCP response ID does not match the request")
             return await self._sanitize_forwarded_response(
                 method=method,
                 response=response,
@@ -1312,16 +1397,16 @@ class AgenticDomeMCPHostFirewall:
             )
         except MCPToolBlocked as exc:
             return self.jsonrpc_error(
-                response.get("id"),
+                mcp_request.get("id") if isinstance(mcp_request, dict) else None,
                 -32000,
-                f"AgenticDome Blocked: {exc}",
+                "AgenticDome Blocked: MCP output rejected",
                 data={"method": method, "stage": "output_review"},
             )
         except Exception as exc:
             if self.config.fail_closed:
                 logger.warning("AgenticDome MCP result sanitization failed closed. reason=%s", exc)
                 return self.jsonrpc_error(
-                    response.get("id"),
+                    mcp_request.get("id") if isinstance(mcp_request, dict) else None,
                     -32000,
                     "AgenticDome Blocked: MCP response review failed",
                     data={"method": method, "stage": "output_review"},
@@ -1378,8 +1463,8 @@ class AgenticDomeMCPHostFirewall:
             self.lifecycle_reporter.outcome(lifecycle, "accepted")
             return self.sanitize_streaming_response(chunks=response, context=local_context)
         if not isinstance(response, dict):
-            self.lifecycle_reporter.outcome(lifecycle, "succeeded")
-            return response
+            self.lifecycle_reporter.outcome(lifecycle, "rejected")
+            return self.jsonrpc_error(self._request_id(mcp_request), -32000, "AgenticDome Blocked: MCP response is not a JSON-RPC object")
 
         reviewed = await self.review_forwarded_response(
             mcp_request=mcp_request,
@@ -1399,6 +1484,7 @@ __all__ = [
     "MCPConfigurationError",
     "MCPFirewallError",
     "MCPToolBlocked",
+    "ProviderActionRule",
     "RedisDecisionTokenStore",
     "load_config",
 ]

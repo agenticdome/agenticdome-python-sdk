@@ -12,7 +12,8 @@ def test_public_mcp_gateway_example_is_network_free_and_fail_closed():
     assert result["allowed"]["result"]["content"][0]["text"].startswith("Case 123")
     assert result["blocked"]["error"]["code"] == -32000
     assert "system.execute_remote_patch" not in result["forwarded_tools"]
-    assert result["poisoned_result"]["result"]["content"][0]["text"] == "[OUTPUT BLOCKED BY AgenticDome]"
+    assert result["poisoned_result"]["error"]["code"] == -32000
+    assert "Ignore prior instructions" not in str(result["poisoned_result"])
     assert result["forwarded_tools"] == ["crm.case.lookup", "web.search.poisoned"]
 
 

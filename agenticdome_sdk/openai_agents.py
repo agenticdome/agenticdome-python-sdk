@@ -1044,7 +1044,11 @@ class AgenticDomeOpenAIAgentsFirewall:
         sanitize_output: bool = True,
         preserve_structured_output: bool = True,
         tool_schema: Optional[Any] = None,
+        handler_args_format: str = "dict",
     ) -> Callable[..., Awaitable[Any]]:
+        if handler_args_format not in {"dict", "json"}:
+            raise OpenAIAgentsFirewallConfigurationError("handler_args_format must be 'dict' or 'json'.")
+
         async def secured(ctx: Any, args_json_or_dict: Any = None, *a: Any, **kw: Any) -> Any:
             tool_args = self._normalize_args(args_json_or_dict)
             agent_id = self._ctx_agent_id(ctx)
@@ -1065,10 +1069,11 @@ class AgenticDomeOpenAIAgentsFirewall:
             )
             sanitized_args = self._sanitized_args(decision)
             clean_args = self._mutate_args(args_json_or_dict, sanitized_args) if sanitized_args is not None else self._strip_private_args(tool_args)
+            handler_args = json.dumps(clean_args, separators=(",", ":"), ensure_ascii=False) if handler_args_format == "json" else clean_args
             if inspect.iscoroutinefunction(handler):
-                raw_result = await handler(ctx, clean_args, *a, **kw)
+                raw_result = await handler(ctx, handler_args, *a, **kw)
             else:
-                raw_result = await asyncio.to_thread(handler, ctx, clean_args, *a, **kw)
+                raw_result = await asyncio.to_thread(handler, ctx, handler_args, *a, **kw)
             if not sanitize_output:
                 return raw_result
             return await self._sanitize_result(
