@@ -73,8 +73,12 @@ attach other boundaries manually, then run
 If a coding assistant has already made and tested the application edits,
 import its canonical `AgenticDome_Integration.md` in the customer portal and
 run `agenticdome validate-report --report AgenticDome_Integration.md` from
-that same deployable workload. Import the two generated, hash-bound JSON files
-in Onboarding. This avoids repeating the guided edit plan; the Markdown counts
+that same deployable workload. If it reports `ready=false`, follow the local
+`.agenticdome/RECONCILIATION.md` worklist and rerun after reviewing the real
+source and tests. You may import the two generated, hash-bound JSON files in
+Onboarding even when the gate is incomplete, to retain partial evidence and run
+a fixed tenant-policy diagnostic. They do not count as passing workload proof or
+unlock activation; rerun and reimport after closing the gaps. This avoids repeating the guided edit plan; the Markdown counts
 remain AI-reported and a real action-path test is still required before
 claiming protection. See the [customer onboarding guide](docs/customer-onboarding.md).
 

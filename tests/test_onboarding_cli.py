@@ -57,6 +57,91 @@ def test_validate_ai_report_binds_both_local_evidence_files_without_source_uploa
     assert inspection["source_upload"] is False
     assert verification["source_upload"] is False
     assert "Workload scope:" not in json.dumps((inspection, verification))
+    assert result["reconciliation"] == ".agenticdome/RECONCILIATION.md"
+    assert (root / result["reconciliation"]).is_file()
+
+
+def test_validate_ai_report_groups_findings_and_allows_only_diagnostic_import_on_failure(tmp_path, monkeypatch):
+    root = tmp_path / "service"
+    root.mkdir()
+    report_path = root / "AgenticDome_Integration.md"
+    rows = "\n".join(f"| {index}. Category | 0 | 0 | 0 | 0 | 0 |" for index in range(1, 9))
+    report_path.write_text("Workload scope: `service`\n" + rows, encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda target: {"root": str(target)})
+    monkeypatch.setattr(onboarding_cli, "_exportable_inspection", lambda raw: {
+        "schema": SCHEMA, "source_upload": False, "scope": {"complete": True},
+    })
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda target: {
+        "schema": "plan", "coverage": {"gaps": []},
+        "semantic_analysis": {
+            "bypass_risks": [
+                {"boundary": "prompt_ingress", "path": "agents/chatbot.py", "line": 25,
+                 "reason": "do not echo this remote text"},
+                {"boundary": "prompt_ingress", "path": "agents/chatbot.py", "line": 40},
+            ],
+            "review_findings": [{"boundary": "output_egress", "path": "agents/chatbot.py", "line": 80}],
+        },
+    })
+    monkeypatch.setattr(onboarding_cli, "verify_project", lambda target, *, run_tests, plan: (
+        2, {"schema": "agenticdome.verification-result.v1", "ready": False,
+            "semantic_gate": {"confidence": "partial", "unresolved_bypasses": 2, "review_required": 1},
+            "application_tests": {"passed": True}}
+    ))
+
+    code, result = onboarding_cli.validate_ai_integration_report(root, report_path)
+    guide = (root / result["reconciliation"]).read_text(encoding="utf-8")
+    assert code == 2 and result["ready"] is False
+    assert result["status"] == "validation_needs_attention"
+    assert "diagnostic evidence, but not as passing evidence" in result["next_action"]
+    assert "`agents/chatbot.py` (2 locations)" in guide
+    assert "Lines: 25, 40" in guide
+    assert "Trace and classify" in guide
+    assert "do not echo this remote text" not in guide
+    assert "source-free worklist" in guide
+
+
+def test_validate_ai_report_refuses_reconciliation_symlink(tmp_path, monkeypatch):
+    root = tmp_path / "service"
+    root.mkdir()
+    report_path = root / "AgenticDome_Integration.md"
+    rows = "\n".join(f"| {index}. Category | 0 | 0 | 0 | 0 | 0 |" for index in range(1, 9))
+    report_path.write_text("Workload scope: `service`\n" + rows, encoding="utf-8")
+    (root / ".agenticdome").mkdir()
+    (root / ".agenticdome" / "RECONCILIATION.md").symlink_to(tmp_path / "other.md")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda target: {"root": str(target)})
+    monkeypatch.setattr(onboarding_cli, "_exportable_inspection", lambda raw: {
+        "schema": SCHEMA, "scope": {"complete": True},
+    })
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda target: {"schema": "plan"})
+    monkeypatch.setattr(onboarding_cli, "verify_project", lambda target, *, run_tests, plan: (
+        0, {"schema": "agenticdome.verification-result.v1", "ready": True}
+    ))
+    with pytest.raises(SystemExit, match="symlink"):
+        onboarding_cli.validate_ai_integration_report(root, report_path)
+
+
+def test_validate_ai_report_cannot_be_ready_when_its_own_scope_is_not_assessed(tmp_path, monkeypatch):
+    root = tmp_path / "service"
+    root.mkdir()
+    report_path = root / "AgenticDome_Integration.md"
+    rows = "\n".join(f"| {index}. Category | 0 | 0 | 0 | 0 | 0 |" for index in range(1, 9))
+    report_path.write_text("Workload scope: `service`\n" + rows + "\nDirect provider paths: NOT ASSESSED.\n", encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda target: {"root": str(target)})
+    monkeypatch.setattr(onboarding_cli, "_exportable_inspection", lambda raw: {
+        "schema": SCHEMA, "source_upload": False, "scope": {"complete": True},
+    })
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda target: {"schema": "plan"})
+    monkeypatch.setattr(onboarding_cli, "verify_project", lambda target, *, run_tests, plan: (
+        0, {"schema": "agenticdome.verification-result.v1", "ready": True}
+    ))
+
+    code, result = onboarding_cli.validate_ai_integration_report(root, report_path)
+    verification = json.loads((root / result["verification"]).read_text(encoding="utf-8"))
+    assert code == 2 and result["ready"] is False
+    assert result["status"] == "partial_coverage"
+    assert "run a tenant-policy diagnostic" in result["next_action"]
+    assert verification["ai_report_scope"]["scope_incomplete"] is True
+    assert "NOT ASSESSED" in (root / result["reconciliation"]).read_text(encoding="utf-8")
 
 
 def test_validate_ai_report_rejects_irreconcilable_counts_before_scanning(tmp_path, monkeypatch):
@@ -158,6 +243,19 @@ def test_copilot_analyzes_every_deployable_workload_separately(tmp_path, monkeyp
     assert semantic["workload_coverage"]["analyzed_parts"] == 2
     assert semantic["workload_coverage"]["cross_part_flow_proven"] is False
     assert semantic["confidence"] == "partial"
+    assert REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True) == semantic
+    assert len(seen) == 2  # current cache is reused
+
+    # An older CLI's on-disk result must not preserve obsolete finding rules.
+    for name in ("copilot-analysis.json", "copilot-parts.json"):
+        cache_path = tmp_path / ".agenticdome" / name
+        stale = json.loads(cache_path.read_text(encoding="utf-8"))
+        stale.pop("cache_revision", None)
+        cache_path.write_text(json.dumps(stale), encoding="utf-8")
+    refreshed = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
+    assert refreshed["ir_sha256"] == semantic["ir_sha256"]
+    assert len(seen) == 4
+    assert json.loads((tmp_path / ".agenticdome" / "copilot-analysis.json").read_text())["cache_revision"] == onboarding_cli.COPILOT_CACHE_REVISION
 
 
 def test_copilot_rejects_oversized_function_before_any_request(tmp_path, monkeypatch):

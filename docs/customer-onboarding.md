@@ -69,8 +69,17 @@ agenticdome validate-report --report AgenticDome_Integration.md
 
 This does not edit the application. It checks current source-free structure,
 requests the tenant-bound semantic assessment and runs detected workload tests.
-Import both generated files, `agenticdome-inspection.json` and
-`.agenticdome/verification.json`, together in the same onboarding workload.
+The command also writes a local `.agenticdome/RECONCILIATION.md` worklist. If
+it exits non-zero or says `ready=false`, open that file: it groups possible
+bypasses and uncertain internal paths by source file, with the next check for
+each boundary. Review the actual source, fix or investigate those paths, rerun
+the workload tests and validation, and update the canonical AI report. The
+worklist is not uploaded and cannot waive a finding. You may import both
+generated files, `agenticdome-inspection.json` and
+`.agenticdome/verification.json`, together in the same onboarding workload even
+when validation is incomplete. The portal records this as partial evidence and
+can run fixed tenant-policy diagnostics, but it does not grant full verification
+or activation readiness. Rerun and reimport after closing the gaps.
 Their hashes bind them to the exact Markdown report. A changed report requires
 rerunning validation. The portal then performs its separate assigned-runtime
 check; test the actual customer action path before activation. MCP and

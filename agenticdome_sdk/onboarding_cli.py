@@ -43,6 +43,10 @@ from .framework_edits import has_explicit_python_tool_dispatcher
 SCHEMA = "agenticdome.onboarding-report.v1"
 CONFIG_SCHEMA = "agenticdome.project-config.v1"
 COPILOT_ANALYSIS_REVISION = 4
+# Local cache revision is separate from the wire contract: changing the
+# analyzer's finding rules must refresh old on-disk results without forcing
+# every already-published SDK to upgrade in lockstep with its sidecar.
+COPILOT_CACHE_REVISION = 2
 COPILOT_MAX_WORKLOAD_BYTES = 4_000_000
 COPILOT_MAX_WORKLOAD_PARTS = 24
 COPILOT_MAX_EVENTS_PER_FUNCTION = 2_048
@@ -575,6 +579,7 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
             and isinstance(semantic, dict)
             and semantic.get("ir_sha256") == ir_digest
             and semantic.get("analysis_revision") == COPILOT_ANALYSIS_REVISION
+            and cached.get("cache_revision") == COPILOT_CACHE_REVISION
         ):
             return semantic
 
@@ -592,12 +597,14 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
         or part_cache.get("api_base") != api_base
         or part_cache.get("catalog_digest") != expected_catalog_digest
         or part_cache.get("selected_ir_sha256") != ir_digest
+        or part_cache.get("cache_revision") != COPILOT_CACHE_REVISION
         or not isinstance(part_cache.get("parts"), dict)
     ):
         part_cache = {
             "schema": "agenticdome.copilot-part-cache.v1", "tenant_id": tenant_id,
             "api_base": api_base, "catalog_digest": expected_catalog_digest,
-            "selected_ir_sha256": ir_digest, "parts": {},
+            "selected_ir_sha256": ir_digest, "cache_revision": COPILOT_CACHE_REVISION,
+            "parts": {},
         }
     analyzed: List[Tuple[str, Dict[str, Any]]] = []
     response_binding: Dict[str, Any] = {}
@@ -628,7 +635,7 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
         if len(body) > 4_500_000:
             raise SystemExit(f"Bounded Copilot unit {name} exceeds its transport budget; no partial plan was saved.")
         idempotency_key = hashlib.sha256(
-            f"{tenant_id}\n{api_base}\n{part_digest}\n{expected_catalog_digest}".encode("utf-8")
+            f"{tenant_id}\n{api_base}\n{part_digest}\n{expected_catalog_digest}\n{COPILOT_CACHE_REVISION}".encode("utf-8")
         ).hexdigest()
         try:
             result = _post_copilot(api_base, api_key, tenant_id, "/integration-copilot/v1/analyze", body, idempotency_key=idempotency_key)
@@ -664,6 +671,7 @@ def _copilot_semantic_analysis(root: Path, ir: Dict[str, Any], *, required: bool
         "source_upload": False,
         "tenant_id": tenant_id,
         "api_base": api_base,
+        "cache_revision": COPILOT_CACHE_REVISION,
         "semantic_analysis": semantic,
         "catalog_binding": response_binding,
     })
@@ -1146,6 +1154,23 @@ def _write_json(path: Path, value: Dict[str, Any]) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged, path)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+
+
+def _write_local_text(path: Path, value: str) -> None:
+    """Replace a local review artifact atomically without following its symlink."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise SystemExit("A reconciliation output path is a symlink; remove it and retry.")
+    descriptor, staged = tempfile.mkstemp(prefix=".agenticdome-review-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(staged, path)
@@ -2562,6 +2587,84 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
     return (0 if result["ready"] else 2), result
 
 
+def _reconciliation_markdown(plan: Dict[str, Any], verification: Dict[str, Any], report_digest: str) -> str:
+    """Give a bounded, source-free worklist without accepting AI claims as proof."""
+    semantic = plan.get("semantic_analysis") if isinstance(plan.get("semantic_analysis"), dict) else {}
+    gate = verification.get("semantic_gate") if isinstance(verification.get("semantic_gate"), dict) else {}
+
+    def groups(field: str) -> List[Tuple[str, str, int, List[int]]]:
+        grouped: Dict[Tuple[str, str], List[int]] = {}
+        rows = semantic.get(field) if isinstance(semantic.get(field), list) else []
+        for item in rows[:100]:
+            if not isinstance(item, dict):
+                continue
+            boundary = str(item.get("boundary") or "unknown")
+            if boundary not in {"prompt_ingress", "tool_execution", "output_egress"}:
+                boundary = "unknown"
+            raw_path = str(item.get("path") or "")[:500].replace("\\", "/")
+            # These are display paths only. Do not let a remote result inject
+            # Markdown, an absolute path, source text, or a shell instruction.
+            if not raw_path or raw_path.startswith("/") or ".." in Path(raw_path).parts:
+                path = "[invalid relative path]"
+            else:
+                path = re.sub(r"[^A-Za-z0-9_./ -]", "_", raw_path)
+            try:
+                line = max(1, min(int(item.get("line") or 1), 10_000_000))
+            except (TypeError, ValueError):
+                line = 1
+            grouped.setdefault((boundary, path), []).append(line)
+        return [(boundary, path, len(lines), sorted(set(lines))[:12])
+                for (boundary, path), lines in sorted(grouped.items())]
+
+    guidance = {
+        "prompt_ingress": "Review the final assembled model messages at each call. Screen untrusted user, retrieved and tool content immediately before the model; test a blocked input with zero model calls.",
+        "tool_execution": "Trace the actual executor. Authorize the exact final tool name and arguments immediately before it; test BLOCKED = zero handler calls and ALLOWED = one.",
+        "output_egress": "Trace the return to the external response, stream or persistence boundary. Review or redact there, and test that the released value—not merely an internal value—is safe.",
+        "unknown": "Trace this path and identify its real boundary before claiming protection.",
+    }
+    lines = [
+        "# AgenticDome guided reconciliation", "",
+        "This is a local, source-free worklist for the current validation run. It is not a bypass waiver, a code patch, or live tenant proof.",
+        "The AI-authored AgenticDome_Integration.md remains an assertion until these checks and real-path tests pass.", "",
+        f"- AI report SHA-256: `{report_digest}`",
+        f"- Action-required candidates: {int(gate.get('unresolved_bypasses', 0))}",
+        f"- Review-required internal or indirect paths: {int(gate.get('review_required', 0))}",
+        f"- Semantic confidence: {gate.get('confidence', 'unavailable')}", "",
+    ]
+    for field, title in (("bypass_risks", "Action required"), ("review_findings", "Trace and classify")):
+        lines.extend([f"## {title}", ""])
+        found = groups(field)
+        if not found:
+            lines.append("No findings in this category for this run.")
+        for boundary, path, count, positions in found:
+            references = ", ".join(str(number) for number in positions)
+            if count > len(positions):
+                references += ", …"
+            lines.extend([
+                f"### {boundary} · `{path}` ({count} location{'s' if count != 1 else ''})",
+                f"Lines: {references}. {guidance[boundary]}", "",
+            ])
+        lines.append("")
+    tests = verification.get("application_tests") if isinstance(verification.get("application_tests"), dict) else {}
+    report_scope = verification.get("ai_report_scope") if isinstance(verification.get("ai_report_scope"), dict) else {}
+    lines.extend(["## Finish the reconciliation", ""])
+    if report_scope.get("scope_incomplete") or int(report_scope.get("reported_unprotected", 0)) > 0:
+        lines.append("- The AI report itself says a relevant path was NOT ASSESSED or unprotected. Inspect and protect that path, then update the report; its zero-count rows cannot clear this scope gap.")
+    if plan.get("coverage", {}).get("gaps"):
+        lines.append("- Required boundary categories are missing from the inspected workload. Attach and test them before retrying.")
+    if gate.get("cross_part_review_required"):
+        lines.append("- Analysis was split across parts; trace cross-part calls and alternate entry paths. Separate parts are not a proof of guard dominance.")
+    if tests.get("passed") is not True:
+        lines.append("- Workload tests did not pass or were not detected. Run the local test command directly to see its output; no test log is uploaded.")
+    lines.extend([
+        "- Give these grouped paths to your coding assistant together with the real source. Keep the assistant's changes reviewable and update only the canonical AgenticDome_Integration.md.",
+        "- Rerun `agenticdome validate-report --report AgenticDome_Integration.md` after code and test changes. Do not edit the JSON evidence by hand.",
+        "- Even after local `ready=true`, verify a real action through the assigned tenant sidecar and confirm BLOCKED executes zero times and ALLOWED once before going live.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, Dict[str, Any]]:
     """Validate an AI-assisted edit with the existing semantic and test gates.
 
@@ -2588,6 +2691,7 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
     rows = re.findall(r"^\|\s*([1-8])\.([^\r\n]*)", markdown, re.MULTILINE)
     if len(rows) != 8 or {number for number, _ in rows} != {str(index) for index in range(1, 9)}:
         raise SystemExit("The integration report needs one valid row for each of the eight interception categories.")
+    reported_unprotected = 0
     for _, cells_text in rows:
         cells = [cell.strip().replace("*", "").replace(",", "") for cell in cells_text.strip().strip("|").split("|")]
         if len(cells) != 6 or any(not re.fullmatch(r"\d{1,5}", cell) for cell in cells[1:]):
@@ -2595,6 +2699,8 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
         found, existing, new, unprotected, live = (int(cell) for cell in cells[1:])
         if any(value > 10000 for value in (found, existing, new, unprotected, live)) or existing + new + unprotected != found or live > existing + new:
             raise SystemExit("The report counts do not reconcile. Correct the AI integration inventory before validation.")
+        reported_unprotected += unprotected
+    scope_incomplete = bool(re.search(r"\bNOT ASSESSED\b", markdown, re.IGNORECASE))
     digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
     inspection = _exportable_inspection(inspect_repository(root))
@@ -2610,6 +2716,14 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
     plan = integration_plan(root)
     plan["inspection_report_sha256"] = inspection["report_sha256"]
     exit_code, verification = verify_project(root, run_tests=True, plan=plan)
+    local_checks_passed = exit_code == 0 and verification.get("ready") is True
+    verification["ai_report_scope"] = {
+        "scope_incomplete": scope_incomplete,
+        "reported_unprotected": reported_unprotected,
+    }
+    if scope_incomplete or reported_unprotected:
+        verification["ready"] = False
+        exit_code = 2
     verification["ai_integration_report_sha256"] = digest
     verification.pop("report_sha256", None)
     verification["report_sha256"] = hashlib.sha256(
@@ -2618,18 +2732,34 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
 
     inspection_path = root / "agenticdome-inspection.json"
     verification_path = root / ".agenticdome" / "verification.json"
-    for output in (inspection_path, verification_path):
+    reconciliation_path = root / ".agenticdome" / "RECONCILIATION.md"
+    for output in (inspection_path, verification_path, reconciliation_path):
         if output.is_symlink() or not output.resolve().is_relative_to(root):
             raise SystemExit("An evidence output path is a symlink or leaves this workload; remove that path and retry.")
     _write_json(inspection_path, inspection)
     _write_json(verification_path, verification)
+    _write_local_text(reconciliation_path, _reconciliation_markdown(plan, verification, digest))
+    partial_coverage = local_checks_passed and not verification["ready"]
     return exit_code, {
-        "status": "validation_passed" if verification["ready"] else "validation_needs_attention",
+        "status": "validation_passed" if verification["ready"] else (
+            "partial_coverage" if partial_coverage else "validation_needs_attention"
+        ),
         "inspection": str(inspection_path.relative_to(root)),
         "verification": str(verification_path.relative_to(root)),
+        "reconciliation": str(reconciliation_path.relative_to(root)),
         "ai_integration_report_sha256": digest,
         "ready": verification["ready"],
-        "next_action": "Import both JSON files in Onboarding; then run the assigned-runtime check and test a real action path. No customer action executes in these fixed decision cases.",
+        "next_action": (
+            "Import both JSON files in Onboarding; then run the assigned-runtime check and test a real action path. No customer action executes in these fixed decision cases."
+            if verification["ready"] else (
+                "Import both JSON files as partial evidence and run a tenant-policy diagnostic if connected. "
+                "Open .agenticdome/RECONCILIATION.md, assess or protect the remaining paths, then rerun validate-report. "
+                "This is not passing workload evidence and does not unlock activation."
+                if partial_coverage else
+                "You may import both JSON files as diagnostic evidence, but not as passing evidence. "
+                "Open .agenticdome/RECONCILIATION.md, fix or investigate grouped paths and failing tests, then rerun validate-report."
+            )
+        ),
     }
 
 
