@@ -2471,6 +2471,77 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
     return (0 if result["ready"] else 2), result
 
 
+def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, Dict[str, Any]]:
+    """Validate an AI-assisted edit with the existing semantic and test gates.
+
+    Markdown is a customer-authored inventory, never an authorization or proof
+    source. Only its digest is added to the source-free evidence exports.
+    """
+    if report_path.name != "AgenticDome_Integration.md" or report_path.is_symlink() or not report_path.is_file():
+        raise SystemExit("Select this workload's AgenticDome_Integration.md (regular file, exact name).")
+    if not report_path.resolve().is_relative_to(root) or report_path.stat().st_size > 524288:
+        raise SystemExit("The integration report must be inside this workload and no larger than 512 KB.")
+    try:
+        markdown = report_path.read_text(encoding="utf-8")
+    except (UnicodeError, OSError) as exc:
+        raise SystemExit("Read AgenticDome_Integration.md as UTF-8 and retry; the file could not be read safely.") from exc
+    if not markdown or "\x00" in markdown:
+        raise SystemExit("AgenticDome_Integration.md is empty or contains unsupported binary content.")
+    scope_match = re.search(r"^Workload scope:\s*([^\r\n]+)", markdown, re.IGNORECASE | re.MULTILINE)
+    if not scope_match:
+        raise SystemExit("Add a Workload scope line naming this deployable workload to AgenticDome_Integration.md.")
+    quoted = re.search(r"`([^`]+)`", scope_match.group(1))
+    scope = (quoted.group(1) if quoted else scope_match.group(1).split()[0]).strip().rstrip("/")
+    if Path(scope).name.casefold() != root.name.casefold() or ".." in Path(scope).parts:
+        raise SystemExit("The report's Workload scope does not match this workload root. Run from the correct deployable service.")
+    rows = re.findall(r"^\|\s*([1-8])\.([^\r\n]*)", markdown, re.MULTILINE)
+    if len(rows) != 8 or {number for number, _ in rows} != {str(index) for index in range(1, 9)}:
+        raise SystemExit("The integration report needs one valid row for each of the eight interception categories.")
+    for _, cells_text in rows:
+        cells = [cell.strip().replace("*", "").replace(",", "") for cell in cells_text.strip().strip("|").split("|")]
+        if len(cells) != 6 or any(not re.fullmatch(r"\d{1,5}", cell) for cell in cells[1:]):
+            raise SystemExit("Each interception row needs five non-negative counts after its category.")
+        found, existing, new, unprotected, live = (int(cell) for cell in cells[1:])
+        if any(value > 10000 for value in (found, existing, new, unprotected, live)) or existing + new + unprotected != found or live > existing + new:
+            raise SystemExit("The report counts do not reconcile. Correct the AI integration inventory before validation.")
+    digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+    inspection = _exportable_inspection(inspect_repository(root))
+    if inspection.get("scope", {}).get("complete") is not True:
+        raise SystemExit(_scope_gap_message(inspection))
+    if inspection.get("mcp_protection", {}).get("detected") is True or inspection.get("openclaw_protection", {}).get("ready") is True:
+        raise SystemExit("This workload needs the specialist MCP or OpenClaw onboarding path. Keep the AI report for review, then use that journey's verification commands.")
+    inspection["ai_integration_report_sha256"] = digest
+    inspection.pop("report_sha256", None)
+    inspection["report_sha256"] = hashlib.sha256(
+        json.dumps(inspection, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    plan = integration_plan(root)
+    plan["inspection_report_sha256"] = inspection["report_sha256"]
+    exit_code, verification = verify_project(root, run_tests=True, plan=plan)
+    verification["ai_integration_report_sha256"] = digest
+    verification.pop("report_sha256", None)
+    verification["report_sha256"] = hashlib.sha256(
+        json.dumps(verification, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    inspection_path = root / "agenticdome-inspection.json"
+    verification_path = root / ".agenticdome" / "verification.json"
+    for output in (inspection_path, verification_path):
+        if output.is_symlink() or not output.resolve().is_relative_to(root):
+            raise SystemExit("An evidence output path is a symlink or leaves this workload; remove that path and retry.")
+    _write_json(inspection_path, inspection)
+    _write_json(verification_path, verification)
+    return exit_code, {
+        "status": "validation_passed" if verification["ready"] else "validation_needs_attention",
+        "inspection": str(inspection_path.relative_to(root)),
+        "verification": str(verification_path.relative_to(root)),
+        "ai_integration_report_sha256": digest,
+        "ready": verification["ready"],
+        "next_action": "Import both JSON files in Onboarding; then run the assigned-runtime check and test a real action path. No customer action executes in these fixed decision cases.",
+    }
+
+
 def _print(value: Any, as_json: bool = False) -> None:
     if as_json or isinstance(value, (dict, list)):
         print(json.dumps(value, indent=2, sort_keys=True))
@@ -2574,6 +2645,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also run detected pytest and npm test commands locally (up to 15 minutes each); no output is included in evidence.",
     )
     verify_parser.add_argument("--output")
+
+    ai_validate_parser = subparsers.add_parser(
+        "validate-report", help="Validate a coding-assistant integration report against this workload; no source upload or code edit."
+    )
+    ai_validate_parser.add_argument("--report", default="AgenticDome_Integration.md")
 
     action_parser = subparsers.add_parser(
         "verify-action",
@@ -2752,6 +2828,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _write_json(Path(args.output), result)
         from .guided_integration import record_verification
         record_verification(root, result)
+        _print(result)
+        return exit_code
+    if args.command == "validate-report":
+        report_path = Path(args.report)
+        if not report_path.is_absolute():
+            report_path = root / report_path
+        exit_code, result = validate_ai_integration_report(root, report_path)
         _print(result)
         return exit_code
     if args.command == "verify-action":

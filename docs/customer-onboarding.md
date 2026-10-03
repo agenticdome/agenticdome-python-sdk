@@ -36,7 +36,7 @@ runtime before activation.
 
 ## What is required
 
-For a Developer Integration:
+For a Developer Integration using the AgenticDome Onboarding Pilot:
 
 1. **Required — initialise locally.** Discover frameworks and likely prompt,
    tool, delegation, retrieval and output boundaries without uploading source.
@@ -51,6 +51,32 @@ For a Developer Integration:
 
 The same discovery logic feeds the guided preview, optional advanced scaffold
 and final verification. It does not silently apply code changes.
+
+### Already integrated with your coding assistant?
+
+The alternative AI Instruction path does not require repeating `init`,
+`integrate preview` or guided apply. From the root of the one deployable
+application workload, create and review the canonical
+`AgenticDome_Integration.md` with all eight interception categories and an
+explicit `Workload scope:`. Import it under Onboarding > Discover. Its counts
+are displayed as **AI-reported**, not independently verified. Then set the
+assigned `AGENTICDOME_API_BASE`, `AGENTICDOME_TENANT_ID` and dedicated
+`AGENTICDOME_COPILOT_API_KEY` in your local shell and run:
+
+```bash
+agenticdome validate-report --report AgenticDome_Integration.md
+```
+
+This does not edit the application. It checks current source-free structure,
+requests the tenant-bound semantic assessment and runs detected workload tests.
+Import both generated files, `agenticdome-inspection.json` and
+`.agenticdome/verification.json`, together in the same onboarding workload.
+Their hashes bind them to the exact Markdown report. A changed report requires
+rerunning validation. The portal then performs its separate assigned-runtime
+check; test the actual customer action path before activation. MCP and
+OpenClaw workloads use their specialist onboarding journeys rather than this
+application shortcut. The validation command cannot turn an AI report or a
+fixed synthetic decision into proof that real customer traffic is intercepted.
 
 The local Integration Assistant collects source-free structure and prepares a
 reviewable local diff. Guided `integrate preview` obtains a signed, tenant-bound

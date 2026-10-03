@@ -69,7 +69,16 @@ certified onboarding path, obtain the assigned sidecar and a dedicated
 local exact diff and change summary, explicitly approve a supported edit or
 attach other boundaries manually, then run
 `agenticdome verify --run-tests --output .agenticdome/verification.json`.
-Preview obtains the private, signed, catalog-bound semantic plan and keeps
+
+If a coding assistant has already made and tested the application edits,
+import its canonical `AgenticDome_Integration.md` in the customer portal and
+run `agenticdome validate-report --report AgenticDome_Integration.md` from
+that same deployable workload. Import the two generated, hash-bound JSON files
+in Onboarding. This avoids repeating the guided edit plan; the Markdown counts
+remain AI-reported and a real action-path test is still required before
+claiming protection. See the [customer onboarding guide](docs/customer-onboarding.md).
+
+For the Pilot path, preview obtains the private, signed, catalog-bound semantic plan and keeps
 application source on your machine. `agenticdome integrate apply` creates a
 local Git review branch but never commits, pushes or deploys. Existing-source
 automatic edits cover unambiguous CrewAI bootstrap, PydanticAI `Agent(...)`,

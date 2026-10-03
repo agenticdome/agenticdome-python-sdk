@@ -24,6 +24,52 @@ from agenticdome_sdk.onboarding_cli import (
 REAL_COPILOT_ANALYSIS = onboarding_cli._copilot_semantic_analysis
 
 
+def test_validate_ai_report_binds_both_local_evidence_files_without_source_upload(tmp_path, monkeypatch):
+    root = tmp_path / "service"
+    root.mkdir()
+    report_path = root / "AgenticDome_Integration.md"
+    rows = "\n".join(
+        f"| {index}. Category | {1 if index == 2 else 0} | 0 | {1 if index == 2 else 0} | 0 | 0 |"
+        for index in range(1, 9)
+    )
+    report_path.write_text("Workload scope: `apps/service`\n" + rows + "\n", encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda target: {"root": str(target)})
+    monkeypatch.setattr(onboarding_cli, "_exportable_inspection", lambda raw: {
+        "schema": SCHEMA, "project": {"name": "service"}, "source_upload": False,
+        "scope": {"complete": True},
+    })
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda target: {"schema": "plan"})
+
+    def local_verify(target, *, run_tests, plan):
+        assert target == root
+        assert run_tests is True
+        return 0, {"schema": "agenticdome.onboarding-verification.v1", "source_upload": False,
+                   "inspection_report_sha256": plan["inspection_report_sha256"], "ready": True}
+
+    monkeypatch.setattr(onboarding_cli, "verify_project", local_verify)
+    code, result = onboarding_cli.validate_ai_integration_report(root, report_path)
+    inspection = json.loads((root / "agenticdome-inspection.json").read_text(encoding="utf-8"))
+    verification = json.loads((root / ".agenticdome" / "verification.json").read_text(encoding="utf-8"))
+    assert code == 0 and result["ready"] is True
+    assert inspection["ai_integration_report_sha256"] == result["ai_integration_report_sha256"]
+    assert verification["ai_integration_report_sha256"] == result["ai_integration_report_sha256"]
+    assert verification["inspection_report_sha256"] == inspection["report_sha256"]
+    assert inspection["source_upload"] is False
+    assert verification["source_upload"] is False
+    assert "Workload scope:" not in json.dumps((inspection, verification))
+
+
+def test_validate_ai_report_rejects_irreconcilable_counts_before_scanning(tmp_path, monkeypatch):
+    root = tmp_path / "service"
+    root.mkdir()
+    report_path = root / "AgenticDome_Integration.md"
+    rows = "\n".join(f"| {index}. Category | 1 | 0 | 0 | 0 | 0 |" for index in range(1, 9))
+    report_path.write_text("Workload scope: `apps/service`\n" + rows, encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda target: pytest.fail("scan must not run"))
+    with pytest.raises(SystemExit, match="counts do not reconcile"):
+        onboarding_cli.validate_ai_integration_report(root, report_path)
+
+
 def test_scoped_inspection_excludes_generated_harness_and_exports_bounded_evidence(tmp_path):
     (tmp_path / "app.py").write_text("def run():\n    return call_tool('approved', {})\n", encoding="utf-8")
     generated = tmp_path / ".harness_runtime_ts"
