@@ -989,6 +989,77 @@ def test_agenticdome_policy_probe_is_not_misclassified_as_customer_mcp(tmp_path)
     assert report["mcp_protection"]["detected"] is False
 
 
+def test_urllib_agenticdome_policy_probe_does_not_force_specialist_onboarding(tmp_path, monkeypatch):
+    root = tmp_path / "agenticai"
+    root.mkdir()
+    (root / "orchestrator.py").write_text(
+        "from urllib.request import Request\n"
+        "MCP_GUARDRAIL_URL = os.getenv('MCP_GUARDRAIL_URL', 'https://www.agenticdome.io/mcp')\n"
+        "def validate(arguments):\n"
+        "    payload = {\n"
+        "        'method': 'tools/call',\n"
+        "        'params': {'name': 'guardrail.validate', 'arguments': arguments},\n"
+        "    }\n"
+        "    return Request(MCP_GUARDRAIL_URL, data=json.dumps(payload).encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    inspection = inspect_repository(root, remote_analysis=False)
+    assert inspection["mcp_protection"]["detected"] is False
+    report_path = root / "AgenticDome_Integration.md"
+    rows = "\n".join(f"| {index}. Category | 0 | 0 | 0 | 0 | 0 |" for index in range(1, 9))
+    report_path.write_text("Workload scope: `agenticai`\n" + rows, encoding="utf-8")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda target: inspection)
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda target: {"schema": "plan"})
+    monkeypatch.setattr(onboarding_cli, "verify_project", lambda target, *, run_tests, plan: (
+        0, {"schema": "agenticdome.onboarding-verification.v1", "source_upload": False, "ready": True}
+    ))
+    code, result = onboarding_cli.validate_ai_integration_report(root, report_path)
+    assert code == 0 and result["ready"] is True
+    assert (root / "agenticdome-inspection.json").is_file()
+
+
+def test_agenticdome_policy_probe_does_not_hide_real_mcp_in_same_file(tmp_path):
+    (tmp_path / "mixed.py").write_text(
+        "async def validate(self, arguments):\n"
+        "    payload = {'method': 'tools/call', 'params': {'name': 'guardrail.validate', 'arguments': arguments}}\n"
+        "    return await self._post('/mcp', payload)\n"
+        "async def customer_tool(client, name, arguments):\n"
+        "    return await client.call_tool(name, arguments)\n",
+        encoding="utf-8",
+    )
+    report = inspect_repository(tmp_path, remote_analysis=False)
+    assert report["mcp_protection"]["detected"] is True
+    assert any(item["line"] == 5 for item in report["mcp_protection"]["request_boundaries"])
+
+
+def test_external_guardrail_named_mcp_tool_is_not_exempt(tmp_path):
+    (tmp_path / "mcp_client.py").write_text(
+        "from urllib.request import Request\n"
+        "def send(arguments):\n"
+        "    payload = {'method': 'tools/call', 'params': {'name': 'guardrail.validate', 'arguments': arguments}}\n"
+        "    return Request('https://customer-mcp.example/mcp', data=json.dumps(payload).encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    report = inspect_repository(tmp_path, remote_analysis=False)
+    assert report["mcp_protection"]["detected"] is True
+
+
+def test_typescript_policy_client_exception_remains_but_mixed_mcp_is_detected(tmp_path):
+    source = tmp_path / "security_client.ts"
+    policy_client = (
+        "class SecurityClient {\n"
+        "  async validate(arguments: object) {\n"
+        "    const payload = {'method': 'tools/call', 'params': {'name': 'guardrail.validate'}};\n"
+        "    return this._post('/mcp', payload);\n"
+        "  }\n"
+        "}\n"
+    )
+    source.write_text(policy_client, encoding="utf-8")
+    assert inspect_repository(tmp_path, remote_analysis=False)["mcp_protection"]["detected"] is False
+    source.write_text(policy_client + "client.callTool('real.customer.tool', {});\n", encoding="utf-8")
+    assert inspect_repository(tmp_path, remote_analysis=False)["mcp_protection"]["detected"] is True
+
+
 def test_verification_can_run_detected_tests_without_including_test_output(tmp_path, monkeypatch):
     root = _project(tmp_path)
     (root / "tests").mkdir()

@@ -2,12 +2,12 @@
     "schema": "agenticdome.catalog-snapshot.v1",
     "catalog_schema": "agenticdome.hook-catalog.v1",
     "verified_at": "2026-10-02",
-    "python_sdk_version": "1.2.37",
+    "python_sdk_version": "1.2.38",
     "published_packages": {
         "agenticdome-python-sdk": {
             "registry": "pypi",
-            "version": "1.2.37",
-            "url": "https://pypi.org/project/agenticdome-python-sdk/1.2.37/"
+            "version": "1.2.38",
+            "url": "https://pypi.org/project/agenticdome-python-sdk/1.2.38/"
         },
         "agenticdome-sdk": {
             "registry": "npm",

@@ -7,6 +7,7 @@ paths and boundary locations, never source snippets or file contents.
 from __future__ import annotations
 
 import argparse
+import ast
 import difflib
 import hashlib
 import importlib.metadata
@@ -716,6 +717,82 @@ def _mcp_evidence_id(kind: str, relative: str, line: int) -> str:
     return f"{kind}-{digest}"
 
 
+def _agenticdome_policy_probe_spans(text: str) -> Dict[int, List[Tuple[int, int]]]:
+    """Mask only a confirmed AgenticDome policy call's MCP method literal.
+
+    A policy client can use the MCP JSON-RPC envelope without forwarding
+    customer MCP tools. Keep all other MCP calls in the same file visible.
+    Unparseable or ambiguous source receives no exception.
+    """
+    if "tools/call" not in text or "guardrail.validate" not in text:
+        return {}
+    try:
+        module = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+
+    def field(mapping: ast.AST, key: str) -> Optional[ast.AST]:
+        if not isinstance(mapping, ast.Dict):
+            return None
+        return next(
+            (value for name, value in zip(mapping.keys, mapping.values)
+             if isinstance(name, ast.Constant) and name.value == key),
+            None,
+        )
+
+    def is_literal(node: Optional[ast.AST], value: str) -> bool:
+        return isinstance(node, ast.Constant) and node.value == value
+
+    # The legacy urllib client uses an environment-overridable URL whose
+    # checked-in default is AgenticDome's own /mcp policy endpoint.
+    policy_url_names: set[str] = set()
+    for node in ast.walk(module):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value = node.value
+        if value is None or not any(
+            isinstance(part, ast.Constant) and isinstance(part.value, str)
+            and re.fullmatch(r"https?://(?:[a-z0-9-]+\.)*agenticdome\.io(?::\d+)?/mcp/?", part.value, re.I)
+            for part in ast.walk(value)
+        ):
+            continue
+        policy_url_names.update(target.id for target in targets if isinstance(target, ast.Name))
+
+    spans: Dict[int, List[Tuple[int, int]]] = {}
+    for function in ast.walk(module):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
+        for assignment in ast.walk(function):
+            if not isinstance(assignment, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
+            names = {target.id for target in targets if isinstance(target, ast.Name)}
+            method = field(assignment.value, "method") if assignment.value is not None else None
+            params = field(assignment.value, "params") if assignment.value is not None else None
+            if not names or not is_literal(method, "tools/call") or not is_literal(field(params, "name"), "guardrail.validate"):
+                continue
+
+            def sends_policy_payload(call: ast.Call) -> bool:
+                if not any(isinstance(part, ast.Name) and part.id in names for part in ast.walk(call)):
+                    return False
+                if (isinstance(call.func, ast.Attribute) and call.func.attr == "_post"
+                        and call.args and is_literal(call.args[0], "/mcp")):
+                    return True
+                return (
+                    isinstance(call.func, (ast.Name, ast.Attribute))
+                    and (call.func.id if isinstance(call.func, ast.Name) else call.func.attr) == "Request"
+                    and bool(call.args)
+                    and isinstance(call.args[0], ast.Name)
+                    and call.args[0].id in policy_url_names
+                )
+
+            if any(sends_policy_payload(call) for call in calls):
+                spans.setdefault(method.lineno, []).append((method.col_offset, method.end_col_offset))
+    return spans
+
+
 def _detect_mcp_protection(root: Path, paths: Sequence[Path], languages: Sequence[str]) -> Dict[str, Any]:
     """Collect source-free MCP topology and candidate protection evidence.
 
@@ -735,15 +812,21 @@ def _detect_mcp_protection(root: Path, paths: Sequence[Path], languages: Sequenc
     for path in paths:
         relative = _relative(path, root)
         text = _read_text(path)
-        # A client asking AgenticDome's own /mcp policy endpoint to run
-        # guardrail.validate is not a customer MCP forwarder. Do not suggest
-        # an MCP onboarding path from that protocol-shaped probe alone.
-        policy_probe_only = (
+        python_source = path.suffix.lower() in {".py", ".pyi"}
+        policy_probe_spans = _agenticdome_policy_probe_spans(text) if python_source else {}
+        # Preserve the existing JavaScript/TypeScript policy-client exception.
+        # Unlike Python, this scanner has no AST span for those languages, so
+        # exempt only a single policy call with no other MCP integration hints.
+        if not python_source and (
             bool(re.search(r"['\"]name['\"]\s*:\s*['\"]guardrail\.validate['\"]", text))
             and bool(re.search(r"_post\s*\(\s*['\"]/mcp['\"]", text))
-            and not re.search(r"\b(?:from\s+mcp|import\s+mcp|FastMCP|McpServer|ClientSession|StdioClientTransport|SSEClientTransport)\b|@modelcontextprotocol", text)
-        )
-        if policy_probe_only:
+            and len(re.findall(r"\btools/call\b", text)) == 1
+            and not re.search(
+                r"\b(?:FastMCP|McpServer|MCPClient|McpClient|ClientSession|StdioClientTransport|"
+                r"SSEClientTransport|call_tool|callTool|registerTool|tools/list|setRequestHandler)\b|@modelcontextprotocol",
+                text,
+            )
+        ):
             continue
         if not re.search(
             r"(?:\b(?:from\s+mcp|import\s+mcp|FastMCP|MCPClient|McpClient|McpServer|ClientSession|"
@@ -753,6 +836,14 @@ def _detect_mcp_protection(root: Path, paths: Sequence[Path], languages: Sequenc
         ):
             continue
         for line_number, line in enumerate(text.splitlines(), start=1):
+            # AST offsets are UTF-8 byte offsets. Mask the exact policy method
+            # literal, not the whole line or file: a real MCP call alongside
+            # the policy probe must still trigger specialist onboarding.
+            if line_number in policy_probe_spans:
+                encoded = bytearray(line.encode("utf-8"))
+                for start, end in policy_probe_spans[line_number]:
+                    encoded[start:end] = b" " * (end - start)
+                line = encoded.decode("utf-8")
             for role, patterns in MCP_ROLE_PATTERNS.items():
                 if any(pattern.search(line) for pattern in patterns):
                     roles.add(role)
