@@ -490,9 +490,10 @@ def preview(root: Path, plan: Optional[Dict[str, Any]] = None, *, target: str = 
         + ", A2A " + str(existing.get("a2a_call_candidates", 0))
         + ", MCP " + str(existing_surfaces.get("mcp", 0))
         + " (categories may overlap; no customer action was exercised)",
-        "- Action-required semantic findings: " + str(semantic_gate.get("action_required", "not assessed")),
-        "- Review-required semantic findings: " + str(semantic_gate.get("review_required", "not assessed")),
+        "- Raw semantic action candidates (lower severity may be optional): " + str(semantic_gate.get("action_required", "not assessed")),
+        "- Optional review observations: " + str(semantic_gate.get("review_required", "not assessed")),
         "",
+        "Optional observations are written to .agenticdome/DISCLAIMER.md on verification; high-severity and required protection/test failures remain blocking.", "",
         "## Framework hooks to attach or verify", "",
     ]
     for recommendation in plan.get("hook_recommendations", []):

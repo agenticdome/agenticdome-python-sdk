@@ -1645,6 +1645,17 @@ def integration_plan(root: Path) -> Dict[str, Any]:
             hook["required_actions"].append("No candidate use of " + hook["recommended_attachment"]["method"] + " was observed in this selected source; attach it at the real execution path or document the external integration.")
     semantic_bypasses = semantic.get("bypass_risks", []) if isinstance(semantic, dict) else []
     semantic_reviews = semantic.get("review_findings", []) if isinstance(semantic, dict) else []
+    from .onboarding_observations import POLICY as observations_policy
+    workload_coverage = semantic.get("workload_coverage", {})
+    assessment_complete = (
+        workload_coverage.get("complete", True) is True
+        and all(item.get("severity") in {"high", "medium", "low"} for item in semantic_bypasses)
+        and workload_coverage.get("portal_display_capped") is not True
+        and not any(item in {"attachment_points", "bypass_risks", "review_findings"}
+                    for item in workload_coverage.get("result_lists_at_cap", []))
+        and (not workload_coverage.get("selected_parts")
+             or workload_coverage.get("selected_parts") == workload_coverage.get("analyzed_parts"))
+    )
     return {
         "schema": "agenticdome.integration-plan.v1",
         "inspection_report_sha256": _exportable_inspection(report).get("report_sha256"),
@@ -1684,10 +1695,12 @@ def integration_plan(root: Path) -> Dict[str, Any]:
             "unresolved_bypasses": len(semantic_bypasses),
             "high_severity_bypasses": sum(1 for item in semantic_bypasses if item.get("severity") == "high"),
             "review_required": len(semantic_reviews),
-            "production_ready": not semantic_bypasses and not semantic_reviews and semantic.get("confidence") in {"high", "partial"}
-            and semantic.get("workload_coverage", {}).get("cross_part_flow_proven", True)
-            and not any(item in {"attachment_points", "bypass_risks", "review_findings"}
-                        for item in semantic.get("workload_coverage", {}).get("result_lists_at_cap", [])),
+            "review_policy": "advisory",
+            "assessment_complete": assessment_complete,
+            "onboarding_policy": observations_policy,
+            "production_ready": not any(item.get("severity") == "high" for item in semantic_bypasses)
+            and semantic.get("confidence") in {"high", "partial"}
+            and assessment_complete,
             "cross_workload_review_required": semantic.get("workload_coverage", {}).get("cross_part_flow_proven") is False,
             "cross_part_edges_observed": int(semantic.get("workload_coverage", {}).get("cross_part_edges", {}).get("observed_count", 0)),
         },
@@ -2498,6 +2511,7 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
                    *, plan: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
     from .client import AgenticDomeClient
     from .action_path_proof import load_action_path_proof
+    from .onboarding_observations import POLICY as observations_policy, observations_summary
 
     plan = plan or integration_plan(root)
     config_path = _agenticdome_dir(root) / "config.json"
@@ -2548,10 +2562,18 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
     }
     semantic_gate = plan.get("semantic_gate", {})
     cross_part_review_required = bool(semantic_gate.get("cross_workload_review_required"))
+    observations = observations_summary(semantic_gate)
+    bypass_rows = plan.get("semantic_analysis", {}).get("bypass_risks", [])
+    if not isinstance(bypass_rows, list) or any(
+        not isinstance(row, dict) or row.get("severity") not in {"high", "medium", "low"}
+        for row in bypass_rows
+    ):
+        observations["classification_complete"] = False
     semantic_ready = (
         semantic_gate.get("confidence") in {"high", "partial"}
-        and int(semantic_gate.get("unresolved_bypasses", 0)) == 0
-        and int(semantic_gate.get("review_required", 0)) == 0
+        and observations["classification_complete"]
+        and int(semantic_gate.get("high_severity_bypasses", 0)) == 0
+        and semantic_gate.get("assessment_complete", True) is True
     )
     result = {
         "schema": "agenticdome.verification-result.v1",
@@ -2559,6 +2581,8 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
         "mode": "live_sidecar_fixed_payload" if live else "local_sim_fixed_payload",
         "source_upload": False,
         "framework_runtime_instantiated": False,
+        "onboarding_policy": observations_policy,
+        "onboarding_observations": observations,
         "decision_cases": outcomes,
         "static_coverage": plan["coverage"],
         "semantic_gate": {
@@ -2569,10 +2593,13 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
             "unresolved_bypasses": int(semantic_gate.get("unresolved_bypasses", 0)),
             "high_severity_bypasses": int(semantic_gate.get("high_severity_bypasses", 0)),
             "review_required": int(semantic_gate.get("review_required", 0)),
+            "review_policy": "advisory",
+            "review_owner": "coding_assistant_or_agenticdome",
+            "assessment_complete": semantic_gate.get("assessment_complete", True) is True,
             "passed": semantic_ready,
             "cross_part_review_required": cross_part_review_required,
             "cross_part_edges_observed": int(semantic_gate.get("cross_part_edges_observed", 0)),
-            "production_ready": semantic_ready and not cross_part_review_required,
+            "production_ready": semantic_ready,
         },
         "application_tests": application_tests,
         "action_path_proof": load_action_path_proof(root),
@@ -2580,23 +2607,47 @@ def verify_project(root: Path, live: bool = False, run_tests: bool = False,
             and not plan["coverage"]["gaps"]
             and (not run_tests or semantic_ready)
             and (not run_tests or application_tests["passed"] is True),
-        "clarification": "Decision cases use fixed payloads. ready=true means local checks passed, not production approval. Split analyses also require a tenant-admin review of cross-part paths, workload-specific integration tests and live runtime evidence; dynamic paths remain outside static proof.",
+        "clarification": "ready=true means required local checks passed, not production activation. Lower-severity static candidates, reviews and cross-part limitations are optional observations in .agenticdome/DISCLAIMER.md. High-severity findings, incomplete source, missing protection, failing tests and runtime proof failures remain blocking. Fixed decision cases do not execute customer actions.",
     }
     canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
     result["report_sha256"] = hashlib.sha256(canonical).hexdigest()
+    _write_onboarding_disclaimer(root, plan, result)
     return (0 if result["ready"] else 2), result
+
+
+def _write_onboarding_disclaimer(root: Path, plan: Dict[str, Any], verification: Dict[str, Any],
+                                 *, evidence_status: str = "Current local verification") -> None:
+    from .onboarding_observations import FILE, disclaimer_markdown
+    target = root / FILE
+    if target.is_symlink() or not target.resolve().is_relative_to(root.resolve()):
+        raise SystemExit("The disclaimer output is a symlink or leaves this workload; use a regular local output path.")
+    # Reject symlinked ancestors even when they happen to point inside the root.
+    if any(parent.is_symlink() for parent in target.parents if parent != root and root in parent.parents):
+        raise SystemExit("The disclaimer output directory is a symlink; use a regular local output path.")
+    _write_local_text(target, disclaimer_markdown(plan, verification, evidence_status=evidence_status))
 
 
 def _reconciliation_markdown(plan: Dict[str, Any], verification: Dict[str, Any], report_digest: str) -> str:
     """Give a bounded, source-free worklist without accepting AI claims as proof."""
     semantic = plan.get("semantic_analysis") if isinstance(plan.get("semantic_analysis"), dict) else {}
     gate = verification.get("semantic_gate") if isinstance(verification.get("semantic_gate"), dict) else {}
+    from .onboarding_observations import POLICY as observations_policy
+    bypass_rows = semantic.get("bypass_risks", [])
+    known_severities = isinstance(bypass_rows, list) and all(
+        isinstance(row, dict) and row.get("severity") in {"high", "medium", "low"}
+        for row in bypass_rows
+    )
+    optional_policy = (verification.get("onboarding_policy") == observations_policy
+                       and verification.get("onboarding_observations", {}).get("classification_complete") is True
+                       and known_severities)
 
     def groups(field: str) -> List[Tuple[str, str, int, List[int]]]:
         grouped: Dict[Tuple[str, str], List[int]] = {}
         rows = semantic.get(field) if isinstance(semantic.get(field), list) else []
         for item in rows[:100]:
             if not isinstance(item, dict):
+                continue
+            if optional_policy and field == "bypass_risks" and item.get("severity") != "high":
                 continue
             boundary = str(item.get("boundary") or "unknown")
             if boundary not in {"prompt_ingress", "tool_execution", "output_egress"}:
@@ -2627,11 +2678,16 @@ def _reconciliation_markdown(plan: Dict[str, Any], verification: Dict[str, Any],
         "This is a local, source-free worklist for the current validation run. It is not a bypass waiver, a code patch, or live tenant proof.",
         "The AI-authored AgenticDome_Integration.md remains an assertion until these checks and real-path tests pass.", "",
         f"- AI report SHA-256: `{report_digest}`",
-        f"- Action-required candidates: {int(gate.get('unresolved_bypasses', 0))}",
-        f"- Review-required internal or indirect paths: {int(gate.get('review_required', 0))}",
+        f"- Blocking findings: {int(gate.get('high_severity_bypasses' if optional_policy else 'unresolved_bypasses', 0))}",
+        f"- Advisory internal or indirect paths: {int(gate.get('review_required', 0))} (owner: coding assistant or AgenticDome; not a local readiness blocker)",
         f"- Semantic confidence: {gate.get('confidence', 'unavailable')}", "",
+        "## Who does what", "",
+        "The coding assistant traces grouped code candidates and runs real-path tests. The customer reviews the change summary, intended routes and deployment location—not scanner line numbers.",
+        "Lower-severity candidates and review notes are optional tenant observations in .agenticdome/DISCLAIMER.md. They do not require an acknowledgement or AgenticDome clearance before onboarding continues." if optional_policy else "If an action-required candidate is already protected in a real-path test, supply a minimal reproduction to AgenticDome. Stop unchanged retries; do not add duplicate guards or waive the finding.",
+        "Pending deployment settings and live proof belong to the service operator and are separate from optional observations.", "",
     ]
-    for field, title in (("bypass_risks", "Action required"), ("review_findings", "Trace and classify")):
+    sections = (("bypass_risks", "Action required"),) if optional_policy else (("bypass_risks", "Action required"), ("review_findings", "Trace and classify"))
+    for field, title in sections:
         lines.extend([f"## {title}", ""])
         found = groups(field)
         if not found:
@@ -2652,10 +2708,14 @@ def _reconciliation_markdown(plan: Dict[str, Any], verification: Dict[str, Any],
         lines.append("- The AI report itself says a relevant path was NOT ASSESSED or unprotected. Inspect and protect that path, then update the report; its zero-count rows cannot clear this scope gap.")
     if plan.get("coverage", {}).get("gaps"):
         lines.append("- Required boundary categories are missing from the inspected workload. Attach and test them before retrying.")
-    if gate.get("cross_part_review_required"):
+    if gate.get("assessment_complete") is False or not known_severities:
+        lines.append("- Source assessment or severity classification is incomplete. The coding assistant must resolve that required check; unclassified candidates are not optional observations.")
+    if gate.get("cross_part_review_required") and not optional_policy:
         lines.append("- Analysis was split across parts; trace cross-part calls and alternate entry paths. Separate parts are not a proof of guard dominance.")
     if tests.get("passed") is not True:
         lines.append("- Workload tests did not pass or were not detected. Run the local test command directly to see its output; no test log is uploaded.")
+    if report_scope.get("activation_pending"):
+        lines.append("- Local source assessment and operator activation are separate. Complete the report's exact runtime handoff and safe staging proof before production activation.")
     lines.extend([
         "- Give these grouped paths to your coding assistant together with the real source. Keep the assistant's changes reviewable and update only the canonical AgenticDome_Integration.md.",
         "- Rerun `agenticdome validate-report --report AgenticDome_Integration.md` after code and test changes. Do not edit the JSON evidence by hand.",
@@ -2688,7 +2748,19 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
     scope = (quoted.group(1) if quoted else scope_match.group(1).split()[0]).strip().rstrip("/")
     if Path(scope).name.casefold() != root.name.casefold() or ".." in Path(scope).parts:
         raise SystemExit("The report's Workload scope does not match this workload root. Run from the correct deployable service.")
-    rows = re.findall(r"^\|\s*([1-8])\.([^\r\n]*)", markdown, re.MULTILINE)
+    # Numbered operator steps are not interception categories. Older reports
+    # without a table heading remain readable, with the original strict counts.
+    inventory_lines = []
+    has_header = bool(re.search(r"^\s*\|\s*Category\s*\|", markdown, re.MULTILINE))
+    in_inventory = not has_header
+    for line in markdown.splitlines():
+        if has_header and not line.lstrip().startswith("|"):
+            in_inventory = False
+        if re.match(r"^\s*\|\s*Category\s*\|", line):
+            in_inventory = True
+        if in_inventory:
+            inventory_lines.append(line)
+    rows = re.findall(r"^\s*\|\s*\*?\*?([1-8])\.([^\r\n]*)", "\n".join(inventory_lines), re.MULTILINE)
     if len(rows) != 8 or {number for number, _ in rows} != {str(index) for index in range(1, 9)}:
         raise SystemExit("The integration report needs one valid row for each of the eight interception categories.")
     reported_unprotected = 0
@@ -2700,7 +2772,9 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
         if any(value > 10000 for value in (found, existing, new, unprotected, live)) or existing + new + unprotected != found or live > existing + new:
             raise SystemExit("The report counts do not reconcile. Correct the AI integration inventory before validation.")
         reported_unprotected += unprotected
-    scope_incomplete = bool(re.search(r"\bNOT ASSESSED\b", markdown, re.IGNORECASE))
+    from .report_scope import assessment_scope
+    report_scope = assessment_scope(markdown)
+    scope_incomplete = report_scope["scope_incomplete"]
     digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
     inspection = _exportable_inspection(inspect_repository(root))
@@ -2719,6 +2793,7 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
     local_checks_passed = exit_code == 0 and verification.get("ready") is True
     verification["ai_report_scope"] = {
         "scope_incomplete": scope_incomplete,
+        "activation_pending": report_scope["activation_pending"],
         "reported_unprotected": reported_unprotected,
     }
     if scope_incomplete or reported_unprotected:
@@ -2739,18 +2814,25 @@ def validate_ai_integration_report(root: Path, report_path: Path) -> Tuple[int, 
     _write_json(inspection_path, inspection)
     _write_json(verification_path, verification)
     _write_local_text(reconciliation_path, _reconciliation_markdown(plan, verification, digest))
+    _write_onboarding_disclaimer(root, plan, verification)
+    has_observations = int(verification.get("onboarding_observations", {}).get("total_count", 0)) > 0
     partial_coverage = local_checks_passed and not verification["ready"]
     return exit_code, {
-        "status": "validation_passed" if verification["ready"] else (
+        "status": ("validation_passed_with_observations" if has_observations else "validation_passed") if verification["ready"] else (
             "partial_coverage" if partial_coverage else "validation_needs_attention"
         ),
         "inspection": str(inspection_path.relative_to(root)),
         "verification": str(verification_path.relative_to(root)),
         "reconciliation": str(reconciliation_path.relative_to(root)),
+        "disclaimer": ".agenticdome/DISCLAIMER.md",
+        "optional_observations": int(verification.get("onboarding_observations", {}).get("total_count", 0)),
         "ai_integration_report_sha256": digest,
         "ready": verification["ready"],
+        "local_status": ("passed_with_observations" if has_observations else "passed") if verification["ready"] else "needs_code_or_test_fix",
+        "activation_status": "pending_operator_checks",
+        "review_owner": "coding_assistant_or_agenticdome",
         "next_action": (
-            "Import both JSON files in Onboarding; then run the assigned-runtime check and test a real action path. No customer action executes in these fixed decision cases."
+            "Import both JSON files and continue tenant verification. Optional observations are in .agenticdome/DISCLAIMER.md; investigating them is the tenant's choice. Prove a safe real action before production activation."
             if verification["ready"] else (
                 "Import both JSON files as partial evidence and run a tenant-policy diagnostic if connected. "
                 "Open .agenticdome/RECONCILIATION.md, assess or protect the remaining paths, then rerun validate-report. "

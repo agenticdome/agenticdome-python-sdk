@@ -69,11 +69,10 @@ agenticdome validate-report --report AgenticDome_Integration.md
 
 This does not edit the application. It checks current source-free structure,
 requests the tenant-bound semantic assessment and runs detected workload tests.
-The command also writes a local `.agenticdome/RECONCILIATION.md` worklist. If
-it exits non-zero or says `ready=false`, open that file: it groups possible
-bypasses and uncertain internal paths by source file, with the next check for
-each boundary. Review the actual source, fix or investigate those paths, rerun
-the workload tests and validation, and update the canonical AI report. The
+The command replaces a local `.agenticdome/RECONCILIATION.md` worklist in place.
+Give it to your coding assistant. The assistant owns code investigation, repairs
+and tests; you review its short change summary, intended routes and deployment
+location. You do not have to interpret scanner line numbers. High-severity findings, uninspected source, missing hooks and failing tests block local readiness. Lower-severity static candidates and review-only paths are optional tenant observations in `.agenticdome/DISCLAIMER.md`. They do not block onboarding or require an acknowledgement, scanner-count cleanup or AgenticDome clearance. The tenant may investigate these observations later if they wish; no manual source classification is required solely for them. A tested protected path still flagged at lower severity remains an optional observation; add no duplicate guard and do not repeat validation solely to clear it. High-severity findings still need a repair or verified path explanation. The
 worklist is not uploaded and cannot waive a finding. You may import both
 generated files, `agenticdome-inspection.json` and
 `.agenticdome/verification.json`, together in the same onboarding workload even
@@ -86,6 +85,28 @@ check; test the actual customer action path before activation. MCP and
 OpenClaw workloads use their specialist onboarding journeys rather than this
 application shortcut. The validation command cannot turn an AI report or a
 fixed synthetic decision into proof that real customer traffic is intercepted.
+
+Record current source scope separately from operator activation:
+
+```markdown
+## Source assessment scope
+
+| Scope | Status | Owner / evidence |
+|---|---|---|
+| Runtime source paths | ASSESSED | Assistant: real routes and tests reviewed |
+| Production activation | PENDING | Service operator: exact runtime handoff |
+```
+
+Use `NOT ASSESSED` for genuinely uninspected current source; it still blocks.
+Known application read sites with pending running-process configuration checks
+belong in `Runtime configuration handoff`; numbered operator steps belong in
+`MUST Do Steps to Activate Firewall`. Their pending status is tracked separately
+as `ai_report_scope.activation_pending`. An unknown code read site or uninspected
+source prose cannot be hidden in an operator section. Retain old evidence under
+`Preserved historical baseline and unique evidence`; do not append another full
+report on each run. `ready=true` means required local checks passed; `onboarding_policy=pass_with_observations_v1` keeps raw finding counts and reports optional totals in `onboarding_observations`. Explicit valid high-severity classification is required; absent or malformed counts cannot silently pass. The portal recognizes this policy only in fresh bound evidence; legacy results keep their original strict readiness. The portal retains
+pending deployment checks and tenant verification before activation; no source
+report or SDK import proves that workers loaded the reviewed release.
 
 The local Integration Assistant collects source-free structure and prepares a
 reviewable local diff. Guided `integrate preview` obtains a signed, tenant-bound
@@ -132,8 +153,7 @@ parts sequentially through the assigned sidecar. Completed parts are cached
 locally and reused on retry, so a later failure does not restart the entire
 analysis. Each part receives tenant-bound private analysis; the SDK merges the
 results and inventories resolvable calls between parts. This does not prove
-cross-part guard coverage, and the portal requires a documented review of
-those paths and workload-specific tests before marking a split workload ready.
+cross-part guard coverage. With pass_with_observations_v1, that limitation is an optional note in .agenticdome/DISCLAIMER.md and does not require a review form or acknowledgement. Legacy evidence retains its original cross-part review gate. Workload tests and real runtime checks remain required.
 Source text is not uploaded. A plan remains a static proposal, not proof that
 a customer action is intercepted. A single source file over 2 MB or a scope
 that exceeds the collection limits remains an explicit gap; do not exclude a

@@ -1,0 +1,15 @@
+[
+  {"name":"uninspected source","markdown":"## Source assessment scope\n| Runtime source paths | NOT ASSESSED | Assistant |\n","scope_incomplete":true,"activation_pending":false},
+  {"name":"assessed source with pending operator","markdown":"## Source assessment scope\n| Runtime source paths | ASSESSED | Assistant |\n| Production activation | PENDING | Operator |\n## Runtime configuration handoff\n| AGENTICDOME_API_KEY | utils/firewall.py:59 | service.env | NOT ASSESSED |\n","scope_incomplete":false,"activation_pending":true},
+  {"name":"unknown code read site","markdown":"## Runtime configuration handoff\n| AGENTICDOME_API_KEY | Not found — operator must identify | service.env | REQUIRED BEFORE LIVE |\n","scope_incomplete":true,"activation_pending":true},
+  {"name":"source prose cannot hide in handoff","markdown":"## Runtime configuration handoff\nDirect provider path: NOT ASSESSED.\n","scope_incomplete":true,"activation_pending":false},
+  {"name":"historical source gap is not current source","markdown":"## Source assessment scope\n| Runtime source paths | ASSESSED | Assistant |\n## Preserved historical baseline and unique evidence\n### Earlier run\nProvider return NOT ASSESSED\n## Reconciliation results\nCurrent provider return covered by real-path tests.\n","scope_incomplete":false,"activation_pending":false},
+  {"name":"missing typed source assessment","markdown":"## Source assessment scope\n| Production activation | PENDING | Operator |\n","scope_incomplete":true,"activation_pending":true},
+  {"name":"duplicate source assessment","markdown":"## Source assessment scope\n| Runtime source paths | ASSESSED | Assistant |\n| Runtime source paths | ASSESSED | Assistant |\n","scope_incomplete":true,"activation_pending":false},
+  {"name":"legacy uninspected source still blocks","markdown":"Direct network paths: NOT ASSESSED.\n","scope_incomplete":true,"activation_pending":false},
+  {"name":"activation checklist is separate","markdown":"## MUST Do Steps to Activate Firewall\n| 4. Identity and routing | staging service | Operator checks running workers | NOT ASSESSED |\n","scope_incomplete":false,"activation_pending":true},
+  {"name":"source status cannot be relabeled ready","markdown":"## Source assessment scope\n| Runtime source paths | READY | Assistant |\n","scope_incomplete":true,"activation_pending":false},
+  {"name":"unknown optional broker read site still blocks","markdown":"## Runtime configuration handoff\n| AGENTICDOME_EXECUTION_BROKER_MODE | NOT ASSESSED | service.env | REQUIRED BEFORE LIVE |\n","scope_incomplete":true,"activation_pending":true},
+  {"name":"unknown authenticated upstream read site still blocks","markdown":"## Runtime configuration handoff\n| AGENTIC_ORCHESTRATOR_URL | Unknown | service.env | REQUIRED BEFORE LIVE |\n","scope_incomplete":true,"activation_pending":true},
+  {"name":"contradictory current-source evidence still blocks","markdown":"## Source assessment scope\n| Runtime source paths | ASSESSED | main.py source path NOT ASSESSED |\n","scope_incomplete":true,"activation_pending":false}
+]

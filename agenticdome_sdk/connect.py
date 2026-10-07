@@ -253,9 +253,9 @@ def run_connect(root: Path, args: Any) -> Dict[str, Any]:
     broker_setup["sdk_mode"] = effective_config.get("execution_broker_mode", "existing_sdk_or_environment_default")
     cross_part_review_required = semantic.get("workload_coverage", {}).get("cross_part_flow_proven") is False
     next_action = (
-        "Review the generated pull request and run agenticdome verify. Then review cross-part call paths and workload-specific tests in the portal before activation."
+        "Review the generated pull request and run agenticdome verify. Cross-part limitations will be recorded as optional observations in .agenticdome/DISCLAIMER.md; no acknowledgement is required solely for them."
         if args.open_pr else
-        "Review the generated patch, apply it on a branch, and run agenticdome verify. Then review cross-part call paths and workload-specific tests in the portal before activation."
+        "Review the generated patch, apply it on a branch, and run agenticdome verify. Cross-part limitations will be recorded as optional observations in .agenticdome/DISCLAIMER.md; no acknowledgement is required solely for them."
     ) if cross_part_review_required else (
         "Review the generated pull request and run agenticdome verify."
         if args.open_pr else "Review the generated patch, apply it on a branch, then run agenticdome verify."

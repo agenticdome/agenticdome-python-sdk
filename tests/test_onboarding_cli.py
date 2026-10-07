@@ -24,12 +24,114 @@ from agenticdome_sdk.onboarding_cli import (
 REAL_COPILOT_ANALYSIS = onboarding_cli._copilot_semantic_analysis
 
 
-def test_validate_ai_report_binds_both_local_evidence_files_without_source_upload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("actions,bypasses,high,reviews,confidence,gaps,tests_pass,expected", [
+    (0, 0, 0, 43, "high", [], True, True),
+    (2, 0, 0, 43, "high", [], True, True),
+    (0, 2, 1, 0, "high", [], True, False),
+    (0, 0, 0, 0, "unavailable", [], True, False),
+    (0, 0, 0, 43, "high", ["output_egress"], True, False),
+    (0, 0, 0, 43, "high", [], False, False),
+])
+def test_real_verifier_separates_advisory_reviews_from_blocking_failures(
+    tmp_path, monkeypatch, actions, bypasses, high, reviews, confidence, gaps, tests_pass, expected
+):
+    monkeypatch.setattr(onboarding_cli, "_run_existing_tests", lambda root: {
+        "passed": tests_pass, "requested": True, "detected": True, "results": []
+    })
+    plan = {"coverage": {"gaps": gaps}, "semantic_gate": {
+        "action_required": actions, "unresolved_bypasses": bypasses, "high_severity_bypasses": high,
+        "review_required": reviews, "confidence": confidence,
+    }}
+    code, report = verify_project(tmp_path, run_tests=True, plan=plan)
+    assert report["ready"] is expected
+    assert code == (0 if expected else 2)
+    assert report["semantic_gate"]["review_required"] == reviews
+    assert report["semantic_gate"]["review_policy"] == "advisory"
+    assert all(case["passed"] for case in report["decision_cases"])
+    assert (tmp_path / ".agenticdome/DISCLAIMER.md").is_file()
+    assert report["semantic_gate"]["action_required"] == actions
+    assert report["semantic_gate"]["unresolved_bypasses"] == bypasses
+
+
+def test_validate_report_real_test_runner_and_evidence_keep_activation_separate(tmp_path, monkeypatch):
+    root = tmp_path / "service"
+    root.mkdir()
+    (root / "requirements.txt").write_text("pytest\n")
+    (root / "tests").mkdir()
+    test = root / "tests/test_smoke.py"
+    test.write_text("def test_service_health():\n    assert 2 + 2 == 4\n")
+    report = root / "AgenticDome_Integration.md"
+    rows = "\n".join(f"| **{i}. Category** | 0 | 0 | 0 | 0 | 0 |" for i in range(1, 9))
+    report.write_text("Workload scope: `service`\n| Category | Found | Existing | New | Open | Live |\n" + rows
+        + "\n\n## Source assessment scope\n| Runtime source paths | ASSESSED | Assistant |\n"
+        + "| Production activation | PENDING | Operator |\n\n## MUST Do Steps to Activate Firewall\n"
+        + "| Step | Exact file or system | Operator action | Verification/status |\n"
+        + "| 1. Review | service | Review evidence | NOT ASSESSED |\n")
+    monkeypatch.setattr(onboarding_cli, "inspect_repository", lambda root: {})
+    monkeypatch.setattr(onboarding_cli, "_exportable_inspection", lambda raw: {
+        "schema": SCHEMA, "source_upload": False, "scope": {"complete": True},
+    })
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda root: {
+        "coverage": {"gaps": []}, "semantic_gate": {
+            "action_required": 2, "unresolved_bypasses": 2, "high_severity_bypasses": 0, "review_required": 43, "confidence": "high",
+        },
+    })
+    code, result = onboarding_cli.validate_ai_integration_report(root, report)
+    exported = json.loads((root / result["verification"]).read_text())
+    assert code == 0 and result["ready"] is True
+    assert exported["application_tests"]["results"][0]["exit_code"] == 0
+    assert exported["ai_report_scope"] == {"scope_incomplete": False, "activation_pending": True, "reported_unprotected": 0}
+    assert exported["semantic_gate"]["review_required"] == 43
+    worklist = (root / result["reconciliation"]).read_text()
+    assert "Who does what" in worklist and "not a local readiness blocker" in worklist
+    assert result["status"] == "validation_passed_with_observations"
+    assert result["optional_observations"] == 45
+    disclaimer = (root / result["disclaimer"]).read_text()
+    assert "optional" in disclaimer and "no acknowledgement" in disclaimer
+    assert "| Lower-severity analyzer candidates | 2 |" in disclaimer
+    # Repeat replaces evidence in place and reflects a genuine test failure.
+    test.write_text("def test_service_health():\n    assert False\n")
+    code, result = onboarding_cli.validate_ai_integration_report(root, report)
+    assert code == 2 and result["ready"] is False
+    exported = json.loads((root / result["verification"]).read_text())
+    assert exported["application_tests"]["passed"] is False
+    assert (root / result["reconciliation"]).read_text().count("# AgenticDome guided reconciliation") == 1
+
+
+def test_advisory_policy_does_not_waive_incomplete_analyzer_coverage(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboarding_cli, "_run_existing_tests", lambda root: {"passed": True})
+    code, result = verify_project(tmp_path, run_tests=True, plan={
+        "coverage": {"gaps": []}, "semantic_gate": {
+            "confidence": "partial", "unresolved_bypasses": 0, "review_required": 43,
+            "assessment_complete": False, "high_severity_bypasses": 0,
+        },
+    })
+    assert code == 2 and result["ready"] is False
+    assert result["semantic_gate"]["assessment_complete"] is False
+
+
+@pytest.mark.parametrize("coverage", [
+    {"complete": False},
+    {"complete": True, "result_lists_at_cap": ["review_findings"]},
+    {"complete": True, "selected_parts": 2, "analyzed_parts": 1},
+])
+def test_plan_preserves_partial_and_capped_assessment_failures(tmp_path, monkeypatch, coverage):
+    root = _project(tmp_path)
+    semantic = _private_analysis()
+    semantic["workload_coverage"] = coverage
+    monkeypatch.setattr(onboarding_cli, "_copilot_semantic_analysis", lambda *args, **kwargs: semantic)
+    plan = integration_plan(root)
+    assert plan["semantic_gate"]["assessment_complete"] is False
+    assert plan["semantic_gate"]["production_ready"] is False
+
+
+@pytest.mark.parametrize("indent", ["", "  "])
+def test_validate_ai_report_binds_both_local_evidence_files_without_source_upload(tmp_path, monkeypatch, indent):
     root = tmp_path / "service"
     root.mkdir()
     report_path = root / "AgenticDome_Integration.md"
     rows = "\n".join(
-        f"| {index}. Category | {1 if index == 2 else 0} | 0 | {1 if index == 2 else 0} | 0 | 0 |"
+        f"{indent}| {index}. Category | {1 if index == 2 else 0} | 0 | {1 if index == 2 else 0} | 0 | 0 |"
         for index in range(1, 9)
     )
     report_path.write_text("Workload scope: `apps/service`\n" + rows + "\n", encoding="utf-8")
@@ -704,7 +806,8 @@ def test_device_connect_sets_policy_only_for_new_workloads(tmp_path, monkeypatch
     assert result["execution_broker"]["sdk_mode"] == (existing_mode or "policy")
     assert result["execution_broker"]["status"] == "pending_runtime_readiness"
     assert result["cross_part_review_required"] is True
-    assert "cross-part call paths" in result["next_action"]
+    assert ".agenticdome/DISCLAIMER.md" in result["next_action"]
+    assert "no acknowledgement" in result["next_action"]
     assert metadata_requests[0]["ir"]["metadata_kind"] == "bounded_workload_summary"
     assert metadata_requests[0]["ir"]["functions"] == []
     assert metadata_requests[0]["signed_plan"]["aggregation"]["signature_scope"] == "individual_sidecar_parts_only"
@@ -986,7 +1089,8 @@ def test_indirect_output_is_review_required_not_claimed_as_bypass(tmp_path):
 
     assert plan["semantic_gate"]["unresolved_bypasses"] == 0
     assert plan["semantic_gate"]["review_required"] == 1
-    assert plan["semantic_gate"]["production_ready"] is False
+    assert plan["semantic_gate"]["review_policy"] == "advisory"
+    assert plan["semantic_gate"]["production_ready"] is True
 
 
 def test_command_inspect_json_is_installable(tmp_path, capsys):
