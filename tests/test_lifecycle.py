@@ -49,3 +49,39 @@ def test_disabled_decorator_preserves_sync_result():
 
     assert add(2, 3) == 5
 
+
+def test_runtime_reporting_is_default_without_portal_credentials(monkeypatch):
+    monkeypatch.delenv("AGENTICDOME_EVIDENCE_API_BASE", raising=False)
+    monkeypatch.delenv("AGENTICDOME_EVIDENCE_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTICDOME_EVIDENCE_ENABLED", raising=False)
+    records = []
+    reporter = VerifiedActionReporter.from_env(tenant_id="2", api_base="https://runtime.example", api_key="tenant-key", sender=lambda kind, payload: records.append((kind, payload)))
+    assert reporter.enabled
+    context = reporter.new_context(operation_type="tool_call", arguments={"secret": "RAW_ARGUMENT"})
+    reporter.phase(context, "requested", "requested")
+    reporter.phase(context, "authorised", "blocked")
+    reporter.outcome(context, "not_attempted")
+    assert reporter.flush()
+    assert [kind for kind, _ in records] == ["events", "events", "outcomes"]
+    assert records[-1][1]["outcome_class"] == "not_attempted"
+    assert "attempted_at" not in records[-1][1]
+    assert "RAW_ARGUMENT" not in json.dumps(records)
+    assert reporter.stats()["delivered"] == 3
+
+
+def test_retries_preserve_record_id_and_failed_delivery_is_visible(monkeypatch):
+    attempts = []
+    def unavailable(kind, payload):
+        attempts.append(payload["event_id"])
+        raise ConnectionError("unavailable")
+    reporter = VerifiedActionReporter.from_env(tenant_id="2", api_base="https://runtime.example", api_key="key", sender=unavailable)
+    reporter.phase(reporter.new_context(operation_type="tool_call"), "requested", "requested")
+    assert not reporter.flush()
+    assert len(attempts) == 3 and len(set(attempts)) == 1
+    assert reporter.stats()["failed"] == 1
+
+
+def test_explicit_opt_out_disables_default_reporting(monkeypatch):
+    monkeypatch.setenv("AGENTICDOME_EVIDENCE_ENABLED", "false")
+    assert not VerifiedActionReporter.from_env(tenant_id="2", api_base="https://runtime.example", api_key="key").enabled
+

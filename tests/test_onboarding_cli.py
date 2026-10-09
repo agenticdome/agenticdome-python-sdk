@@ -1326,7 +1326,7 @@ def test_typescript_project_gets_typescript_scaffold_not_python_only(tmp_path):
     hook_plan = json.loads((scaffold / "framework-hooks.json").read_text(encoding="utf-8"))
     assert hook_plan["hook_catalog"]["schema"] == "agenticdome.hook-catalog.v1"
     assert hook_plan["framework_hook_plans"][0]["adapter"]["native_hooks"] == [
-        "before_agent_run", "before_tool_call", "tool_result_persist",
+        "before_agent_run", "before_tool_call", "after_tool_call", "tool_result_persist",
     ]
 
 

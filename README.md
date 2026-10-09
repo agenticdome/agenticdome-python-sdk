@@ -2732,10 +2732,7 @@ Plus, for every production deployment:
 
 Use `VerifiedActionReporter` for executable tool calls, function calls, MCP operations and external side effects that should appear in **Verified Actions**. It is not intended for health checks or every policy lookup.
 
-```bash
-export AGENTICDOME_EVIDENCE_API_BASE="https://your-control-plane.example"
-export AGENTICDOME_EVIDENCE_TOKEN="<portal-token-scoped-to-evidence:write>"
-```
+Framework tool wrappers and the MCP host report lifecycle evidence automatically using the existing `AGENTICDOME_API_BASE`, `AGENTICDOME_API_KEY` and `AGENTICDOME_TENANT_ID`. No separate portal credential is required. Upgrade both the SDK and assigned runtime to use automatic reporting. Set `AGENTICDOME_EVIDENCE_ENABLED=false` to opt out.
 
 ```python
 from agenticdome_sdk import VerifiedActionReporter, verified_action
@@ -2752,7 +2749,9 @@ def refresh_customer_record(customer_id: str):
     ...
 ```
 
-The reporter uses a bounded, non-blocking queue and retains hashes plus normalized lifecycle metadata only. It never sends raw arguments, results, prompts, source, or credentials. The dedicated evidence token is separate from the Runtime / SDK key: authorization stays on the assigned sidecar and evidence-delivery failure never changes its allow/deny decision. Integrations built on the shared framework `secure_tool` / `wrap_tool_handler` boundary and the MCP host/gateway wrapper report the same lifecycle automatically when these optional evidence variables are present; other custom boundaries can use the decorator above.
+The reporter uses a bounded, non-blocking queue and retains hashes plus normalized lifecycle metadata only. It never sends raw arguments, results, prompts, source, or credentials. The runtime queues accepted records in persistent Redis; its delivery worker relays them to the owning control plane using the existing per-sidecar service token. Network and storage failures remain pending for retry. Inspect `evidence.stats()` and call `evidence.flush()` before a short-lived process exits. SDK delivery failures and dropped records are counted and never change the protected operation's allow/deny decision.
+
+Retained outcomes are labeled `sdk_reported`. Policy lookups alone do not prove execution, and streaming acceptance does not prove final completion. Existing `AGENTICDOME_EVIDENCE_API_BASE` plus `AGENTICDOME_EVIDENCE_TOKEN` remains an explicit legacy portal override. Automatic reporting starts with new wrapped calls; it does not backfill historical telemetry.
 
 ---
 

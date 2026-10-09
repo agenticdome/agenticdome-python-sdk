@@ -1,7 +1,7 @@
 """Privacy-bounded Verified Action lifecycle reporting.
 
 The runtime authorization path remains authoritative. This module reports only
-minimized lifecycle evidence through a separately scoped portal credential and
+minimized lifecycle evidence through the existing tenant runtime credential and
 never sends tool arguments, prompts, responses, credentials, or source code.
 """
 
@@ -15,9 +15,11 @@ import logging
 import os
 import queue
 import threading
+import time
+import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, TypeVar
 
@@ -72,33 +74,46 @@ class VerifiedActionDenied(RuntimeError):
 class VerifiedActionReporter:
     """Non-blocking, bounded reporter for one tenant's Verified Actions.
 
-    Configure ``AGENTICDOME_EVIDENCE_API_BASE`` and a portal token containing
-    only ``evidence:write``. Missing evidence credentials disable reporting;
-    they never weaken or bypass the primary AgenticDome authorization call.
+    SDK credentials enable reporting to the assigned runtime by default.
+    Explicit portal evidence credentials remain supported for existing callers.
     """
 
-    def __init__(self, portal: str = "", access_token: str = "", *, tenant_id: str = "", timeout: float = 5.0, queue_size: int = 256) -> None:
+    def __init__(self, portal: str = "", access_token: str = "", *, tenant_id: str = "", timeout: float = 5.0, queue_size: int = 256,
+                 runtime_base: str = "", api_key: str = "", sender: Optional[Callable[..., Any]] = None) -> None:
         self.portal = portal.rstrip("/")
         self.access_token = access_token.strip()
         self.tenant_id = tenant_id.strip()
+        self.runtime_base = runtime_base.rstrip("/")
+        self.api_key = api_key.strip()
+        self.sender = sender
+        self.runtime_mode = not (self.portal and self.access_token)
         self.timeout = max(1.0, min(float(timeout), 30.0))
         self._queue: "queue.Queue[tuple[str, Dict[str, Any]] | None]" = queue.Queue(maxsize=max(16, min(int(queue_size), 4096)))
         self._worker: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._stats = {"queued": 0, "delivered": 0, "failed": 0, "dropped": 0}
 
     @classmethod
-    def from_env(cls, *, tenant_id: str = "") -> "VerifiedActionReporter":
+    def from_env(cls, *, tenant_id: str = "", api_base: str = "", api_key: str = "", sender: Optional[Callable[..., Any]] = None) -> "VerifiedActionReporter":
+        if os.getenv("AGENTICDOME_EVIDENCE_ENABLED", "true").lower() in {"0", "false", "off", "no"}:
+            return cls()
         return cls(
             os.getenv("AGENTICDOME_EVIDENCE_API_BASE", ""),
             os.getenv("AGENTICDOME_EVIDENCE_TOKEN", ""),
             tenant_id=tenant_id or os.getenv("AGENTICDOME_TENANT_ID", ""),
             timeout=float(os.getenv("AGENTICDOME_EVIDENCE_TIMEOUT_S", "5") or "5"),
             queue_size=int(os.getenv("AGENTICDOME_EVIDENCE_QUEUE_SIZE", "256") or "256"),
+            runtime_base=api_base or os.getenv("AGENTICDOME_API_BASE", ""),
+            api_key=api_key or os.getenv("AGENTICDOME_API_KEY", ""), sender=sender,
         )
 
     @property
     def enabled(self) -> bool:
-        return bool(self.portal and self.access_token and self.tenant_id)
+        return bool(self.tenant_id and ((self.portal and self.access_token) or
+                    (self.runtime_base.startswith(("https://", "http://")) and self.api_key)))
+
+    def stats(self) -> Dict[str, Any]:
+        return dict(self._stats, pending=self._queue.unfinished_tasks, enabled=self.enabled, transport="runtime" if self.runtime_mode else "portal")
 
     def new_context(self, *, operation_type: str, tool_name: Optional[str] = None, tool_version: Optional[str] = None,
                     arguments: Any = None, destination: Optional[str] = None, chain_id: Optional[str] = None,
@@ -141,6 +156,10 @@ class VerifiedActionReporter:
         }
         return self._enqueue("/api/agentguard/verified-actions/events", payload)
 
+    def with_arguments(self, context: VerifiedActionContext, arguments: Any) -> VerifiedActionContext:
+        """Keep correlation IDs while hashing the arguments actually admitted for execution."""
+        return replace(context, arguments_sha256=_digest(arguments))
+
     def outcome(self, context: VerifiedActionContext, outcome_class: str, *, side_effect_reference: Optional[str] = None) -> bool:
         allowed = {"not_attempted", "rejected", "accepted", "succeeded", "partially_succeeded", "failed", "rolled_back", "unknown"}
         outcome = _token(outcome_class, allowed, "unknown")
@@ -150,8 +169,8 @@ class VerifiedActionReporter:
             "chain_id": context.chain_id, "action_id": context.action_id,
             "jti": "sdk_" + uuid.uuid4().hex, "outcome_class": outcome,
             "assurance_level": "sdk_reported", "authorised_action_sha256": context.arguments_sha256,
-            "observed_action_sha256": context.arguments_sha256, "destination_sha256": context.destination_sha256,
-            "side_effect_ref_sha256": _digest(side_effect_reference), "attempted_at": now, "completed_at": now,
+            "observed_action_sha256": None if outcome == "not_attempted" else context.arguments_sha256, "destination_sha256": context.destination_sha256,
+            "side_effect_ref_sha256": _digest(side_effect_reference), "completed_at": now,
         }
         return self._enqueue("/api/agentguard/verified-actions/outcomes", payload)
 
@@ -162,7 +181,7 @@ class VerifiedActionReporter:
         marker = {"_flush_event": completed}
         if not self._enqueue("", marker):
             return False
-        return completed.wait(max(0.1, timeout))
+        return completed.wait(max(0.1, timeout)) and self._stats["failed"] == 0
 
     def _enqueue(self, path: str, payload: Dict[str, Any]) -> bool:
         if not self.enabled:
@@ -170,8 +189,10 @@ class VerifiedActionReporter:
         self._ensure_worker()
         try:
             self._queue.put_nowait((path, payload))
+            if path:self._stats["queued"] += 1
             return True
         except queue.Full:
+            self._stats["dropped"] += 1
             logger.warning("Verified Action evidence queue is full; authorization behavior is unchanged.")
             return False
 
@@ -193,14 +214,27 @@ class VerifiedActionReporter:
                 if isinstance(marker, threading.Event):
                     marker.set()
                     continue
-                request = urllib.request.Request(
-                    self.portal + path, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"), method="POST",
-                    headers={"Authorization": "Bearer " + self.access_token, "Content-Type": "application/json", "Accept": "application/json"},
-                )
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310 - configured AgenticDome portal
-                    response.read(1)
+                for attempt in range(3):
+                    try:
+                        if self.runtime_mode and self.sender:
+                            self.sender(path.rsplit("/", 1)[-1], payload)
+                        else:
+                            endpoint = (self.runtime_base + "/mesh/evidence/" + path.rsplit("/", 1)[-1]) if self.runtime_mode else self.portal + path
+                            headers = {"Content-Type": "application/json", "Accept": "application/json", "X-Tenant-Id": self.tenant_id}
+                            headers.update({"X-API-Key": self.api_key} if self.runtime_mode else {"Authorization": "Bearer " + self.access_token})
+                            request = urllib.request.Request(endpoint, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"), method="POST", headers=headers)
+                            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                                response.read(1)
+                        self._stats["delivered"] += 1
+                        break
+                    except Exception as exc:
+                        status = getattr(exc, "code", getattr(exc, "status_code", None))
+                        if attempt == 2 or status is not None and status not in {429, 500, 502, 503, 504}:
+                            raise
+                        time.sleep(.1 * (2 ** attempt))
             except Exception as exc:  # evidence must never alter the protected operation
-                logger.warning("Verified Action evidence delivery failed; authorization behavior is unchanged: %s", exc)
+                self._stats["failed"] += 1
+                logger.warning("Verified Action evidence delivery failed; authorization behavior is unchanged (%s)", type(exc).__name__)
             finally:
                 self._queue.task_done()
 

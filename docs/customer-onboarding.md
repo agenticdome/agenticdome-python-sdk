@@ -54,6 +54,23 @@ and final verification. It does not silently apply code changes.
 
 ### Already integrated with your coding assistant?
 
+The AI instruction first identifies the workload's actual local interpreter,
+package manager and dependency manifest, checks the latest stable compatible
+published SDK, and reconciles an older installation or mismatched SDK pin.
+It records the tested exact SDK version and preserves unrelated pins, existing
+hooks and configuration. An already aligned SDK is not reinstalled. The shared
+production interpreter/image remains a separate operator installation target.
+
+On a rerun, show current local tests, fresh validation and production activation
+separately. Missing planning configuration means **AWAITING CONFIGURATION**, with
+fresh readiness **NOT RUN**; a saved `ready=false` is historical rather than a
+new code rejection. Replace current report sections in place and keep one
+historical evidence section. Use only fresh matching JSON for the current verdict.
+If the workload provides a reviewed local verification runner, use it for these
+steps. An explicit planning-file option may load only the planning fields without
+printing them; the CLI itself does not automatically load the application `.env`.
+The Runtime / SDK key cannot replace the separately scoped Copilot key.
+
 The alternative AI Instruction path does not require repeating `init`,
 `integrate preview` or guided apply. From the root of the one deployable
 application workload, create and review the canonical

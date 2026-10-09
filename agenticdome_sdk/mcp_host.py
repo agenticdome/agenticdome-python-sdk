@@ -13,6 +13,7 @@ import time
 import uuid
 import re
 from collections import defaultdict, deque
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
 from inspect import isawaitable
@@ -22,6 +23,8 @@ from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Op
 from .client import AgenticDomeClient
 from ._mode import credentials_or_local_sim
 from .lifecycle import VerifiedActionReporter
+
+_lifecycle_decision: ContextVar[Optional[Dict[str, Any]]] = ContextVar("agenticdome_mcp_lifecycle_decision", default=None)
 
 try:
     from .exceptions import AgenticDomeHTTPError
@@ -375,7 +378,8 @@ class AgenticDomeMCPHostFirewall:
             timeout=self.config.timeout_s,
         )
         self.token_store = token_store or _build_token_store(self.config)
-        self.lifecycle_reporter = lifecycle_reporter or VerifiedActionReporter.from_env(tenant_id=self.config.tenant_id)
+        self.lifecycle_reporter = lifecycle_reporter or VerifiedActionReporter.from_env(tenant_id=self.config.tenant_id,
+            api_base=self.config.api_base, api_key=self.config.api_key, sender=getattr(self.client, "report_action_evidence", None))
         self.provider_action_rules = dict(provider_action_rules or {})
         self.resolve_provider_facts = resolve_provider_facts
         self._rate_lock = Lock()
@@ -975,6 +979,9 @@ class AgenticDomeMCPHostFirewall:
         )
 
     async def _handle_blocking_decision(self, *, decision: Dict[str, Any], rid: Any, context: Dict[str, Any], method: str, operation: str) -> Optional[Dict[str, Any]]:
+        evidence = _lifecycle_decision.get()
+        if evidence is not None:
+            evidence.update(verdict=self._verdict(decision), reason=self._reason(decision))
         verdict = self._verdict(decision)
         if verdict == "ALLOWED" or (verdict == "REDACTED" and self._sanitized_args(decision, explicit_only=True) is not None):
             return None
@@ -1433,7 +1440,7 @@ class AgenticDomeMCPHostFirewall:
         lifecycle = self.lifecycle_reporter.new_context(
             operation_type="mcp_operation", tool_name=tool_name, arguments=arguments,
             destination=self.config.mcp_server_url or self.config.mcp_server_id,
-            chain_id=self._safe_str(local_context.get("verified_chain_id") or local_context.get("action_chain_id")) or None,
+            chain_id=self._safe_str(local_context.get("verified_chain_id") or local_context.get("action_chain_id") or local_context.get("chain_id")) or None,
             action_id=self._safe_str(local_context.get("verified_action_id") or local_context.get("action_id")) or None,
             parent_action_id=self._safe_str(local_context.get("parent_action_id")) or None,
             initiator_type="human" if self._safe_str(local_context.get("user_id")) else "agent",
@@ -1441,13 +1448,25 @@ class AgenticDomeMCPHostFirewall:
         )
         self.lifecycle_reporter.phase(lifecycle, "requested", "requested")
 
-        gated = await self.preflight_request(mcp_request=mcp_request, context=context)
+        local_context.update(chain_id=lifecycle.chain_id, action_id=lifecycle.action_id, decision_id=lifecycle.action_id)
+        decision_evidence: Dict[str, Any] = {}
+        decision_token = _lifecycle_decision.set(decision_evidence)
+        try:
+            gated = await self.preflight_request(mcp_request=mcp_request, context=local_context)
+        except Exception:
+            self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
+            raise
+        finally:
+            _lifecycle_decision.reset(decision_token)
         if isinstance(gated, dict) and "error" in gated:
             self.lifecycle_reporter.phase(lifecycle, "authorised", "blocked")
             self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
             return gated
 
-        self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
+        admitted_arguments = self._extract_tool_call(gated)[1] if method == "tools/call" else self._params(gated)
+        lifecycle = self.lifecycle_reporter.with_arguments(lifecycle, admitted_arguments)
+        if decision_evidence.get("verdict") in {"ALLOWED", "REDACTED"} and decision_evidence.get("reason") != "fail-open":
+            self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
         self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
         self.lifecycle_reporter.phase(lifecycle, "attempted", "attempted")
 

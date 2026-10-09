@@ -325,7 +325,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "adapter_module": "agenticdome-openclaw-security",
         "adapter_class": "OpenClawFirewall",
         "attachment_methods": ["protectedExecute", "sanitizeOutput"],
-        "native_hooks": ["before_agent_run", "before_tool_call", "tool_result_persist"],
+        "native_hooks": ["before_agent_run", "before_tool_call", "after_tool_call", "tool_result_persist"],
         "docs": "agenticdome-openclaw-security package README",
     },
     "mcp-ts": {

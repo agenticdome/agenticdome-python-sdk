@@ -202,7 +202,8 @@ class FrameworkFirewallBase:
             timeout=config.timeout_s,
         )
         self.token_store = token_store or build_token_store(config, logger)
-        self.lifecycle_reporter = VerifiedActionReporter.from_env(tenant_id=config.tenant_id)
+        self.lifecycle_reporter = VerifiedActionReporter.from_env(tenant_id=config.tenant_id, api_base=config.api_base, api_key=config.api_key,
+            sender=getattr(self.client, "report_action_evidence", None))
         self.denied_error = denied_error
         self.label = label
         self.logger = logger
@@ -623,14 +624,17 @@ class FrameworkFirewallBase:
                 decision = await self.aauthorize_tool_call(
                     session_id=sid, agent_id=aid, tool_name=tool_name, tool_args=call_args,
                     tool_platform=tool_platform, text=f"[{self.label}] {aid} calls {tool_name}",
+                    policy_context={"chain_id": lifecycle.chain_id, "action_id": lifecycle.action_id, "decision_id": lifecycle.action_id},
                 )
             except Exception:
                 self.lifecycle_reporter.phase(lifecycle, "authorised", "blocked")
                 self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
                 raise
-            self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
-            self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
             clean = self.sanitized_args(decision, call_args)
+            lifecycle = self.lifecycle_reporter.with_arguments(lifecycle, clean)
+            if self.verdict(decision) in {"ALLOWED", "REDACTED"} and self.reason(decision) != "fail-open":
+                self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
+            self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
             self.lifecycle_reporter.phase(lifecycle, "attempted", "attempted")
             try:
                 if kwargs:
@@ -659,14 +663,17 @@ class FrameworkFirewallBase:
                 decision = self.authorize_tool_call(
                     session_id=sid, agent_id=aid, tool_name=tool_name, tool_args=call_args,
                     tool_platform=tool_platform, text=f"[{self.label}] {aid} calls {tool_name}",
+                    policy_context={"chain_id": lifecycle.chain_id, "action_id": lifecycle.action_id, "decision_id": lifecycle.action_id},
                 )
             except Exception:
                 self.lifecycle_reporter.phase(lifecycle, "authorised", "blocked")
                 self.lifecycle_reporter.outcome(lifecycle, "not_attempted")
                 raise
-            self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
-            self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
             clean = self.sanitized_args(decision, call_args)
+            lifecycle = self.lifecycle_reporter.with_arguments(lifecycle, clean)
+            if self.verdict(decision) in {"ALLOWED", "REDACTED"} and self.reason(decision) != "fail-open":
+                self.lifecycle_reporter.phase(lifecycle, "authorised", "allowed")
+            self.lifecycle_reporter.phase(lifecycle, "admitted", "admitted")
             self.lifecycle_reporter.phase(lifecycle, "attempted", "attempted")
             try:
                 if kwargs:

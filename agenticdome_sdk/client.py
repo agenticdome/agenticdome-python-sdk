@@ -375,6 +375,12 @@ class AgenticDomeClient:
         if tool_digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(tool_digest)):
             raise ValueError("'tool_digest' must be sha256 followed by 64 lowercase hexadecimal characters")
 
+    def report_action_evidence(self, kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Use the existing tenant SDK transport; runtime durably relays evidence."""
+        if kind not in {"events", "outcomes"}:
+            raise ValueError("Evidence kind must be events or outcomes")
+        return self._request("POST", "/mesh/evidence/" + kind, json_body=payload, timeout=5)
+
     def _request(
         self,
         method: str,

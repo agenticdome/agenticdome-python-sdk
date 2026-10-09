@@ -80,7 +80,7 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
     certified_openclaw_range = openclaw["packages"]["openclaw"]
     assert version_satisfies_certification(published_openclaw_version, certified_openclaw_range)
     assert certified_openclaw_range["max"] == published_openclaw_version
-    assert openclaw["native_hooks"] == ["before_agent_run", "before_tool_call", "tool_result_persist"]
+    assert openclaw["native_hooks"] == ["before_agent_run", "before_tool_call", "after_tool_call", "tool_result_persist"]
     # Certification updates this authoritative range from the exact npm release.
     # Do not freeze a second, obsolete Node release literal in Python SDK tests.
     node_range = openclaw["runtime"]["node"]
