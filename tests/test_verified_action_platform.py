@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+
+import pytest
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -40,6 +43,11 @@ def test_manifest_and_heartbeat_are_signed_and_bound(tmp_path):
         private_key_pem=private_pem,
     )
     assert heartbeat["manifest_sha256"] == manifest_sha256(manifest)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits do not certify Windows ACLs")
+def test_attestation_private_key_has_owner_only_posix_permissions(tmp_path):
+    ensure_attestation_key(tmp_path)
     assert (tmp_path / "attestation-private.pem").stat().st_mode & 0o777 == 0o600
 
 

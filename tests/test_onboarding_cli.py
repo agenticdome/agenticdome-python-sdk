@@ -160,7 +160,7 @@ def test_validate_ai_report_binds_both_local_evidence_files_without_source_uploa
     assert inspection["source_upload"] is False
     assert verification["source_upload"] is False
     assert "Workload scope:" not in json.dumps((inspection, verification))
-    assert result["reconciliation"] == ".agenticdome/RECONCILIATION.md"
+    assert Path(result["reconciliation"]) == Path(".agenticdome") / "RECONCILIATION.md"
     assert (root / result["reconciliation"]).is_file()
 
 

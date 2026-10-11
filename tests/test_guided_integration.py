@@ -360,7 +360,9 @@ def test_apply_refuses_mode_change_after_preview(tmp_path, monkeypatch):
     _project(tmp_path)
     monkeypatch.setattr(onboarding_cli, "integration_plan", lambda root: _plan())
     result = guided_integration.preview(tmp_path)
-    (tmp_path / "app.py").chmod(0o600)
+    # Windows chmod supports the read-only flag, rather than POSIX owner bits.
+    # Removing write permission changes stat mode on both platforms.
+    (tmp_path / "app.py").chmod(0o400)
 
     with pytest.raises(RuntimeError, match="Existing source changed after preview"):
         guided_integration.apply(tmp_path, approval_code=result["approval_code"])
