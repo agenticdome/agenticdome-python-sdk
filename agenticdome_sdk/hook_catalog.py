@@ -49,6 +49,12 @@ PUBLISHED_AGENTICDOME_PACKAGES: Dict[str, Dict[str, str]] = {
     if isinstance(row, dict)
 }
 
+# Prepared artifacts are kept separate from registry-verified published releases.
+RELEASE_CANDIDATE_PACKAGES = {
+    'agenticdome-python-sdk': {'version': '1.2.44', 'status': 'unpublished'},
+    'agenticdome-sdk': {'version': '0.6.15', 'status': 'unpublished'},
+}
+
 
 def _python_contract(
     label: str,

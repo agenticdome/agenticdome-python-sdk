@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -959,7 +960,13 @@ def test_private_copilot_cache_is_bound_to_tenant_sidecar_ir_and_catalog(tmp_pat
     monkeypatch.setenv("AGENTICDOME_API_BASE", "https://sidecar.example")
     monkeypatch.setenv("AGENTICDOME_COPILOT_API_KEY", "scoped-secret")
     monkeypatch.setenv("AGENTICDOME_TENANT_ID", "tenant-1")
-    monkeypatch.setattr(onboarding_cli.urllib.request, "urlopen", urlopen)
+    # Mock only this module's transport. Patching the shared urllib module also
+    # counted asynchronous lifecycle evidence from other clients as cache misses.
+    monkeypatch.setattr(onboarding_cli, "urllib", SimpleNamespace(
+        **{**vars(onboarding_cli.urllib), "request": SimpleNamespace(
+            **{**vars(onboarding_cli.urllib.request), "urlopen": urlopen}
+        )}
+    ))
 
     first = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)
     second = REAL_COPILOT_ANALYSIS(tmp_path, ir, required=True)

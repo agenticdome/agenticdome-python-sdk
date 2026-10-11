@@ -67,7 +67,10 @@ def test_published_typescript_openclaw_and_mcp_contracts_are_versioned() -> None
     openclaw_version = PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-openclaw-security"]["version"]
 
 
-    assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-python-sdk"]["version"] == python_version
+    from agenticdome_sdk.hook_catalog import RELEASE_CANDIDATE_PACKAGES
+    published_python = PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-python-sdk"]["version"]
+    if published_python != python_version:
+        assert RELEASE_CANDIDATE_PACKAGES['agenticdome-python-sdk'] == {'version': python_version, 'status': 'unpublished'}
     assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-sdk"]["version"] == typescript_version
     assert PUBLISHED_AGENTICDOME_PACKAGES["agenticdome-openclaw-security"]["version"] == openclaw_version
     for package, metadata in PUBLISHED_AGENTICDOME_PACKAGES.items():

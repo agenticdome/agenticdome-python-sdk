@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import json
+import uuid
 import logging
 import os
 import re
@@ -39,6 +41,36 @@ class AgenticDomeHTTPError(AgenticDomeError):
         self.message = message
         self.response_text = response_text
         super().__init__(f"[{status_code}] {message}")
+
+
+class ApprovalRequired(AgenticDomeError):
+    """A prepared action is paused. Preserve it and resume only after review."""
+
+    def __init__(self, response: Dict[str, Any], prepared_request: Dict[str, Any]):
+        context = response.get("context") or {}
+        self.request_id = str((context.get("approval") or {}).get("id") or "")
+        self.approval_url = str(context.get("approval_url") or "")
+        self.response = response
+        # Freeze the prepared body independently of mutable handler arguments.
+        self._prepared_json = json.dumps(prepared_request, sort_keys=True, allow_nan=False)
+        super().__init__("Approval required" + (": " + self.request_id if self.request_id else ""))
+
+    def resume(self, client: "AgenticDomeClient", executor):
+        return client.resume_approved_action(self, executor)
+
+    def export_prepared_action(self):
+        """Contains original arguments: encrypt in host storage and never log it."""
+        prepared = json.loads(self._prepared_json)
+        return {"schema": "agenticdome.sdk-prepared-approval.v1", "approval": {"id": self.request_id, "url": self.approval_url},
+                "prepared_request": prepared, "tenant_id": prepared.get("tenant_id")}
+
+    @classmethod
+    def restore_prepared_action(cls, record):
+        prepared = record.get("prepared_request") if isinstance(record, dict) else None
+        approval = record.get("approval") if isinstance(record, dict) else None
+        if not isinstance(record, dict) or record.get("schema") != "agenticdome.sdk-prepared-approval.v1" or not isinstance(prepared, dict) or not prepared.get("tool_name") or not isinstance(approval, dict) or not approval.get("id"):
+            raise ValueError("Invalid prepared approval record")
+        return cls({"context": {"approval": {"id": approval["id"]}, "approval_url": approval.get("url", "")}}, record["prepared_request"])
 
 
 class AgenticDomeClient:
@@ -794,10 +826,14 @@ class AgenticDomeClient:
                     raise ValueError("'workload_id' must be a non-empty SPIFFE ID up to 512 characters")
                 payload["workload_id"] = normalized_workload
 
+        if tool_name:
+            payload["policy_context"].setdefault("approval_action_id", str(uuid.uuid4()))
         path = "/tools/execution/authorize" if broker_enabled else "/tools/guardrail/validate"
         if broker_enabled and resolved_broker_mode == "policy" and execution_broker is not True:
             path = "/tools/execution/resolve"
         response = self._request("POST", path, json_body=payload, tenant_id=tenant_id)
+        if str(response.get("verdict") or "").upper() == "APPROVAL_REQUIRED":
+            raise ApprovalRequired(response, payload)
         if broker_enabled:
             if path == "/tools/execution/resolve":
                 contract = response.get("execution_broker_policy") or {}
@@ -818,6 +854,28 @@ class AgenticDomeClient:
                 response=response, live=not self.is_simulation,
             )
         return response
+
+    def resume_approved_action(self, pending: ApprovalRequired, executor):
+        """Revalidate and consume one exact-action grant before invoking executor(args).
+
+        The caller retains the prepared request; the portal never holds payloads.
+        Approval does not execute anything until this explicit continuation runs.
+        """
+        if not isinstance(pending, ApprovalRequired) or not callable(executor):
+            raise ValueError("A prepared approval request and executor are required")
+        request_id = str(uuid.UUID(pending.request_id))
+        payload = json.loads(pending._prepared_json)
+        tenant = payload.get("tenant_id")
+        grant = self._request("GET", f"/tools/approvals/{request_id}/grant", tenant_id=tenant).get("approval_grant")
+        if not isinstance(grant, str) or not grant:
+            raise AgenticDomeError("No current approval grant was returned")
+        payload["policy_context"] = {**(payload.get("policy_context") or {}), "approval_grant": grant}
+        payload.setdefault("boundary_id", "sdk:approval:" + request_id)
+        response = self._request("POST", "/tools/execution/authorize", json_body=payload, tenant_id=tenant)
+        broker = response.get("broker") or {}
+        if response.get("verdict") != "ALLOWED" or not broker.get("verified") or not broker.get("token_consumed") or broker.get("approval_request_id") != request_id or not response.get("execution_receipt"):
+            raise AgenticDomeError("The approved action could not be revalidated and consumed")
+        return executor(json.loads(pending._prepared_json)["tool_args"])
 
     @staticmethod
     def enforcement_headers(result: Dict[str, Any], *, workload_id: Optional[str] = None) -> Dict[str, str]:

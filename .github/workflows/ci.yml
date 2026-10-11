@@ -11,12 +11,22 @@ permissions:
 
 jobs:
   test:
+    needs: package
     name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        os: [ubuntu-latest]
+        include:
+          - {python-version: "3.11", os: windows-latest}
+          - {python-version: "3.14", os: windows-latest}
+          - {python-version: "3.11", os: macos-latest}
+          - {python-version: "3.14", os: macos-latest}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out source
@@ -28,13 +38,33 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install public development dependencies
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-release-wheel
+          path: dist
+      - name: Install immutable release wheel and verify dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -e ".[dev]"
+          wheel=$(find dist -name '*.whl' -print -quit)
+          python -m pip install "${wheel}[dev]"
+          python -m pip check
 
       - name: Run public tests
-        run: python -m pytest -q
+        run: |
+          mkdir -p evidence
+          python -m pip list --format=json > evidence/dependencies.json
+          python -VV > evidence/python.txt
+          wheel=$(find dist -name "*.whl" -print -quit)
+          python scripts/certify_installed_wheel.py --wheel "$wheel" --output "$RUNNER_TEMP/sdk-certification"
+          cp "$RUNNER_TEMP/sdk-certification/certification.json" "$RUNNER_TEMP/sdk-certification/results.xml" evidence/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-certification-${{ matrix.os }}-${{ matrix.python-version }}
+          path: |
+            evidence
+            ${{ runner.temp }}/sdk-certification/*.json
+            ${{ runner.temp }}/sdk-certification/*.xml
 
   package:
     name: Package contract
@@ -58,3 +88,36 @@ jobs:
 
       - name: Validate package metadata
         run: python -m twine check dist/*
+      - name: Record immutable artifact checksums
+        run: python -c "import pathlib,hashlib,json; pathlib.Path('dist/sha256.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path('dist').glob('*.whl')},indent=2))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-release-wheel
+          path: dist
+
+  qualify-next-python:
+    name: Qualify CPython 3.15
+    needs: package
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.15"
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-release-wheel
+          path: dist
+      - run: |
+          wheel=$(find dist -name '*.whl' -print -quit)
+          python -m pip install "${wheel}[dev]"
+          python -m pip check
+          python scripts/certify_installed_wheel.py --wheel "$wheel" --output "$RUNNER_TEMP/sdk-qualification"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-qualification-3.15
+          path: |
+            ${{ runner.temp }}/sdk-qualification/*.json
+            ${{ runner.temp }}/sdk-qualification/*.xml

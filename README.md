@@ -1,5 +1,10 @@
 # AgenticDome Python SDK
 
+Python 3.11+ is required from SDK 1.2.44. Release certification gates cover
+CPython 3.11–3.14 using the same built wheel; newer interpreters require a
+separate qualification run. Framework compatibility also depends on that
+framework's supported versions and resolved dependencies.
+
 [![PyPI version](https://img.shields.io/pypi/v/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/agenticdome-python-sdk.svg)](https://pypi.org/project/agenticdome-python-sdk/)
 [![CI](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/agenticdome/agenticdome-python-sdk/actions/workflows/ci.yml)
@@ -460,7 +465,7 @@ pip install agenticdome-python-sdk
 | PydanticAI | `pip install "agenticdome-python-sdk[pydanticai]"` |
 | LangGraph / LangChain | `pip install "agenticdome-python-sdk[langgraph]"` |
 | Microsoft Agent Framework | `pip install "agenticdome-python-sdk[microsoft]"` |
-| Microsoft AutoGen AgentChat / Core (Python 3.10+) | `pip install "agenticdome-python-sdk[autogen]"` |
+| Microsoft AutoGen AgentChat / Core (Python 3.11+) | `pip install "agenticdome-python-sdk[autogen]"` |
 | Microsoft AI Foundry | `pip install "agenticdome-python-sdk[foundry]"` |
 | OpenAI Agents SDK | `pip install "agenticdome-python-sdk[openai-agents]"` |
 | Anthropic Claude Agent SDK | `pip install "agenticdome-python-sdk[claude]"` |
@@ -1210,7 +1215,7 @@ from agenticdome_sdk.microsoft_agent_framework import (
 AutoGen is Microsoft's open-source conversational multi-agent framework and is now community-managed in maintenance mode; Microsoft Agent Framework is the recommended successor for new systems. AgenticDome supports current AutoGen AgentChat/Core applications and existing legacy `ConversableAgent` deployments so teams can migrate without losing runtime enforcement.
 
 ```bash
-# AutoGen AgentChat requires Python 3.10+.
+# This SDK requires Python 3.11+.
 pip install "agenticdome-python-sdk[autogen]"
 ```
 

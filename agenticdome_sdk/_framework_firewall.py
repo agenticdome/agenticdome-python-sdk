@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from threading import Lock, Thread
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Tuple, Type
 
-from .client import AgenticDomeClient
+from .client import AgenticDomeClient, ApprovalRequired
 from .lifecycle import VerifiedActionReporter
 from ._mode import credentials_or_local_sim
 
@@ -335,6 +335,8 @@ class FrameworkFirewallBase:
                     self._circuit_open_until = 0.0
                 return result
             except Exception as exc:
+                if isinstance(exc, ApprovalRequired):
+                    raise
                 last_error = exc
                 with self._circuit_lock:
                     self._circuit_failures += 1
@@ -346,6 +348,8 @@ class FrameworkFirewallBase:
         raise last_error
 
     def _failure(self, context: str, exc: Exception, fallback: Any) -> Any:
+        if isinstance(exc, ApprovalRequired):
+            raise exc
         if isinstance(exc, self.denied_error):
             raise exc
         if self.config.fail_closed:
