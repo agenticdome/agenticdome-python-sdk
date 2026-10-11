@@ -1,6 +1,7 @@
 import ast
 import hashlib
 import json
+import os
 import subprocess
 
 import pytest
@@ -356,16 +357,31 @@ def test_local_exact_pattern_is_found_when_generic_boundary_heuristic_misses_it(
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == SOURCE
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode tracking is platform-managed on Windows")
 def test_apply_refuses_mode_change_after_preview(tmp_path, monkeypatch):
     _project(tmp_path)
     monkeypatch.setattr(onboarding_cli, "integration_plan", lambda root: _plan())
     result = guided_integration.preview(tmp_path)
-    # Windows chmod supports the read-only flag, rather than POSIX owner bits.
-    # Removing write permission changes stat mode on both platforms.
-    (tmp_path / "app.py").chmod(0o400)
+    (tmp_path / "app.py").chmod(0o600)
 
     with pytest.raises(RuntimeError, match="Existing source changed after preview"):
         guided_integration.apply(tmp_path, approval_code=result["approval_code"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only file replacement semantics")
+def test_apply_refuses_windows_read_only_source_without_changing_its_content(tmp_path, monkeypatch):
+    _project(tmp_path)
+    monkeypatch.setattr(onboarding_cli, "integration_plan", lambda root: _plan())
+    result = guided_integration.preview(tmp_path)
+    source = tmp_path / "app.py"
+    original = source.read_bytes()
+    source.chmod(0o400)
+    try:
+        with pytest.raises(PermissionError):
+            guided_integration.apply(tmp_path, approval_code=result["approval_code"])
+        assert source.read_bytes() == original
+    finally:
+        source.chmod(0o600)
 
 
 def test_preview_rejects_symlinked_internal_output_directory(tmp_path, monkeypatch):
