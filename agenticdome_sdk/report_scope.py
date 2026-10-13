@@ -14,6 +14,8 @@ HISTORY_SECTIONS = {"preserved historical baseline and unique evidence", "histor
 
 
 def assessment_scope(markdown):
+    declared = re.search(r"(?m)^Workload scope:\s*`([^`\r\n]+)`\s*$", markdown)
+    workload = declared[1] if declared else None
     headings = []
     source_incomplete = False
     activation_pending = False
@@ -38,6 +40,13 @@ def assessment_scope(markdown):
                 continue
             if cells[0].casefold() == "production activation":
                 activation_pending |= len(cells) < 2 or cells[1].upper() != "VERIFIED"
+                continue
+            # Keep external components explicitly unassessed. Only this typed,
+            # declared-scope row is a scope boundary, not missing workload source.
+            if (workload and len(cells) == 3
+                    and cells[1].upper() == "NOT ASSESSED / OUTSIDE WORKLOAD"
+                    and not cells[0].startswith(("AGENTICDOME_", "AGENTIC_ORCHESTRATOR_"))
+                    and re.match(r"^Outside `" + re.escape(workload) + r"` Workload scope\b", cells[2])):
                 continue
         # A missing code read site is a source defect, even in an operator table.
         if cells and cells[0].startswith(("AGENTICDOME_", "AGENTIC_ORCHESTRATOR_")):
