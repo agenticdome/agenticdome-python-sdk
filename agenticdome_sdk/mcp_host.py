@@ -363,6 +363,7 @@ class AgenticDomeMCPHostFirewall:
         lifecycle_reporter: Optional[VerifiedActionReporter] = None,
         provider_action_rules: Optional[Dict[str, "ProviderActionRule"]] = None,
         resolve_provider_facts: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        ownership_guard=None,
     ) -> None:
         self.config = config or load_config()
         if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
@@ -382,6 +383,7 @@ class AgenticDomeMCPHostFirewall:
             api_base=self.config.api_base, api_key=self.config.api_key, sender=getattr(self.client, "report_action_evidence", None))
         self.provider_action_rules = dict(provider_action_rules or {})
         self.resolve_provider_facts = resolve_provider_facts
+        self.ownership_guard = ownership_guard
         self._rate_lock = Lock()
         self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
 
@@ -674,7 +676,7 @@ class AgenticDomeMCPHostFirewall:
             logger.warning("AgenticDome incident reporting failed; continuing. reason=%s", exc)
 
     def _fail_or_raise(self, message: str, exc: Optional[Exception] = None) -> None:
-        if self.config.fail_closed:
+        if self.config.fail_closed or self.ownership_guard is not None:
             if exc is not None:
                 raise MCPToolBlocked(message) from exc
             raise MCPToolBlocked(message)
@@ -1249,6 +1251,9 @@ class AgenticDomeMCPHostFirewall:
         if not isinstance(mcp_request, dict):
             return self.jsonrpc_error(None, -32600, "Invalid Request")
 
+        if self._method(mcp_request) == "tools/call" or (self.ownership_guard is not None and self._method(mcp_request) in {"resources/read", "prompts/get"}):
+            mcp_request = copy.deepcopy(mcp_request)
+
         rid = self._request_id(mcp_request)
         method = self._method(mcp_request)
         params = self._params(mcp_request)
@@ -1270,28 +1275,36 @@ class AgenticDomeMCPHostFirewall:
                 if blocked:
                     return blocked
                 sanitized_args = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
-                forwarded_args = sanitized_args if sanitized_args is not None else self._strip_internal_args(tool_args)
+                forwarded_args = copy.deepcopy(sanitized_args if sanitized_args is not None else self._strip_internal_args(tool_args))
                 await self._check_provider_action(tool_name=tool_name, arguments=forwarded_args)
+                if self.ownership_guard is not None:
+                    await self.ownership_guard.check_async(tool_name, forwarded_args, expected_tenant=self.config.tenant_id)
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method, "operation": tool_name})
                 return self._replace_tool_args(mcp_request, forwarded_args)
 
-            if method == "resources/read" and self.config.protect_resources_read:
+            if method == "resources/read" and (self.config.protect_resources_read or self.ownership_guard is not None):
                 uri, resource_params = self._extract_resource_read(mcp_request)
                 decision = await self.authorize_mcp_resource_read(uri=uri, params=resource_params, context=local_context)
                 blocked = await self._handle_blocking_decision(decision=decision, rid=rid, context=local_context, method=method, operation=uri)
                 if blocked:
                     return blocked
                 sanitized_params = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
+                if self.ownership_guard is not None:
+                    sanitized_params = copy.deepcopy(sanitized_params if sanitized_params is not None else resource_params)
+                    await self.ownership_guard.check_async("mcp.resources/read", sanitized_params, expected_tenant=self.config.tenant_id)
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method, "operation": uri})
                 return self._replace_params(mcp_request, sanitized_params) if sanitized_params is not None else mcp_request
 
-            if method == "prompts/get" and self.config.protect_prompts_get:
+            if method == "prompts/get" and (self.config.protect_prompts_get or self.ownership_guard is not None):
                 name, prompt_params = self._extract_prompt_get(mcp_request)
                 decision = await self.authorize_mcp_prompt_get(name=name, params=prompt_params, context=local_context)
                 blocked = await self._handle_blocking_decision(decision=decision, rid=rid, context=local_context, method=method, operation=name)
                 if blocked:
                     return blocked
                 sanitized_params = self._sanitized_args(decision, explicit_only=self._verdict(decision) == "REDACTED")
+                if self.ownership_guard is not None:
+                    sanitized_params = copy.deepcopy(sanitized_params if sanitized_params is not None else prompt_params)
+                    await self.ownership_guard.check_async("mcp.prompts/get", sanitized_params, expected_tenant=self.config.tenant_id)
                 self._audit("mcp_request_allowed", context=local_context, details={"method": method, "operation": name})
                 return self._replace_params(mcp_request, sanitized_params) if sanitized_params is not None else mcp_request
 
@@ -1322,8 +1335,11 @@ class AgenticDomeMCPHostFirewall:
         except MCPToolBlocked as exc:
             return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: MCP request not authorized", data={"method": method})
         except (AgenticDomeHTTPError, Exception) as exc:
-            if method == "tools/call" and self._extract_tool_call(mcp_request)[0] in self.provider_action_rules:
-                return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: Booking authorization unavailable", data={"method": method})
+            if method in {"resources/read", "prompts/get"} and self.ownership_guard is not None and self.ownership_guard.protects("mcp." + method):
+                return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: Provider resource authorization unavailable", data={"method": method})
+            if method == "tools/call" and (self._extract_tool_call(mcp_request)[0] in self.provider_action_rules or
+                    self.ownership_guard is not None and self.ownership_guard.protects(self._extract_tool_call(mcp_request)[0])):
+                return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: Provider resource authorization unavailable", data={"method": method})
             if self.config.fail_closed:
                 return self.jsonrpc_error(rid, -32000, "AgenticDome Blocked: MCP preflight unavailable", data={"method": method})
             logger.warning("AgenticDome MCP preflight failed open. reason=%s", exc)

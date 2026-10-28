@@ -2786,3 +2786,20 @@ The Python SDK client, public examples, and public SDK documentation in this rep
 Security vulnerabilities must be reported privately as described in [SECURITY.md](https://github.com/agenticdome/agenticdome-python-sdk/blob/main/SECURITY.md), not through a public issue.
 
 For enterprise deployments, advanced governance workflows, dedicated regional control planes, or priority integration support, visit **[agenticdome.io](https://agenticdome.io)**.
+## Exact HTTP execution
+
+`client.execute_http(method=..., url=..., body=..., headers=..., agent_id=...,
+tool_name=..., request_purpose=...)` authorizes and sends the same bounded UTF-8
+request. It requires a compatible sidecar broker and refuses redirects. It
+raises `ApprovalRequired` before sending when human review is required; resume
+with `client.resume_approved_http(pending, headers=...)` after approval. Fresh
+API authentication headers may be supplied; reviewed content and If-Match,
+If-None-Match or If-Unmodified-Since preconditions cannot change. Existing
+generic tool callbacks keep their existing contract. Network-level protection
+also requires routing through a compatible enforcing gateway with direct egress
+controlled. A returned HTTP response is the provider's outcome, separate from
+the policy decision and gateway admission.
+
+### Shared resource adapters and GraphQL
+
+`OwnershipGuard` and `ResourceRule` verify tenant, resource identity, ownership or explicit entitlements and permitted operations through trusted provider callbacks. Attach the guard to the client or MCP gateway; HTTP approval resume rechecks current facts. `execute_graphql` sends exact prepared JSON through the interpreting sidecar. GraphQL rules use `tool#Mutation.field` and resolved field arguments, never an asserted owner or unused variable. See [resource adapter examples](docs/resource-adapters.md).

@@ -2,6 +2,7 @@ import asyncio
 
 from agenticdome_sdk.mcp_host import AgenticDomeMCPHostFirewall, FirewallConfig, ProviderActionRule
 from agenticdome_sdk.mcp_http_gateway import _review_sse_event
+from agenticdome_sdk import OwnershipGuard, ResourceRule
 
 
 class FakeClient:
@@ -60,6 +61,42 @@ def tools_call(arguments=None):
         "method": "tools/call",
         "params": {"name": "search_crm", "arguments": arguments or {"query": "alice"}},
     }
+
+
+def test_generic_resource_guard_checks_final_args_and_cannot_fail_open():
+    client = FakeClient()
+    observed = []
+    guard = OwnershipGuard({'records.cancel': ResourceRule('record', 'id', 'cancel')},
+        resolve_subject=lambda: {'tenant_id': 'tenant', 'principal_id': 'alice'},
+        resolve_resource=lambda req: (observed.append(req) or {**req, 'owner_id': 'alice' if req['resource_id'] == 'own' else 'bob', 'allowed_operations': ['cancel']}))
+    firewall = AgenticDomeMCPHostFirewall(config=FirewallConfig(api_base='https://fixture.invalid', api_key='key', tenant_id='tenant', fail_closed=False), client=client, ownership_guard=guard)
+    request = tools_call({'id': 'other', 'owner_id': 'alice'}); request['params']['name'] = 'records.cancel'
+    result = asyncio.run(firewall.preflight_request(mcp_request=request, context={'session_id': 'run'}))
+    assert 'error' in result
+    client.mcp_response = {'result': {'verdict': 'REDACTED', 'sanitized_tool_args': {'id': 'own'}}}
+    result = asyncio.run(firewall.preflight_request(mcp_request=request, context={'session_id': 'run'}))
+    assert result['params']['arguments'] == {'id': 'own'}
+    assert observed[-1]['resource_id'] == 'own'
+    client.raise_on_mcp = True
+    result = asyncio.run(firewall.preflight_request(mcp_request=request, context={'session_id': 'run'}))
+    assert 'error' in result
+    firewall.close()
+
+
+def test_resource_and_prompt_reads_cannot_bypass_configured_ownership_guard():
+    client = FakeClient()
+    guard = OwnershipGuard({'mcp.resources/read': ResourceRule('document', 'uri', 'read', relationship='entitled')},
+        resolve_subject=lambda: {'tenant_id': 'tenant', 'principal_id': 'alice'},
+        resolve_resource=lambda req: {**req, 'entitled_principals': ['alice'] if req['resource_id'] == 'doc://own' else [], 'allowed_operations': ['read']})
+    firewall = AgenticDomeMCPHostFirewall(config=FirewallConfig(api_base='https://fixture.invalid', api_key='key', tenant_id='tenant', fail_closed=False, protect_resources_read=False), client=client, ownership_guard=guard)
+    try:
+        for method, params, allowed in [('resources/read', {'uri': 'doc://own'}, True), ('resources/read', {'uri': 'doc://other'}, False), ('prompts/get', {'name': 'private'}, False)]:
+            result = asyncio.run(firewall.preflight_request(mcp_request={'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}, context={'session_id': 'run'}))
+            assert ('error' not in result) == allowed
+        client.raise_on_mcp = True
+        result = asyncio.run(firewall.preflight_request(mcp_request={'jsonrpc': '2.0', 'id': 2, 'method': 'resources/read', 'params': {'uri': 'doc://own'}}, context={'session_id': 'run'}))
+        assert 'error' in result
+    finally: firewall.close()
 
 
 def test_booking_cancel_requires_provider_owned_reservation_and_authenticated_member():

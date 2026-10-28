@@ -51,8 +51,8 @@ PUBLISHED_AGENTICDOME_PACKAGES: Dict[str, Dict[str, str]] = {
 
 # Prepared artifacts are kept separate from registry-verified published releases.
 RELEASE_CANDIDATE_PACKAGES = {
-    'agenticdome-python-sdk': {'version': '1.2.44', 'status': 'unpublished'},
-    'agenticdome-sdk': {'version': '0.6.15', 'status': 'unpublished'},
+    'agenticdome-python-sdk': {'version': '1.2.48', 'status': 'unpublished'},
+    'agenticdome-sdk': {'version': '0.6.16', 'status': 'unpublished'},
 }
 
 
@@ -298,7 +298,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "Custom Python",
         "agenticdome_sdk",
         "AgenticDomeClient",
-        ["guardrail_validate", "mesh_validate"],
+        ["guardrail_validate", "mesh_validate", "execute_http", "execute_graphql"],
         docs="docs/frameworks/custom-python.md",
     ),
     "typescript": {
@@ -311,6 +311,7 @@ FRAMEWORK_HOOK_CATALOG: Dict[str, Dict[str, Any]] = {
         "adapter_module": "agenticdome-sdk",
         "adapter_class": "AgenticDomeClient",
         "attachment_methods": ["guardrailValidate", "meshValidate"],
+        "action_adapters": {"http": "executeHttp", "graphql": "executeGraphql", "ownership": "OwnershipGuard", "qualification": "Verify these optional exports in the installed npm package before use; Python catalogue publication does not certify an npm release."},
         "native_hooks": [],
         "docs": "agenticdome-sdk package README",
     },
@@ -445,7 +446,7 @@ _HARNESS_VERIFICATION: Dict[str, Dict[str, Any]] = {
     },
     "custom-python": {
         "adapter_attrs": ["AgenticDomeClient"],
-        "firewall_methods": ["guardrail_validate", "mesh_validate"],
+        "firewall_methods": ["guardrail_validate", "mesh_validate", "execute_http", "execute_graphql"],
     },
 }
 

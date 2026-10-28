@@ -5,8 +5,10 @@ from ._mode import LIVE_MODE, LOCAL_SIM_MODE, is_local_sim_mode, resolve_mode
 from .lifecycle import VerifiedActionContext, VerifiedActionDenied, VerifiedActionReporter, verified_action
 from .action_path_proof import ExecutionSpy
 from .generic_python import AgenticDomeActionDenied, guarded_tool_executor
+from .ownership import OwnershipGuard, OwnershipDenied, ResourceRule
 
 __all__ = [
+    "OwnershipGuard", "OwnershipDenied", "ResourceRule",
     "AgenticDomeClient",
     "AgenticDomeError",
     "AgenticDomeHTTPError",

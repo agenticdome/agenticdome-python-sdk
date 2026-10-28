@@ -1430,6 +1430,7 @@ def _hook_plans(
                 "class": contract.get("adapter_class"),
                 "attachment_methods": contract.get("attachment_methods", []),
                 "native_hooks": contract.get("native_hooks", []),
+                "action_adapters": contract.get("action_adapters", {}),
             },
             "runtime": contract.get("runtime", {}),
             "packages": package_rows,
@@ -1479,7 +1480,8 @@ _PRIMARY_HOOKS = {
     "llamaindex": ("to_function_tool", "Wrap each consequential LlamaIndex function tool; add retrieval and output review separately."),
     "bedrock": ("wrap_tool_handler", "Wrap each Bedrock action-group or local tool executor before calling it."),
     "mcp": ("forward_with_firewall", "Route the real MCP forwarder and responses through the host firewall."),
-    "custom-python": ("guardrail_validate", "Call the runtime immediately before each real tool executor and enforce its returned verdict; explicit dispatchers can use guarded_tool_executor."),
+    "custom-python": ("guardrail_validate", "Use execute_http or execute_graphql for outbound API actions; attach OwnershipGuard to authoritative provider access records when resource access is involved. Other dispatchers can use guarded_tool_executor or enforce guardrail_validate immediately before execution."),
+    "typescript": ("guardrailValidate", "For outbound API actions, verify executeHttp/executeGraphql and OwnershipGuard exist in the installed core SDK; use them at the actual execution boundary."),
 }
 
 # These are conditional attachment choices, not assertions that the selected
@@ -1521,7 +1523,7 @@ _SURFACE_HOOKS = {
     ],
     "mcp": [("tool_execution", ("forward_with_firewall", "preflight_request"), "Route the actual JSON-RPC forwarder and response path through the MCP host firewall.")],
     "custom-python": [
-        ("tool_execution", ("guardrail_validate", "guarded_tool_executor"), "Enforce the returned verdict immediately before the real executor; the decorator requires explicit trusted agent and session identity."),
+        ("tool_execution", ("guardrail_validate", "guarded_tool_executor", "execute_http", "execute_graphql"), "Use the exact HTTP/GraphQL helper for API actions; enforce other verdicts immediately before the real executor. Resolve ownership from the authenticated provider, never caller-supplied owner fields."),
         ("output_egress", ("mesh_validate",), "Review the final response before release to a user or external destination."),
         ("delegation", ("a2a_authorize_tool", "a2a_verify_decision_token_rpc"), "Authorize the handoff and verify its token at the receiving executor."),
     ],
@@ -1559,8 +1561,9 @@ def _recommend_hook(hook: Dict[str, Any], existing: Dict[str, Any]) -> Dict[str,
     observed = (
         "agenticdome_sdk.crewai" in imports if framework == "crewai" else method in observed_methods
     )
-    if framework == "custom-python" and "guarded_tool_executor" in observed_methods:
+    if framework == "custom-python" and observed_methods & {"guarded_tool_executor", "execute_http", "execute_graphql"}:
         observed = True
+        method = next(value for value in ("execute_graphql", "execute_http", "guarded_tool_executor") if value in observed_methods)
     return {
         "framework": framework,
         "method": method,
@@ -1681,6 +1684,7 @@ def integration_plan(root: Path) -> Dict[str, Any]:
         "framework_hook_plans": hook_plans,
         "hook_recommendations": [item["recommended_attachment"] for item in hook_plans],
         "surface_hook_recommendations": [row for item in hook_plans for row in item["surface_recommendations"]],
+        "resource_action_guidance": _resource_action_guidance(),
         "business_purpose": config.get("business_purpose"),
         "deployment": config.get("deployment", {}),
         "candidate_boundaries": report["boundaries"],
@@ -1830,7 +1834,27 @@ def _framework_hooks_markdown(plan: Dict[str, Any]) -> str:
         lines.extend(["", "Required before production:", ""])
         lines.extend("1. " + str(action) for action in item.get("required_actions", []))
         lines.append("")
+    guidance = _resource_action_guidance()
+    lines.extend(["## API actions, GraphQL and resource ownership", "", "Apply these steps where the workload accesses provider resources. Runtime proof: NOT ASSESSED.", ""])
+    lines.extend("1. " + step for step in guidance["steps"])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _resource_action_guidance() -> Dict[str, Any]:
+    return {
+        "schema": "agenticdome.resource-action-onboarding.v1", "runtime_proof": "not_assessed",
+        "python": {"http": "execute_http", "graphql": "execute_graphql", "ownership": "OwnershipGuard"},
+        "typescript": {"http": "executeHttp", "graphql": "executeGraphql", "ownership": "OwnershipGuard"},
+        "steps": [
+            "Check the installed SDK exports and assigned runtime's GraphQL capability before changing an existing integration. Upgrade through the certified release path if unavailable.",
+            "Route the real API executor through the exact HTTP/GraphQL helper; retain existing framework and MCP hooks. A helper elsewhere is not proof of coverage.",
+            "Connect OwnershipGuard to authenticated request-scoped tenant/principal identity and read-only authoritative resource lookups. Check explicit allowed operations; read entitlement never grants deletion.",
+            "Configure exact grants in Policy Studio. SuperSaaSAdmin defines the global ceiling; tenants narrow it. Every selected GraphQL mutation field needs its own grant. Do not weaken hard controls to pass a test.",
+            "Test allowed reads, another user's resource, another tenant, denied deletion, multi-field GraphQL, approval hold/resume, changed payload, revoked ownership and provider lookup failure. Use staging fixtures, not real destructive actions.",
+            "Prove BLOCKED and APPROVAL_REQUIRED execute zero provider calls, and a permitted action executes once. Approval must recheck current provider access; the destination must enforce permissions atomically with version preconditions.",
+            "Record the tested SDK version, runtime capability, grant IDs and real-path test evidence. Imports, generated examples and catalogue presence alone do not prove the resolver is connected.",
+        ],
+    }
 
 
 def _onboarding_broker_options(config: Dict[str, Any]) -> Dict[str, str]:

@@ -4,6 +4,9 @@ import json
 import uuid
 import logging
 import os
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 import re
 from importlib import metadata
 from typing import Optional, Dict, List, Any, Tuple, Union, Mapping
@@ -73,6 +76,9 @@ class ApprovalRequired(AgenticDomeError):
         return cls({"context": {"approval": {"id": approval["id"]}, "approval_url": approval.get("url", "")}}, record["prepared_request"])
 
 
+_CALL_IDENTITIES=ContextVar('agenticdome_client_identities',default=None)
+
+
 class AgenticDomeClient:
     """
     Official Python SDK for the AgenticDome Action Firewall.
@@ -111,7 +117,11 @@ class AgenticDomeClient:
         tool_provenance: Optional[Mapping[str, Mapping[str, str]]] = None,
         execution_broker_mode: Optional[str] = None,
         mode: Optional[str] = None,
+        ownership_guard=None,
     ):
+        self.ownership_guard = ownership_guard
+        self._managed_token_lock=None
+        self._managed_token_cache={}
         self.mode = resolve_mode(mode)
         self.is_simulation = self.mode == LOCAL_SIM_MODE
         if self.is_simulation:
@@ -218,7 +228,69 @@ class AgenticDomeClient:
         if extra_headers:
             headers.update(extra_headers)
 
+        # Renewed projected/JWT-SVID proof files are read on every request.
+        for environment, header in (("AGENTICDOME_AGENT_CREDENTIAL", "X-AgenticDome-Agent-Credential"),
+                                    ("AGENTICDOME_IDENTITY_DEPLOYMENT", "X-AgenticDome-Deployment"),
+                                    ("AGENTICDOME_AGENT_ID", "X-AgenticDome-Agent-Id"),
+                                    ("AGENTICDOME_AGENT_FRAMEWORK", "X-AgenticDome-Agent-Framework"),
+                                    ("AGENTICDOME_AGENT_TOKEN", "X-AgenticDome-Agent-Token"),
+                                    ("AGENTICDOME_WORKLOAD_TOKEN", "X-AgenticDome-Workload-Token"),
+                                    ("AGENTICDOME_USER_TOKEN", "X-AgenticDome-User-Token"),
+                                    ("AGENTICDOME_DELEGATION_TOKEN", "X-AgenticDome-Delegation-Token"),
+                                    ("AGENTICDOME_TASK_ID", "X-AgenticDome-Task-Id")):
+            value = os.getenv(environment, "").strip(); filename=os.getenv(environment+'_FILE','').strip()
+            if value and filename:
+                raise ValueError('Configure one identity value or file for '+environment)
+            if filename:
+                with open(filename,'rb') as handle:
+                    raw=handle.read(16385)
+                if len(raw)>16384:
+                    raise ValueError('Identity proof exceeds the size limit')
+                value=raw.decode().strip()
+                if not value:
+                    raise ValueError('Identity proof file is empty')
+            if len(value)>16384 or any(ord(c)<32 or ord(c)==127 for c in value):
+                raise ValueError('Identity header contains an invalid value')
+            if value:
+                headers.setdefault(header,value)
+        scoped=(_CALL_IDENTITIES.get() or {}).get(id(self),{})
+        for header,value in scoped.items():
+            if extra_headers and header in extra_headers:continue
+            if value is None:headers.pop(header,None)
+            else:headers[header]=value
+        if headers.get('X-AgenticDome-Agent-Token'):
+            headers.pop('X-AgenticDome-Agent-Credential',None);headers.pop('X-AgenticDome-Workload-Token',None)
+
         return headers
+
+    @contextmanager
+    def identity_context(self,*,user_token: Optional[str]=None,delegation_token: Optional[str]=None,task_id: Optional[str]=None):
+        """Bind one request/task identity to existing hooks without sharing it across tasks."""
+        if user_token and delegation_token:raise ValueError('Use a user token or a delegation token, not both')
+        if delegation_token and not task_id:raise ValueError('A delegation token requires its task ID')
+        contexts=dict(_CALL_IDENTITIES.get() or {});headers=dict(contexts.get(id(self),{}))
+        if user_token or delegation_token:
+            headers.update({'X-AgenticDome-User-Token':None,'X-AgenticDome-Delegation-Token':None})
+        for value,header,limit in ((user_token,'X-AgenticDome-User-Token',16384),(delegation_token,'X-AgenticDome-Delegation-Token',16384),(task_id,'X-AgenticDome-Task-Id',256)):
+            if value is not None:
+                if not isinstance(value,str) or not value.strip() or len(value)>limit or any(ord(c)<32 or ord(c)==127 for c in value):raise ValueError('Invalid scoped identity value')
+                headers[header]=value.strip()
+        contexts[id(self)]=headers;token=_CALL_IDENTITIES.set(contexts)
+        try:yield self
+        finally:_CALL_IDENTITIES.reset(token)
+
+    def enrol_identity(self, agent_id: str, framework: str = 'application') -> Dict[str, Any]:
+        """Obtain/renew a short-lived managed identity using configured deployment proof."""
+        return self._request('POST','/identity/v1/enrol',json_body={'agent_id':agent_id,'framework':framework})
+
+    def delegate_identity(self, recipient_agent_id: str, task_id: str, *, subject_token: Optional[str] = None) -> Dict[str, Any]:
+        payload={'recipient_agent_id':recipient_agent_id,'task_id':task_id,'scope':'identity:act'}
+        if subject_token:payload['subject_token']=subject_token
+        return self._request('POST','/identity/v1/delegate',json_body=payload)
+
+    def exchange_identity(self, subject_token: str, audience: str, task_id: str, scope: str) -> Dict[str, Any]:
+        return self._request('POST','/identity/v1/token',json_body={'grant_type':'urn:ietf:params:oauth:grant-type:token-exchange',
+            'subject_token':subject_token,'subject_token_type':'urn:ietf:params:oauth:token-type:access_token','audience':audience,'task_id':task_id,'scope':scope})
 
     def _require_nonempty(self, name: str, value: Optional[str]) -> str:
         """
@@ -228,6 +300,53 @@ class AgenticDomeClient:
         if not s:
             raise ValueError(f"'{name}' is required and cannot be blank")
         return s
+
+    def _managed_headers(self,path,json_body,headers):
+        """Fail closed on old runtimes; reuse a short-lived token across existing hooks."""
+        if not path.startswith(('/tools/','/a2a','/mcp')):
+            return headers
+        if not any(headers.get(h) for h in ('X-AgenticDome-Deployment','X-AgenticDome-Agent-Token')):
+            if headers.get('X-AgenticDome-User-Token') or headers.get('X-AgenticDome-Delegation-Token'):raise AgenticDomeError('Configure deployment proof or an enrolled agent token before supplying delegated identity')
+            return headers
+        import hashlib,time
+        body=json_body if isinstance(json_body,dict) else {}
+        params=body.get('params') if isinstance(body.get('params'),dict) else {}
+        if isinstance(params.get('arguments'),dict):body=params['arguments']
+        elif params.get('agent_id'):body=params
+        context=body.get('policy_context') if isinstance(body.get('policy_context'),dict) else {}
+        native=body.get('agent_id') or headers.get('X-AgenticDome-Agent-Id') or 'application'
+        framework=context.get('platform') or body.get('platform') or headers.get('X-AgenticDome-Agent-Framework') or 'gateway'
+        explicit=headers.get('X-AgenticDome-Agent-Token')
+        proof=explicit or headers.get('X-AgenticDome-Agent-Credential') or headers.get('X-AgenticDome-Workload-Token') or ''
+        cache_key=hashlib.sha256(json.dumps([headers.get('X-Tenant-Id'),headers.get('X-AgenticDome-Deployment'),native,framework,proof]).encode()).hexdigest()
+        if self._managed_token_lock is None:
+            self._managed_token_lock=threading.RLock()
+        with self._managed_token_lock:
+            cached=self._managed_token_cache.get(cache_key)
+            if not cached or cached[1]<=time.time()+30:
+                clean={k:v for k,v in headers.items() if k.lower() not in {'x-agenticdome-user-token','x-agenticdome-delegation-token','x-agenticdome-task-id'}}
+                endpoint='/identity/v1/introspect' if explicit else '/identity/v1/enrol'
+                payload={'token':explicit} if explicit else {'agent_id':native,'framework':framework}
+                result=self.session.request(method='POST',url=self.api_base+endpoint,headers=clean,json=payload,timeout=self._timeout_tuple(None))
+                if not result.ok:
+                    raise AgenticDomeHTTPError(result.status_code,'Managed identity could not be verified. Check deployment approval and update the assigned sidecar.',result.text)
+                issued=result.json()
+                if explicit:
+                    if issued.get('active') is not True or issued.get('token_use')!='agent_identity':
+                        raise AgenticDomeError('Managed agent token is not active')
+                    token=explicit;expires=float(issued.get('exp',0))
+                else:
+                    token=issued.get('access_token');expires=time.time()+min(float(issued.get('expires_in',0)),3600)
+                if not isinstance(token,str) or not token or not time.time()<expires<=time.time()+3601:
+                    raise AgenticDomeError('Runtime returned an invalid managed identity response')
+                # Bound cache entries when frameworks create short-lived specialist names.
+                if len(self._managed_token_cache)>=1000:
+                    self._managed_token_cache={k:v for k,v in self._managed_token_cache.items() if v[1]>time.time()+30}
+                    if len(self._managed_token_cache)>=1000:self._managed_token_cache.pop(next(iter(self._managed_token_cache)))
+                cached=(token,expires);self._managed_token_cache[cache_key]=cached
+        headers=dict(headers);headers.pop('X-AgenticDome-Agent-Credential',None);headers.pop('X-AgenticDome-Workload-Token',None)
+        headers['X-AgenticDome-Agent-Token']=cached[0]
+        return headers
 
     def _effective_tenant_id(self, tenant_id: Optional[Union[str, int]] = None) -> str:
         return self._require_nonempty(
@@ -433,6 +552,7 @@ class AgenticDomeClient:
             use_bearer=use_bearer,
             extra_headers=extra_headers,
         )
+        headers=self._managed_headers(path,json_body,headers)
 
         response = self.session.request(
             method=method.upper(),
@@ -635,6 +755,7 @@ class AgenticDomeClient:
         execution_boundary_id: Optional[str] = None,
         execution_destination: Optional[str] = None,
         execution_http_method: Optional[str] = None,
+        execution_request: Optional[Dict[str, Any]] = None,
         workload_id: Optional[str] = None,
         workload_uuid: Optional[str] = None,
         tenant_id: Optional[Union[str, int]] = None,
@@ -828,6 +949,10 @@ class AgenticDomeClient:
 
         if tool_name:
             payload["policy_context"].setdefault("approval_action_id", str(uuid.uuid4()))
+        if execution_request is not None:
+            if not broker_enabled:
+                raise ValueError("Prepared HTTP execution requires the execution broker")
+            payload["execution_request"] = json.loads(json.dumps(execution_request, allow_nan=False))
         path = "/tools/execution/authorize" if broker_enabled else "/tools/guardrail/validate"
         if broker_enabled and resolved_broker_mode == "policy" and execution_broker is not True:
             path = "/tools/execution/resolve"
@@ -855,7 +980,7 @@ class AgenticDomeClient:
             )
         return response
 
-    def resume_approved_action(self, pending: ApprovalRequired, executor):
+    def resume_approved_action(self, pending: ApprovalRequired, executor, *, with_authorization=False):
         """Revalidate and consume one exact-action grant before invoking executor(args).
 
         The caller retains the prepared request; the portal never holds payloads.
@@ -866,7 +991,11 @@ class AgenticDomeClient:
         request_id = str(uuid.UUID(pending.request_id))
         payload = json.loads(pending._prepared_json)
         tenant = payload.get("tenant_id")
-        grant = self._request("GET", f"/tools/approvals/{request_id}/grant", tenant_id=tenant).get("approval_grant")
+        grant_options={'tenant_id':tenant}
+        if any(os.getenv(name) for name in ('AGENTICDOME_IDENTITY_DEPLOYMENT','AGENTICDOME_AGENT_TOKEN','AGENTICDOME_AGENT_TOKEN_FILE')):
+            grant_options['extra_headers']={'X-AgenticDome-Agent-Id':payload.get('agent_id') or 'application',
+                'X-AgenticDome-Agent-Framework':(payload.get('policy_context') or {}).get('platform') or 'gateway'}
+        grant = self._request("GET", f"/tools/approvals/{request_id}/grant", **grant_options).get("approval_grant")
         if not isinstance(grant, str) or not grant:
             raise AgenticDomeError("No current approval grant was returned")
         payload["policy_context"] = {**(payload.get("policy_context") or {}), "approval_grant": grant}
@@ -875,7 +1004,47 @@ class AgenticDomeClient:
         broker = response.get("broker") or {}
         if response.get("verdict") != "ALLOWED" or not broker.get("verified") or not broker.get("token_consumed") or broker.get("approval_request_id") != request_id or not response.get("execution_receipt"):
             raise AgenticDomeError("The approved action could not be revalidated and consumed")
-        return executor(json.loads(pending._prepared_json)["tool_args"])
+        exact_args = json.loads(pending._prepared_json)["tool_args"]
+        return executor(exact_args, response) if with_authorization else executor(exact_args)
+
+    def execute_http(self, *, method, url, agent_id, tool_name, body=b"", headers=None, timeout=30, **context):
+        """Authorize and send the same HTTP request. ApprovalRequired pauses before sending."""
+        from .http_execution import prepare, send
+        prepared, arguments, descriptor = prepare(method, url, body, headers)
+        result = self.guardrail_validate(text="Execute reviewed HTTP operation", agent_id=agent_id,
+            tool_name=tool_name, tool_args=arguments, platform=context.pop("platform", "generic"),
+            execution_broker=True, execution_destination=prepared.url, execution_http_method=prepared.method,
+            execution_request=descriptor, **context)
+        return send(prepared, result, self, workload_id=context.get("workload_id"), timeout=timeout,
+            tool_name=tool_name, arguments=arguments, require_graphql=(context.get("policy_context") or {}).get("required_graphql_schema"))
+
+    def execute_graphql(self, *, url, query, agent_id, tool_name, variables=None, operation_name=None, headers=None, **context):
+        """Review GraphQL in the sidecar and execute its exact JSON bytes."""
+        if not isinstance(query, str) or not query.strip(): raise ValueError("Supply a complete GraphQL document")
+        if variables is not None and not isinstance(variables, dict): raise ValueError("GraphQL variables must be an object")
+        if any(k.lower() == "content-type" for k in (headers or {})): raise ValueError("GraphQL content type is managed by the SDK")
+        payload = {"query": query, "variables": variables or {}}
+        if operation_name is not None: payload["operationName"] = operation_name
+        context["policy_context"] = {**(context.get("policy_context") or {}), "required_graphql_schema": "agenticdome.graphql-actions.v1"}
+        return self.execute_http(method="POST", url=url, body=json.dumps(payload, allow_nan=False),
+            headers={**(headers or {}), "Content-Type": "application/json"}, agent_id=agent_id, tool_name=tool_name, **context)
+
+    def resume_approved_http(self, pending: ApprovalRequired, *, headers=None, timeout=30):
+        """Resume the frozen HTTP request; supply fresh authentication headers separately."""
+        from .http_execution import prepare, send, BOUND_HEADERS
+        payload = json.loads(pending._prepared_json)
+        descriptor = payload.get("execution_request")
+        if not isinstance(descriptor, dict):
+            raise ValueError("This approval does not contain a prepared HTTP request")
+        if any(str(k).lower() in BOUND_HEADERS for k in (headers or {})):
+            raise ValueError("Approved content and resource preconditions cannot be changed")
+        prepared, arguments, actual = prepare(payload["http_method"], payload["destination"],
+            base64.b64decode(descriptor["body_base64"], validate=True), {**(headers or {}), **descriptor["headers"]})
+        if arguments != payload["tool_args"] or actual != descriptor:
+            raise AgenticDomeError("Prepared HTTP action changed during resume")
+        return self.resume_approved_action(pending, lambda args, result: send(prepared, result, self,
+            workload_id=payload.get("workload_id"), timeout=timeout, tool_name=payload["tool_name"], arguments=arguments,
+            require_graphql=(payload.get("policy_context") or {}).get("required_graphql_schema")), with_authorization=True)
 
     @staticmethod
     def enforcement_headers(result: Dict[str, Any], *, workload_id: Optional[str] = None) -> Dict[str, str]:

@@ -19,6 +19,19 @@ PYTHON_SDK_ROOT = Path(__file__).resolve().parents[1]
 MONOREPO_SDK_ROOT = PYTHON_SDK_ROOT.parent
 
 
+def test_action_adapter_catalog_matches_real_python_exports_and_qualifies_npm():
+    from agenticdome_sdk import AgenticDomeClient, OwnershipGuard
+    contract = framework_contract('custom-python')
+    for method in ('execute_http', 'execute_graphql'):
+        assert method in contract['attachment_methods']
+        assert callable(getattr(AgenticDomeClient, method))
+        assert method in harness_compatibility_manifest()['custom_python']['firewall_methods']
+    assert callable(OwnershipGuard)
+    typescript = framework_contract('typescript')['action_adapters']
+    assert typescript['graphql'] == 'executeGraphql'
+    assert 'does not certify an npm release' in typescript['qualification']
+
+
 def test_every_detectable_framework_has_a_versioned_hook_contract() -> None:
     assert CATALOG_SCHEMA == "agenticdome.hook-catalog.v1"
     missing = set(FRAMEWORK_MARKERS) - set(FRAMEWORK_HOOK_CATALOG)

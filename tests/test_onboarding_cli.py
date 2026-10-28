@@ -25,6 +25,30 @@ from agenticdome_sdk.onboarding_cli import (
 REAL_COPILOT_ANALYSIS = onboarding_cli._copilot_semantic_analysis
 
 
+@pytest.mark.parametrize('method', ['execute_http', 'execute_graphql'])
+def test_exact_action_helpers_are_recognised_without_claiming_live_ownership(tmp_path, method):
+    from agenticdome_sdk.existing_integration import detect_existing_integration
+    source = tmp_path / 'app.py'
+    source.write_text(f'from agenticdome_sdk import AgenticDomeClient\ndef run(client):\n    return client.{method}(url="https://provider.invalid")\n')
+    observations = detect_existing_integration(tmp_path, [source], scope_complete=True)
+    recommendation = onboarding_cli._recommend_hook({'framework': 'custom-python'}, observations)
+    assert recommendation['method'] == method
+    assert recommendation['state'] == 'call_candidate_observed'
+    assert recommendation['runtime_proof'] == 'not_assessed'
+    guidance = onboarding_cli._resource_action_guidance()
+    assert guidance['runtime_proof'] == 'not_assessed'
+    assert any('another tenant' in step and 'revoked ownership' in step for step in guidance['steps'])
+
+
+def test_report_text_does_not_count_as_an_action_adapter(tmp_path):
+    from agenticdome_sdk.existing_integration import detect_existing_integration
+    source = tmp_path / 'report.py'
+    source.write_text('from agenticdome_sdk import AgenticDomeClient\nreport="client.execute_graphql()"\n')
+    observations = detect_existing_integration(tmp_path, [source], scope_complete=True)
+    recommendation = onboarding_cli._recommend_hook({'framework': 'custom-python'}, observations)
+    assert recommendation['state'] == 'not_observed_in_selected_source'
+
+
 @pytest.mark.parametrize("actions,bypasses,high,reviews,confidence,gaps,tests_pass,expected", [
     (0, 0, 0, 43, "high", [], True, True),
     (2, 0, 0, 43, "high", [], True, True),

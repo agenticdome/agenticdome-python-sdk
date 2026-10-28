@@ -33,6 +33,7 @@ README_METHODS = {
     "invoke_agent_securely", "wrap_retriever", "create_node_postprocessor",
     "create_callback_handler",
     "guarded_tool_executor",
+    "execute_http", "execute_graphql",
 }
 FRAMEWORK_METHODS = (CATALOG_METHODS | README_METHODS) - {"guardrail_validate", "mesh_validate"}
 A2A_METHODS = {
@@ -53,6 +54,7 @@ OUTPUT_METHODS = {
     "sanitize_streaming_events", "sanitize_retrieval_documents",
 }
 TOOL_METHODS = {
+    "execute_http", "execute_graphql",
     "authorize_tool_call", "authorize_transition", "transition_node",
     "wrap_tool_handler", "wrap_tool_node", "wrap_tool_function",
     "wrap_tool_executor", "wrap_action_group_lambda", "secure_tool",
