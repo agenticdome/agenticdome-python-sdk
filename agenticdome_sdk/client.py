@@ -542,6 +542,7 @@ class AgenticDomeClient:
         use_bearer: bool = False,
         extra_headers: Optional[Dict[str, str]] = None,
         timeout: Optional[Union[int, float, Tuple[float, float]]] = None,
+        allow_redirects: Optional[bool] = None,
     ) -> Dict[str, Any]:
         if self.is_simulation:
             return self._simulation.request(method, path, json_body)
@@ -552,16 +553,24 @@ class AgenticDomeClient:
             use_bearer=use_bearer,
             extra_headers=extra_headers,
         )
-        headers=self._managed_headers(path,json_body,headers)
+        # Gateway guards already verify direct deployment/workload proofs. A
+        # short-lived Docker hook must not mint a token in an extra HTTP exchange
+        # on every call. Existing SDK endpoints keep their token lifecycle.
+        if path not in {"/gateway/v1/guard","/gateway/v1/guard/ready"}:
+            headers=self._managed_headers(path,json_body,headers)
 
+        request_options = {} if allow_redirects is None else {"allow_redirects": allow_redirects}
         response = self.session.request(
             method=method.upper(),
             url=url,
             headers=headers,
             json=json_body,
             timeout=self._timeout_tuple(timeout),
+            **request_options,
         )
 
+        if allow_redirects is False and 300 <= response.status_code < 400:
+            raise AgenticDomeHTTPError(response.status_code, "Gateway redirects are not allowed", "")
         if not response.ok:
             try:
                 payload = response.json()
@@ -709,6 +718,15 @@ class AgenticDomeClient:
     # ------------------------------------------------------------------
     # REST Guardrail / Runtime
     # ------------------------------------------------------------------
+    def guard_native_tool(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Check a Docker mandatory guard event; does not execute or cache permits."""
+        from .docker_guard import event_payload
+        return self._request("POST", "/gateway/v1/guard", json_body=event_payload(event), allow_redirects=False)
+
+    def native_guard_ready(self) -> Dict[str, Any]:
+        """Verify assigned Gateway/identity readiness without executing a tool."""
+        return self._request("GET", "/gateway/v1/guard/ready", allow_redirects=False)
+
     def guardrail_validate(
         self,
         *,

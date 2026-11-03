@@ -364,6 +364,7 @@ class AgenticDomeMCPHostFirewall:
         provider_action_rules: Optional[Dict[str, "ProviderActionRule"]] = None,
         resolve_provider_facts: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         ownership_guard=None,
+        require_mcp_schema: bool = False,
     ) -> None:
         self.config = config or load_config()
         if not credentials_or_local_sim(self.config.api_base, self.config.api_key, self.config.tenant_id):
@@ -384,6 +385,10 @@ class AgenticDomeMCPHostFirewall:
         self.provider_action_rules = dict(provider_action_rules or {})
         self.resolve_provider_facts = resolve_provider_facts
         self.ownership_guard = ownership_guard
+        from .mcp_schema import McpSchemaCache
+        self.mcp_schemas = McpSchemaCache()
+        self.require_mcp_schema = require_mcp_schema
+        self._schema_pages = {}
         self._rate_lock = Lock()
         self._rate_events: Dict[str, Deque[float]] = defaultdict(deque)
 
@@ -944,14 +949,27 @@ class AgenticDomeMCPHostFirewall:
             self._fail_or_raise(f"AgenticDome MCP authorization failed: {exc}", exc=exc)
             return {"verdict": "ALLOWED", "reason": "fail-open"}
 
+    def _validate_mcp_input(self,tool_name,tool_args,context):
+        from .mcp_schema import McpSchemaError
+        scope = self._schema_scope(context)
+        if scope and self.mcp_schemas.available(scope, tool_name):
+            try: self.mcp_schemas.validate(scope, tool_name, tool_args)
+            except McpSchemaError as exc: raise MCPToolBlocked(str(exc)) from None
+        elif self.require_mcp_schema:
+            raise MCPToolBlocked("Fetch this server's tools/list catalogue before authorizing a tool call")
+        return scope
+
     async def authorize_mcp_tool_call(self, *, tool_name: str, tool_args: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._mcp_guardrail(
-            operation_name=tool_name,
-            operation_args=tool_args,
-            context=context,
+        from .mcp_schema import McpSchemaError
+        scope=self._validate_mcp_input(tool_name,tool_args,context)
+        decision = await self._mcp_guardrail(operation_name=tool_name, operation_args=tool_args, context=context,
             request_purpose="mcp_tool_execution",
-            text=self._safe_str(context.get("user_prompt") or context.get("request_text") or f"MCP host is attempting to call tool: {tool_name}"),
-        )
+            text=self._safe_str(context.get("user_prompt") or context.get("request_text") or f"MCP host is attempting to call tool: {tool_name}"))
+        sanitized = self._sanitized_args(decision, explicit_only=True)
+        if sanitized is not None and scope and self.mcp_schemas.available(scope, tool_name):
+            try: self.mcp_schemas.validate(scope, tool_name, sanitized)
+            except McpSchemaError as exc: raise MCPToolBlocked(str(exc)) from None
+        return decision
 
     async def authorize_mcp_resource_read(self, *, uri: str, params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         return await self._mcp_guardrail(
@@ -972,13 +990,23 @@ class AgenticDomeMCPHostFirewall:
         )
 
     async def authorize_mcp_method(self, *, method: str, params: Dict[str, Any], context: Dict[str, Any], request_purpose: str) -> Dict[str, Any]:
-        return await self._mcp_guardrail(
+        if method == "tools/call":
+            if not isinstance(params.get("name"),str) or not isinstance(params.get("arguments",{}),dict):
+                raise MCPToolBlocked("Invalid MCP tool call")
+            self._validate_mcp_input(params["name"],params.get("arguments",{}),context)
+        decision = await self._mcp_guardrail(
             operation_name=f"mcp.{method}",
             operation_args={"method": method, **params},
             context=context,
             request_purpose=request_purpose,
             text=self._safe_str(context.get("user_prompt") or context.get("request_text") or f"MCP host is attempting JSON-RPC method: {method}"),
         )
+        if method=="tools/call":
+            sanitized=self._sanitized_args(decision,explicit_only=True)
+            if sanitized is not None:
+                if sanitized.get("name",params["name"])!=params["name"]:raise MCPToolBlocked("Schema review cannot change the MCP tool identity")
+                self._validate_mcp_input(params["name"],sanitized.get("arguments",{}),context)
+        return decision
 
     async def _handle_blocking_decision(self, *, decision: Dict[str, Any], rid: Any, context: Dict[str, Any], method: str, operation: str) -> Optional[Dict[str, Any]]:
         evidence = _lifecycle_decision.get()
@@ -1142,7 +1170,7 @@ class AgenticDomeMCPHostFirewall:
         return filtered
 
     async def filter_tools_list_result(self, *, tools_result: Any, context: Dict[str, Any]) -> Any:
-        return await self._filter_named_list_result(
+        result = await self._filter_named_list_result(
             list_result=tools_result,
             context=context,
             method="tools/list",
@@ -1152,6 +1180,32 @@ class AgenticDomeMCPHostFirewall:
             allowed_keys=("allowed_tools", "visible_tools"),
             blocked_keys=("blocked_tools", "hidden_tools"),
         )
+        tools = result.get("tools", []) if isinstance(result, dict) else result
+        scope = self._schema_scope(context)
+        if scope and isinstance(tools, list):
+            schemas = [tool for tool in tools if isinstance(tool, dict) and "inputSchema" in tool]
+            if self.require_mcp_schema and len(schemas)!=len(tools): raise MCPToolBlocked("MCP tool definition omitted inputSchema")
+            from .mcp_schema import McpSchemaError
+            more = isinstance(result,dict) and bool(result.get("nextCursor"))
+            previous = self._schema_pages.pop(scope, (0,set()))
+            names = previous[1] if previous[0]>time.monotonic() else set()
+            new_names = {tool.get("name","") for tool in schemas}
+            if names.intersection(new_names): raise MCPToolBlocked("MCP catalogue repeated a tool across pages")
+            names |= new_names
+            if len(names)>256 or sum(len(name) for name in names)>32768: raise MCPToolBlocked("MCP catalogue exceeds tool limit")
+            try: self.mcp_schemas.install(scope, schemas)
+            except McpSchemaError as exc: raise MCPToolBlocked(str(exc)) from None
+            if more:
+                if len(self._schema_pages)>=32: self._schema_pages.pop(next(iter(self._schema_pages)))
+                self._schema_pages[scope] = (time.monotonic()+300,names)
+            else: self.mcp_schemas.retain_names(scope,names)
+        return result
+
+    def _schema_scope(self, context):
+        server = self._server_context(context)
+        if not server.get("mcp_server_id") and not server.get("mcp_server_url"): return None
+        return json.dumps([self.config.tenant_id, server, context.get("session_id"), context.get("user_id"),
+                           context.get("agent_id"), context.get("server_authorization_scope")], sort_keys=True, default=str)
 
     async def filter_resources_list_result(self, *, resources_result: Any, context: Dict[str, Any]) -> Any:
         return await self._filter_named_list_result(
